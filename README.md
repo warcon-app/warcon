@@ -29,6 +29,30 @@ on a container host, with the database wherever you like.
 
 The protocol was reverse-engineered from `rcon.wardogs.com`; see [docs/wardogs-api.md](docs/wardogs-api.md).
 
+## Screenshots
+
+Taken against the built-in demo server, so the numbers are synthetic.
+
+![Server overview: scores, match control and scoreboard](docs/screenshots/server-overview.png)
+
+| Analytics                                                                     | Players, reserved slots and bans             |
+| ----------------------------------------------------------------------------- | -------------------------------------------- |
+| ![Analytics: players online, uptime, matches](docs/screenshots/analytics.png) | ![Players tab](docs/screenshots/players.png) |
+
+| Audit trail                                                        | Map rotation                                          |
+| ------------------------------------------------------------------ | ----------------------------------------------------- |
+| ![Audit trail with filters and export](docs/screenshots/audit.png) | ![Map rotation editor](docs/screenshots/rotation.png) |
+
+| Configuration                                                                    | Game server log                                                      |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| ![Score tick, sponsor image and ServerSettings.ini](docs/screenshots/config.png) | ![The game server's own RCON listener log](docs/screenshots/log.png) |
+
+| Users and access                              | Servers                                  |
+| --------------------------------------------- | ---------------------------------------- |
+| ![Users & Access](docs/screenshots/users.png) | ![Servers](docs/screenshots/servers.png) |
+
+More in [docs/screenshots/](docs/screenshots/): the [dashboard](docs/screenshots/dashboard.png), [time per map and most active players](docs/screenshots/analytics-2.png), and the [sign-in page](docs/screenshots/sign-in.png).
+
 ## How it works
 
 ```
