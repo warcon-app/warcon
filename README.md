@@ -29,6 +29,9 @@ on a container host, with the database wherever you like.
 
 The protocol was reverse-engineered from `rcon.wardogs.com`; see [docs/wardogs-api.md](docs/wardogs-api.md).
 
+Running a public server? Add it to [wardogservers.com](https://wardogservers.com) so players can find it in
+the community server list.
+
 ## Screenshots
 
 Taken against the built-in demo server, so the numbers are synthetic.
