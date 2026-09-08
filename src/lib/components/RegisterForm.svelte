@@ -3,6 +3,7 @@
 	// without an account may create one (invite links, organisation sign-up).
 	import { enhance } from '$app/forms';
 	import { resetTurnstile, turnstile } from '$lib/turnstile';
+	import DiscordMark from './DiscordMark.svelte';
 
 	let {
 		discord,
@@ -33,7 +34,7 @@
 
 {#if discord}
 	<form method="post" action={discordAction} class="mt-5" use:enhance>
-		<button class="btn w-full btn-primary" type="submit">{discordLabel}</button>
+		<button class="btn w-full btn-primary" type="submit"><DiscordMark />{discordLabel}</button>
 	</form>
 	<p class="mt-2 text-center text-[12.5px] text-mist-400">
 		No account yet? Discord creates one for you, no password needed.

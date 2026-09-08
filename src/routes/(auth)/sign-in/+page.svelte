@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
+	import DiscordMark from '$lib/components/DiscordMark.svelte';
 	import type { PageProps } from './$types';
 
 	let { data, form }: PageProps = $props();
@@ -74,7 +75,7 @@
 {#if data.discord}
 	<form method="post" action={action('discord')} class="mt-3" use:enhance>
 		<button class="btn w-full" type="submit"
-			>{data.orgSignup ? 'Continue with Discord' : 'Sign in with Discord'}</button
+			><DiscordMark />{data.orgSignup ? 'Continue with Discord' : 'Sign in with Discord'}</button
 		>
 	</form>
 	<p class="note text-center">

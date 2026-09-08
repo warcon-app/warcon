@@ -6,6 +6,7 @@
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
+	import DiscordMark from '$lib/components/DiscordMark.svelte';
 	import type { PageProps } from './$types';
 
 	let { data, form }: PageProps = $props();
@@ -105,7 +106,7 @@
 					</div>
 				{:else}
 					<form method="post" action="?/linkDiscord" use:enhance>
-						<button class="btn" type="submit">Link Discord for sign-in</button>
+						<button class="btn" type="submit"><DiscordMark />Link Discord for sign-in</button>
 					</form>
 				{/if}
 			</div>
