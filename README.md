@@ -72,6 +72,8 @@ every action, and writes an audit row before answering.
 
 ## Deploy with Docker
 
+New to this? [docs/getting-started.md](docs/getting-started.md) walks through it step by step.
+
 Prerequisites: Docker with Compose.
 
 ```bash
