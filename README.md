@@ -164,6 +164,7 @@ anywhere that can reach `Port` (default 7776) on each game host. Enable the list
 
   For a self-signed certificate set `GAME_TLS_INSECURE=true`. This applies to every `https` server,
   not just the one that needs it.
+
 - **Same host as the game server.** Keep `BindAddress=127.0.0.1`. From Compose, uncomment the
   `extra_hosts` line in `docker-compose.yml` and use host `host.docker.internal`, or run the
   container with `network_mode: host`.

@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -22,13 +29,14 @@ jobs:
     env:
       DATABASE_URL: postgres://warcon:warcon@127.0.0.1:5432/warcon
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run check
+      - run: bun test
       - run: bun run build
       - name: Smoke test the production build
         env:
@@ -37,22 +45,27 @@ jobs:
           HOST: 127.0.0.1
           POLL_SECONDS: 5
         run: |
-          export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
-          export ENCRYPTION_KEY=$(openssl rand -base64 32)
+          BETTER_AUTH_SECRET=$(openssl rand -base64 32); export BETTER_AUTH_SECRET
+          ENCRYPTION_KEY=$(openssl rand -base64 32); export ENCRYPTION_KEY
           bun ./build/index.js > server.log 2>&1 &
-          for i in $(seq 1 60); do sleep 1; curl -sf http://127.0.0.1:5199/api/health >/dev/null && break; done
+          up=0
+          for _ in $(seq 1 60); do
+            if curl -sf "$ORIGIN/api/health" >/dev/null; then up=1; break; fi
+            sleep 1
+          done
+          if [ "$up" != 1 ]; then echo "::error::server did not become healthy within 60s"; exit 1; fi
           bash scripts/smoke.sh | tee smoke.out
           grep -q 'failed=0' smoke.out
       - name: Server log
-        if: failure()
+        if: failure() && hashFiles('server.log') != ''
         run: cat server.log
 
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: false
