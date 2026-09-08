@@ -173,6 +173,26 @@ lets anyone create an organisation of their own and become its owner, up to thre
 and sends them to `/sign-up`; the site owner still sees and can rename or delete every org. Leave
 it off for a single-clan install.
 
+### Accounts and personal data
+
+An account holds a username, display name, password hash, sessions (with IP address and
+browser), and the Discord id and avatar URL when Discord is linked. Every sign-in and action is
+written to the audit trail with the actor's name, IP address and browser. Nothing else is
+collected, and nothing leaves the panel.
+
+Anyone can delete their own account from the **Account** page (right to erasure): password
+accounts confirm with the password, Discord-only accounts by typing their username after a recent
+sign-in. Deletion removes the account, its credentials, sessions, server roles and organisation
+memberships at once. Audit entries the person caused stay for the record but lose their name, IP
+address and browser, and entries that named them lose the username; one row recording the deletion
+itself keeps the requester's IP. The only owner of an organisation, or the only site owner, must
+hand over first, so nothing is left without an owner. The site owner can delete anyone from the
+Users page under the same rules.
+
+Analytics store the Steam id and in-game name of every player seen on a server, for a year (see
+[Notes and limits](#notes-and-limits)). If you host the panel for other people, publish a privacy
+notice that says so, along with the audit retention you choose.
+
 ### Site owner controls
 
 The Orgs page shows every organisation with its creator, member and server counts against its
@@ -315,4 +335,6 @@ configApply raw` (admin).
   every server, with existing owners as its owners and everyone else as members. Rename it on the
   Orgs page.
 - The demo server's state lives in process memory and resets on restart.
-- Audit rows are never deleted by the panel. Prune them with SQL if you need to.
+- Audit rows are never deleted by the panel. Prune them with SQL if you need to. Deleting an
+  account pseudonymises its rows rather than removing them (see
+  [Accounts and personal data](#accounts-and-personal-data)).

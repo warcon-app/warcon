@@ -10,6 +10,7 @@ import { adminAc, defaultStatements, userAc } from 'better-auth/plugins/admin/ac
 import { sveltekitCookies } from 'better-auth/svelte-kit';
 import { getRequestEvent } from '$app/server';
 import { writeAudit } from './audit';
+import { assertMayDeleteSelf, auditSelfDelete, eraseUserTraces } from './erasure';
 import { discordEnabled, type Env } from './env';
 import { CLIENT_IP_HEADER } from './http';
 
@@ -80,6 +81,17 @@ function build(env: Env) {
 		user: {
 			additionalFields: {
 				mustChangePassword: { type: 'boolean', defaultValue: false, input: false }
+			},
+			// Self-service deletion from the account page (right to erasure). The endpoint checks the
+			// password when one is given; erasure.ts refuses to orphan the panel or an organisation and
+			// pseudonymises the audit trail afterwards.
+			deleteUser: {
+				enabled: true,
+				beforeDelete: (u) => assertMayDeleteSelf(env, u),
+				afterDelete: async (u, request) => {
+					await eraseUserTraces(env, u);
+					if (request) await auditSelfDelete(env, request, u);
+				}
 			}
 		},
 		account: {

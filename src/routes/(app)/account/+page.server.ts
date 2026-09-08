@@ -4,6 +4,7 @@ import { discordEnabled, getEnv } from '$lib/server/env';
 import { normalizeError, str } from '$lib/server/http';
 import { writeAudit } from '$lib/server/audit';
 import { requireUser } from '$lib/server/access';
+import { auditSelfDelete } from '$lib/server/erasure';
 import {
 	linkedProviders,
 	listSessions,
@@ -125,5 +126,45 @@ export const actions: Actions = {
 			target: 'discord'
 		});
 		return { unlinked: true };
+	},
+
+	/**
+	 * Delete your own account. Password accounts confirm with the password; Discord-only accounts
+	 * type their username and must have signed in recently (Better Auth's session freshness check).
+	 * The guards and the audit-trail scrub live in erasure.ts, on Better Auth's delete hooks.
+	 */
+	deleteAccount: async ({ request, locals }) => {
+		const env = getEnv();
+		const user = requireUser(locals);
+		const form = await request.formData();
+		const hasPassword = (await linkedProviders(env, user.id)).includes('credential');
+		const password = String(form.get('password') || '');
+		const confirm = str(form.get('confirm'), 32);
+		if (hasPassword && !password) return fail(400, { error: 'Enter your password to confirm.' });
+		if (!hasPassword && confirm.toLowerCase() !== user.username.toLowerCase())
+			return fail(400, { error: 'Type your username to confirm.' });
+		try {
+			await locals.auth!.api.deleteUser({
+				body: hasPassword ? { password } : {},
+				headers: request.headers
+			});
+		} catch (err) {
+			const known = normalizeError(err);
+			if (!known) throw err;
+			await writeAudit(env, request, {
+				actor: user,
+				category: 'user',
+				action: 'account.delete',
+				outcome: 'denied',
+				message: known.message
+			});
+			if (/INVALID_PASSWORD|invalid password/i.test(known.message))
+				return fail(403, { error: 'Password is wrong.' });
+			if (/SESSION_EXPIRED|session expired/i.test(known.message))
+				return fail(403, { error: 'Sign out, sign in again, then delete your account.' });
+			return fail(known.status, { error: known.message });
+		}
+		await auditSelfDelete(env, request, user);
+		redirect(303, '/sign-in?deleted=1');
 	}
 };

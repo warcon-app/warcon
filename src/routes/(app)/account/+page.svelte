@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { fmtTime } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
+	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
 	import type { PageProps } from './$types';
@@ -140,6 +141,69 @@
 					{/each}
 				</tbody>
 			</table>
+		</div>
+	</div>
+
+	<div class="panel lg:col-span-2">
+		<span class="label-sm">Delete account</span>
+		<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+			<div class="space-y-2 text-[13px] leading-relaxed text-mist-400">
+				<p>
+					This removes your account, sign-in credentials, sessions, server roles and organisation
+					memberships straight away. It cannot be undone.
+				</p>
+				<p>
+					Audit entries you caused are kept for the record but stripped of your name, IP address and
+					browser. Organisations and servers you created stay with their other owners. You cannot
+					delete your account while you are the only owner of an organisation, or the only site
+					owner.
+				</p>
+			</div>
+			<form
+				method="post"
+				action="?/deleteAccount"
+				class="space-y-3"
+				use:enhance={async ({ cancel }) => {
+					const ok = await confirmDialog(
+						'Delete your account and everything it can sign in to? This cannot be undone.',
+						{ title: 'Delete account', okLabel: 'Delete my account', danger: true }
+					);
+					if (!ok) {
+						cancel();
+						return;
+					}
+					busy = true;
+					return async ({ update }) => {
+						await update();
+						busy = false;
+					};
+				}}
+			>
+				{#if data.hasPassword}
+					<label class="block"
+						><span class="field-label">Your password</span><input
+							class="input"
+							type="password"
+							name="password"
+							autocomplete="current-password"
+							required
+						/></label
+					>
+				{:else}
+					<label class="block"
+						><span class="field-label">Type your username (@{data.user.username}) to confirm</span
+						><input
+							class="input"
+							type="text"
+							name="confirm"
+							autocomplete="off"
+							spellcheck="false"
+							required
+						/></label
+					>
+				{/if}
+				<button class="btn btn-danger" type="submit" disabled={busy}>Delete my account</button>
+			</form>
 		</div>
 	</div>
 </div>

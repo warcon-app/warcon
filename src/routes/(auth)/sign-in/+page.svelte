@@ -12,6 +12,7 @@
 				? 'Discord sign-in failed. Try again, or use a username and password.'
 				: 'Discord sign-in failed. That Discord account is not linked to a panel account here: open an invite link from your organisation, or link Discord from your account page.'
 	);
+	let deleted = $derived(page.url.searchParams.get('deleted') === '1');
 	let action = $derived(
 		(name: string) =>
 			`?/${name}${data.next === '/' ? '' : `&next=${encodeURIComponent(data.next)}`}`
@@ -19,6 +20,15 @@
 </script>
 
 <svelte:head><title>Sign in · {data.appName}</title></svelte:head>
+
+{#if deleted}
+	<div
+		class="mb-4 rounded-ctl border border-ok/30 bg-ok/10 px-3 py-2 text-[13px] text-ok"
+		role="status"
+	>
+		Your account has been deleted.
+	</div>
+{/if}
 
 <form
 	method="post"
