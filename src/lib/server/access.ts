@@ -3,7 +3,7 @@
 //   org role     (org_members)            "owner" manages one org: its servers, members and invite links,
 //                                         and is admin on every server in it. "member" relies on grants.
 //   server role  (server_grants)          viewer / operator / admin on one server.
-import { and, asc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { isDemoServer } from './env';
 import { ApiError } from './http';
@@ -98,6 +98,8 @@ export async function requireOrgRole(
 	const org = await getOrg(env, orgId);
 	const role = org ? await orgRoleFor(env, user, orgId) : null;
 	if (!org || !role) throw new ApiError(404, 'Organisation not found.', 'not_found');
+	if (org.suspendedAt && user.role !== 'owner')
+		throw new ApiError(403, `${org.name} is suspended. Contact the site owner.`, 'suspended');
 	if (need === 'owner' && role !== 'owner')
 		throw new ApiError(403, `Only an owner of ${org.name} can do that.`, 'forbidden');
 	return { org, role, user };
@@ -119,13 +121,22 @@ export interface OrgSummary {
 	name: string;
 	slug: string;
 	role: OrgRole;
+	/** frozen by the site owner: members cannot open its servers, owners cannot add or invite */
+	suspended: boolean;
 }
 
 /** Orgs the user belongs to, with their role; the site owner sees every org as owner. */
 export async function userOrgs(env: Env, user: SessionUser): Promise<OrgSummary[]> {
+	const shape = (o: OrgRow, role: OrgRole): OrgSummary => ({
+		id: o.id,
+		name: o.name,
+		slug: o.slug,
+		role,
+		suspended: !!o.suspendedAt
+	});
 	if (user.role === 'owner') {
 		const all = await env.db.select().from(organizations).orderBy(asc(organizations.name));
-		return all.map((o) => ({ id: o.id, name: o.name, slug: o.slug, role: 'owner' }));
+		return all.map((o) => shape(o, 'owner'));
 	}
 	const mine = await env.db
 		.select({ org: organizations, role: orgMembers.role })
@@ -133,12 +144,12 @@ export async function userOrgs(env: Env, user: SessionUser): Promise<OrgSummary[
 		.innerJoin(organizations, eq(organizations.id, orgMembers.orgId))
 		.where(eq(orgMembers.userId, user.id))
 		.orderBy(asc(organizations.name));
-	return mine.map((r) => ({ id: r.org.id, name: r.org.name, slug: r.org.slug, role: r.role }));
+	return mine.map((r) => shape(r.org, r.role));
 }
 
 /** May the user add servers, manage members or mint invite links anywhere? Drives navigation. */
 export const canManage = (user: SessionUser, orgs: OrgSummary[]) =>
-	user.role === 'owner' || orgs.some((o) => o.role === 'owner');
+	user.role === 'owner' || orgs.some((o) => o.role === 'owner' && !o.suspended);
 
 // --- servers ---
 
@@ -149,8 +160,13 @@ export async function serverRoleFor(
 ): Promise<ServerRole | null> {
 	if (user.role === 'owner') return 'admin';
 	const [row] = await env.db
-		.select({ grant: serverGrants.role, orgRole: orgMembers.role })
+		.select({
+			grant: serverGrants.role,
+			orgRole: orgMembers.role,
+			suspendedAt: organizations.suspendedAt
+		})
 		.from(servers)
+		.innerJoin(organizations, eq(organizations.id, servers.orgId))
 		.leftJoin(
 			serverGrants,
 			and(eq(serverGrants.serverId, servers.id), eq(serverGrants.userId, user.id))
@@ -158,7 +174,7 @@ export async function serverRoleFor(
 		.leftJoin(orgMembers, and(eq(orgMembers.orgId, servers.orgId), eq(orgMembers.userId, user.id)))
 		.where(eq(servers.id, serverId))
 		.limit(1);
-	if (!row) return null;
+	if (!row || row.suspendedAt) return null;
 	if (row.orgRole === 'owner') return 'admin';
 	return row.grant ?? null;
 }
@@ -266,7 +282,12 @@ export async function accessibleServers(env: Env, user: SessionUser): Promise<Se
 			and(eq(serverGrants.serverId, servers.id), eq(serverGrants.userId, user.id))
 		)
 		.leftJoin(orgMembers, and(eq(orgMembers.orgId, servers.orgId), eq(orgMembers.userId, user.id)))
-		.where(or(isNotNull(serverGrants.role), eq(orgMembers.role, 'owner')))
+		.where(
+			and(
+				isNull(organizations.suspendedAt),
+				or(isNotNull(serverGrants.role), eq(orgMembers.role, 'owner'))
+			)
+		)
 		.orderBy(...order);
 	return rows.map((r) => {
 		const manager = r.orgRole === 'owner';

@@ -5,11 +5,17 @@ import { isDemoServer } from './env';
 import { ApiError, int, newId, publicMessage, str } from './http';
 import { encryptSecret } from './crypto';
 import { writeAudit } from './audit';
-import { SERVER_ROLES, type ServerRole, type ServerRow, type SessionUser } from './access';
+import {
+	SERVER_ROLES,
+	type OrgRow,
+	type ServerRole,
+	type ServerRow,
+	type SessionUser
+} from './access';
 import { ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { serverGrants, servers, user } from './db/schema';
-import { ensureMemberships } from './orgs';
+import { assertCanAddServer, ensureMemberships } from './orgs';
 
 export interface TargetFields {
 	name?: string;
@@ -51,12 +57,14 @@ export async function createServer(
 	env: Env,
 	req: Request,
 	actor: SessionUser,
-	orgId: string,
+	org: OrgRow,
 	body: Record<string, unknown>
 ): Promise<string> {
 	const t = validateTarget(env, body);
 	const password = typeof body.password === 'string' ? body.password : '';
 	if (!password) throw new ApiError(400, "password (the server's RCON password) is required.");
+	await assertCanAddServer(env, org, actor);
+	const orgId = org.id;
 	const id = newId();
 	await env.db.insert(servers).values({
 		id,

@@ -142,6 +142,12 @@ export interface OrgView {
 	slug: string;
 	memberCount: number;
 	serverCount: number;
+	/** servers the org may hold right now (its own override, else the instance default) */
+	serverLimit: number;
+	/** the site owner's per-org override, if any */
+	customServerLimit: number | null;
+	suspended: { at: string; reason: string } | null;
+	createdBy: { username: string; name: string } | null;
 	createdAt: string | null;
 }
 

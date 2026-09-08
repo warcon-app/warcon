@@ -103,6 +103,11 @@ export const organizations = pgTable('organizations', {
 	name: text('name').notNull(),
 	slug: text('slug').notNull().unique(),
 	createdBy: text('created_by'),
+	/** site-owner override of MAX_SERVERS_PER_ORG; null = the instance default */
+	serverLimit: integer('server_limit'),
+	/** set by the site owner: members lose access, nothing can be added or joined until cleared */
+	suspendedAt: ts('suspended_at'),
+	suspendedReason: text('suspended_reason').notNull().default(''),
 	createdAt: ts('created_at').notNull().defaultNow(),
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });

@@ -165,6 +165,40 @@
 		};
 	const usesLabel = (inv: InviteView) =>
 		inv.maxUses === null ? `${inv.uses}` : `${inv.uses} / ${inv.maxUses}`;
+
+	// --- site owner controls ---
+	let limitInput = $state('');
+	let suspendReason = $state('');
+	$effect(() => {
+		limitInput = data.org.customServerLimit === null ? '' : String(data.org.customServerLimit);
+	});
+	function saveLimit() {
+		void run(
+			() =>
+				api('PATCH', orgPath, {
+					serverLimit: limitInput.trim() === '' ? null : Number(limitInput)
+				}),
+			'Server limit updated.',
+			false
+		);
+	}
+	async function suspend() {
+		if (
+			!(await confirmDialog(
+				`Suspend ${data.org.name}? Members lose access to its servers and its invite links stop working until you restore it.`,
+				{ okLabel: 'Suspend', danger: true }
+			))
+		)
+			return;
+		await run(
+			() => api('PATCH', orgPath, { suspended: true, reason: suspendReason.trim() }),
+			'Organisation suspended.',
+			false
+		);
+	}
+	function restore() {
+		void run(() => api('PATCH', orgPath, { suspended: false }), 'Organisation restored.', false);
+	}
 </script>
 
 <svelte:head><title>{data.org.name} · {data.appName}</title></svelte:head>
@@ -181,6 +215,14 @@
 		<button class="btn btn-sm btn-danger" onclick={deleteOrg} disabled={busy}>Delete</button>
 	</span>
 </div>
+
+{#if data.org.suspended}
+	<div class="callout border-l-danger">
+		<b>Suspended</b> since {fmtTime(data.org.suspended.at)}{#if data.org.suspended.reason}: {data
+				.org.suspended.reason}{/if}. Members cannot open its servers, and invite links do not work,
+		until the site owner restores it.
+	</div>
+{/if}
 
 <div class="grid grid-cols-1 gap-4 xl:grid-cols-[3fr_2fr]">
 	<div class="space-y-4">
@@ -318,24 +360,88 @@
 		</div>
 	</div>
 
-	<div class="self-start panel">
-		<div class="mb-3 flex items-center gap-3">
-			<span class="label-sm mb-0!">Servers</span>
-			<a class="ml-auto btn btn-sm" href="/servers">Manage servers</a>
-		</div>
-		{#each data.orgServers as s (s.id)}
-			<div class="kv items-center">
-				<a href="/server/{encodeURIComponent(s.id)}" class="text-accent hover:underline">{s.name}</a
-				>
-				<span class="font-mono text-[12px] text-mist-600">{s.host}:{s.port}</span>
+	<div class="space-y-4 self-start">
+		{#if data.user.role === 'owner'}
+			<div class="panel border-accent/40">
+				<span class="label-sm">Site owner controls</span>
+				<div class="kv">
+					<span class="text-mist-400">Created</span>
+					<span
+						>{fmtTime(data.org.createdAt)}{#if data.org.createdBy}&nbsp;by @{data.org.createdBy
+								.username}{/if}</span
+					>
+				</div>
+				<div class="kv items-center">
+					<span class="text-mist-400">Server limit</span>
+					<span class="join">
+						<input
+							class="input w-24 text-right"
+							type="number"
+							min="0"
+							max="1000"
+							bind:value={limitInput}
+							placeholder="default"
+							aria-label="Server limit"
+						/>
+						<button type="button" class="btn btn-sm h-auto" onclick={saveLimit} disabled={busy}
+							>Save</button
+						>
+					</span>
+				</div>
+				<p class="note">
+					Blank uses the instance default. Currently {data.org.serverCount} of {data.org
+						.serverLimit}.
+				</p>
+				<div class="mt-3 border-t border-white/8 pt-3">
+					{#if data.org.suspended}
+						<button type="button" class="btn btn-sm" onclick={restore} disabled={busy}
+							>Restore organisation</button
+						>
+					{:else}
+						<div class="join w-full">
+							<input
+								class="input"
+								type="text"
+								bind:value={suspendReason}
+								placeholder="Reason (shown to its owners)"
+								maxlength="300"
+							/>
+							<button
+								type="button"
+								class="btn btn-sm h-auto btn-danger"
+								onclick={suspend}
+								disabled={busy}>Suspend</button
+							>
+						</div>
+					{/if}
+				</div>
 			</div>
-		{:else}
-			<p class="text-[13px] text-mist-400">
-				No servers yet. <a href="/servers" class="text-accent underline">Add one</a>; members with a
-				default server role on their invite link only get access to servers that exist when they
-				join.
-			</p>
-		{/each}
+		{/if}
+
+		<div class="panel">
+			<div class="mb-3 flex items-center gap-3">
+				<span class="label-sm mb-0!"
+					>Servers <span class="text-mist-600"
+						>{data.orgServers.length} / {data.org.serverLimit}</span
+					></span
+				>
+				<a class="ml-auto btn btn-sm" href="/servers">Manage servers</a>
+			</div>
+			{#each data.orgServers as s (s.id)}
+				<div class="kv items-center">
+					<a href="/server/{encodeURIComponent(s.id)}" class="text-accent hover:underline"
+						>{s.name}</a
+					>
+					<span class="font-mono text-[12px] text-mist-600">{s.host}:{s.port}</span>
+				</div>
+			{:else}
+				<p class="text-[13px] text-mist-400">
+					No servers yet. <a href="/servers" class="text-accent underline">Add one</a>; members with
+					a default server role on their invite link only get access to servers that exist when they
+					join.
+				</p>
+			{/each}
+		</div>
 	</div>
 </div>
 

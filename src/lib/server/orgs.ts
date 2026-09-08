@@ -1,7 +1,7 @@
 // Organisations: the clan or community that owns a set of servers. People join through shareable
 // invite links (/join/<token>) rather than being created one by one.
 import { and, asc, count, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
-import type { Env } from './env';
+import { maxServersPerOrg, type Env } from './env';
 import { ApiError, int, newId, str } from './http';
 import { writeAudit } from './audit';
 import {
@@ -55,13 +55,55 @@ async function freeSlug(env: Env, base: string, exceptId?: string): Promise<stri
 
 // --- orgs ---
 
+/** How many servers an org may hold: its site-owner override, else MAX_SERVERS_PER_ORG. */
+export const serverLimitFor = (env: Env, org: Pick<OrgRow, 'serverLimit'>): number =>
+	org.serverLimit ?? maxServersPerOrg(env);
+
+export const suspendedProblem = (org: Pick<OrgRow, 'suspendedAt'>): string | null =>
+	org.suspendedAt ? 'This organisation is suspended. Contact the site owner.' : null;
+
+/** Org owners may add a server while the org is active and under its limit; the site owner always may. */
+export async function assertCanAddServer(env: Env, org: OrgRow, actor: SessionUser): Promise<void> {
+	if (actor.role === 'owner') return;
+	const suspended = suspendedProblem(org);
+	if (suspended) throw new ApiError(403, suspended, 'suspended');
+	const [row] = await env.db.select({ n: count() }).from(servers).where(eq(servers.orgId, org.id));
+	const limit = serverLimitFor(env, org);
+	if ((row?.n ?? 0) >= limit)
+		throw new ApiError(
+			403,
+			`${org.name} is at its limit of ${limit} server${limit === 1 ? '' : 's'}. Ask the site owner to raise it.`,
+			'limit'
+		);
+}
+
+const shapeOrg = (
+	env: Env,
+	o: OrgRow,
+	memberCount: number,
+	serverCount: number,
+	creator: { username: string | null; name: string } | null
+): OrgView => ({
+	id: o.id,
+	name: o.name,
+	slug: o.slug,
+	memberCount,
+	serverCount,
+	serverLimit: serverLimitFor(env, o),
+	customServerLimit: o.serverLimit,
+	suspended: o.suspendedAt ? { at: o.suspendedAt.toISOString(), reason: o.suspendedReason } : null,
+	createdBy: creator ? { username: creator.username || '', name: creator.name } : null,
+	createdAt: iso(o.createdAt)
+});
+
 /** The given orgs with member and server counts (callers pass the ids the user may see). */
 export async function listOrgs(env: Env, ids: string[]): Promise<OrgView[]> {
 	if (!ids.length) return [];
 	const [rows, members, srv] = await Promise.all([
 		env.db
-			.select()
+			.select({ o: organizations, creator: { username: user.username, name: user.name } })
 			.from(organizations)
+			.leftJoin(user, eq(user.id, organizations.createdBy))
 			.where(inArray(organizations.id, ids))
 			.orderBy(asc(organizations.name)),
 		env.db
@@ -77,14 +119,63 @@ export async function listOrgs(env: Env, ids: string[]): Promise<OrgView[]> {
 	]);
 	const m = new Map(members.map((r) => [r.orgId, r.n]));
 	const s = new Map(srv.map((r) => [r.orgId, r.n]));
-	return rows.map((o) => ({
-		id: o.id,
-		name: o.name,
-		slug: o.slug,
-		memberCount: m.get(o.id) ?? 0,
-		serverCount: s.get(o.id) ?? 0,
-		createdAt: iso(o.createdAt)
-	}));
+	return rows.map(({ o, creator }) =>
+		shapeOrg(
+			env,
+			o,
+			m.get(o.id) ?? 0,
+			s.get(o.id) ?? 0,
+			creator?.name !== undefined ? creator : null
+		)
+	);
+}
+
+/** Site-owner controls: per-org server limit and suspension. */
+export async function setOrgControls(
+	env: Env,
+	req: Request,
+	actor: SessionUser,
+	org: OrgRow,
+	body: Record<string, unknown>
+): Promise<void> {
+	const set: Partial<typeof organizations.$inferInsert> = {};
+	const changes: Record<string, unknown> = {};
+	if (body.serverLimit !== undefined) {
+		// null or blank restores the instance default
+		const limit =
+			body.serverLimit === null || body.serverLimit === ''
+				? null
+				: int(body.serverLimit, -1, 0, 1000);
+		if (limit !== null && limit < 0)
+			throw new ApiError(400, 'serverLimit must be 0-1000 or empty.');
+		set.serverLimit = limit;
+		changes.serverLimit = limit;
+	}
+	if (body.suspended !== undefined) {
+		const suspended = !!body.suspended;
+		if (suspended && !org.suspendedAt) {
+			set.suspendedAt = new Date();
+			set.suspendedReason = str(body.reason, 300);
+			changes.suspended = true;
+			changes.reason = set.suspendedReason;
+		} else if (!suspended && org.suspendedAt) {
+			set.suspendedAt = null;
+			set.suspendedReason = '';
+			changes.suspended = false;
+		}
+	}
+	if (!Object.keys(changes).length) throw new ApiError(400, 'Nothing to update.');
+	set.updatedAt = new Date();
+	await env.db.update(organizations).set(set).where(eq(organizations.id, org.id));
+	await writeAudit(env, req, {
+		actor,
+		orgId: org.id,
+		category: 'org',
+		action: 'org.controls',
+		outcome: 'ok',
+		target: org.name,
+		detail: { orgId: org.id, ...changes }
+	});
 }
 
 /** Creates an org with the actor as its first owner. */
@@ -444,6 +535,8 @@ export async function createInvite(
 	org: OrgRow,
 	body: Record<string, unknown>
 ): Promise<InviteView> {
+	const suspended = suspendedProblem(org);
+	if (suspended && actor.role !== 'owner') throw new ApiError(403, suspended, 'suspended');
 	const orgRole: OrgRole = body.orgRole === 'owner' ? 'owner' : 'member';
 	const serverRole = SERVER_ROLES.includes(body.serverRole as ServerRole)
 		? (body.serverRole as ServerRole)
@@ -536,7 +629,7 @@ export async function joinOrg(
 ): Promise<void> {
 	// Members re-opening a link (even one that has since run out) are simply already in.
 	if (await isMember(env, org.id, user.id)) return;
-	const problem = inviteProblem(invite);
+	const problem = inviteProblem(invite) ?? suspendedProblem(org);
 	if (problem) throw new ApiError(410, problem, 'invite');
 	let granted = 0;
 	const joined = await env.db.transaction(async (tx) => {

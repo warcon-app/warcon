@@ -2,7 +2,7 @@
 // ALLOW_ORG_SIGNUP is on, your own organisation.
 import { fail, redirect, type RequestEvent } from '@sveltejs/kit';
 import { count, eq } from 'drizzle-orm';
-import { flag, turnstileSiteKey, type Env } from './env';
+import { flag, maxOrgsPerUser, turnstileSiteKey, type Env } from './env';
 import { ApiError, clientIp, normalizeError, str } from './http';
 import { writeAudit } from './audit';
 import { loginLockSeconds, noteLoginFailure, type SessionUser } from './access';
@@ -12,9 +12,6 @@ import { organizations } from './db/schema';
 export const orgSignupEnabled = (env: Pick<Env, 'ALLOW_ORG_SIGNUP'>) =>
 	flag(env.ALLOW_ORG_SIGNUP, false);
 
-/** Orgs one self-serve user may create. Site owners are unlimited. */
-export const MAX_ORGS_PER_USER = 3;
-
 /** How many more orgs this user may create; null means unlimited. */
 export async function orgsRemaining(env: Env, user: SessionUser): Promise<number | null> {
 	if (user.role === 'owner') return null;
@@ -23,7 +20,7 @@ export async function orgsRemaining(env: Env, user: SessionUser): Promise<number
 		.select({ n: count() })
 		.from(organizations)
 		.where(eq(organizations.createdBy, user.id));
-	return Math.max(0, MAX_ORGS_PER_USER - (row?.n ?? 0));
+	return Math.max(0, maxOrgsPerUser(env) - (row?.n ?? 0));
 }
 
 export async function assertMayCreateOrg(env: Env, user: SessionUser): Promise<void> {
@@ -33,7 +30,7 @@ export async function assertMayCreateOrg(env: Env, user: SessionUser): Promise<v
 		throw new ApiError(403, 'Only the site owner can create organisations here.', 'forbidden');
 	throw new ApiError(
 		403,
-		`You have already created ${MAX_ORGS_PER_USER} organisations; ask the site owner if you need more.`,
+		`You have already created ${maxOrgsPerUser(env)} organisations; ask the site owner if you need more.`,
 		'forbidden'
 	);
 }

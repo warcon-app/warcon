@@ -7,6 +7,6 @@ export const load: PageServerLoad = async ({ parent }) => {
 	if (!canManage) error(403, 'You need to own an organisation to manage servers.');
 	return {
 		managed: servers.filter((s) => s.manager),
-		ownedOrgs: orgs.filter((o) => o.role === 'owner')
+		ownedOrgs: orgs.filter((o) => o.role === 'owner' && !o.suspended)
 	};
 };

@@ -134,6 +134,7 @@ way to reach the port; otherwise anyone can spoof the recorded IP.
 | `APP_NAME`                                    | `Warcon`           | Name shown in the UI.                                                                                                                                 |
 | `AUDIT_LOG_READS`                             | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                |
 | `ALLOW_ORG_SIGNUP`                            | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                          |
+| `MAX_ORGS_PER_USER` / `MAX_SERVERS_PER_ORG`   | `3` / `10`         | Self-serve limits. The site owner is exempt and can raise the server limit per organisation, or suspend one, from the Orgs page.                      |
 | `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | unset              | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.         |
 | `ALLOW_DEMO_SERVER`                           | `true`             | Allow a server with host `demo` served by the built-in mock.                                                                                          |
 | `GAME_TLS_INSECURE`                           | `false`            | Accept self-signed certificates on `https` game servers.                                                                                              |
@@ -165,6 +166,14 @@ widget with `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` to keep bots off the
 With `ALLOW_ORG_SIGNUP=true`, `/sign-up` additionally
 lets anyone create an organisation of their own and become its owner, up to three per person; the
 site owner still sees and can rename or delete every org. Leave it off for a single-clan install.
+
+### Site owner controls
+
+The Orgs page shows every organisation with its creator, member and server counts against its
+limit, and status. From there (or from an org's own page) the site owner can raise or lower an
+org's server limit and **suspend** it: members lose access to its servers, owners cannot add
+servers or mint links, and invite links stop working, until it is restored. Deleting an org removes
+its servers from the panel; the accounts stay.
 
 ### Invite links
 

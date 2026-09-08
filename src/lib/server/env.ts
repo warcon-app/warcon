@@ -25,6 +25,9 @@ export interface Env {
 	ALLOW_DEMO_SERVER?: string;
 	/** Let anyone create an account and their own organisation from /sign-up. */
 	ALLOW_ORG_SIGNUP?: string;
+	/** Self-serve limits: orgs one person may create, servers one org may hold (site owner can raise per org). */
+	MAX_ORGS_PER_USER?: string;
+	MAX_SERVERS_PER_ORG?: string;
 	/** Cloudflare Turnstile on the password sign-up forms; both keys, or neither. */
 	TURNSTILE_SITE_KEY?: string;
 	TURNSTILE_SECRET_KEY?: string;
@@ -36,6 +39,19 @@ export interface Env {
 
 export const flag = (value: string | undefined, fallback = false): boolean =>
 	value === undefined || value === '' ? fallback : /^(1|true|yes|on)$/i.test(value);
+
+/** A positive integer setting, or the fallback when unset or nonsense. */
+export const positiveInt = (value: string | undefined, fallback: number): number => {
+	const n = Number(value);
+	return Number.isInteger(n) && n > 0 ? n : fallback;
+};
+
+export const DEFAULT_MAX_ORGS_PER_USER = 3;
+export const DEFAULT_MAX_SERVERS_PER_ORG = 10;
+export const maxOrgsPerUser = (env: Pick<Env, 'MAX_ORGS_PER_USER'>) =>
+	positiveInt(env.MAX_ORGS_PER_USER, DEFAULT_MAX_ORGS_PER_USER);
+export const maxServersPerOrg = (env: Pick<Env, 'MAX_SERVERS_PER_ORG'>) =>
+	positiveInt(env.MAX_SERVERS_PER_ORG, DEFAULT_MAX_SERVERS_PER_ORG);
 
 /** Discord sign-in (and account creation through invite links) is on when both secrets are set. */
 export const discordEnabled = (
@@ -100,6 +116,8 @@ export async function initEnv(): Promise<Env> {
 		AUDIT_LOG_READS: processEnv.AUDIT_LOG_READS,
 		ALLOW_DEMO_SERVER: processEnv.ALLOW_DEMO_SERVER ?? 'true',
 		ALLOW_ORG_SIGNUP: processEnv.ALLOW_ORG_SIGNUP,
+		MAX_ORGS_PER_USER: processEnv.MAX_ORGS_PER_USER,
+		MAX_SERVERS_PER_ORG: processEnv.MAX_SERVERS_PER_ORG,
 		TURNSTILE_SITE_KEY: processEnv.TURNSTILE_SITE_KEY,
 		TURNSTILE_SECRET_KEY: processEnv.TURNSTILE_SECRET_KEY,
 		GAME_TLS_INSECURE: processEnv.GAME_TLS_INSECURE,
