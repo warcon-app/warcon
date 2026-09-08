@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: timescale/timescaledb:latest-pg17
+        env:
+          POSTGRES_USER: warcon
+          POSTGRES_PASSWORD: warcon
+          POSTGRES_DB: warcon
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U warcon -d warcon"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://warcon:warcon@127.0.0.1:5432/warcon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run check
+      - run: bun run build
+      - name: Smoke test the production build
+        env:
+          ORIGIN: http://127.0.0.1:5199
+          PORT: 5199
+          HOST: 127.0.0.1
+          POLL_SECONDS: 5
+        run: |
+          export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+          export ENCRYPTION_KEY=$(openssl rand -base64 32)
+          bun ./build/index.js > server.log 2>&1 &
+          for i in $(seq 1 60); do sleep 1; curl -sf http://127.0.0.1:5199/api/health >/dev/null && break; done
+          bash scripts/smoke.sh | tee smoke.out
+          grep -q 'failed=0' smoke.out
+      - name: Server log
+        if: failure()
+        run: cat server.log
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

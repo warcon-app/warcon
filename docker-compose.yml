@@ -1,0 +1,39 @@
+# Warcon + TimescaleDB. Run it next to (or anywhere near) your WARDOGS dedicated server.
+#   cp .env.example .env   # set BETTER_AUTH_SECRET, ENCRYPTION_KEY, POSTGRES_PASSWORD, ORIGIN
+#   docker compose up -d   # then open http://<host>:3000
+services:
+  warcon:
+    build: .
+    # image: ghcr.io/<you>/warcon:latest   # use a published image instead of building
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '3000:3000'
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://warcon:${POSTGRES_PASSWORD:-warcon}@db:5432/warcon
+      # The URL people open. Behind a reverse proxy / Cloudflare set ORIGIN=https://... and TRUST_PROXY=true in .env.
+      ORIGIN: ${ORIGIN:-http://localhost:3000}
+    # Uncomment to reach an RCON listener bound to 127.0.0.1 on the Docker host:
+    # extra_hosts:
+    #   - 'host.docker.internal:host-gateway'
+
+  db:
+    image: timescale/timescaledb:latest-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: warcon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-warcon}
+      POSTGRES_DB: warcon
+    volumes:
+      - warcon-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U warcon -d warcon']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  warcon-db:
