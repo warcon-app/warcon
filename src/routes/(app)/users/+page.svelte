@@ -166,7 +166,7 @@
 						{#if u.role === 'owner'}
 							<span class="text-mist-400">all servers (owner)</span>
 						{:else if u.grants.length}
-							<div class="flex flex-wrap gap-1.5">
+							<div class="flex flex-wrap gap-1.5 max-md:max-w-[280px]">
 								{#each u.grants as g (g.serverId)}
 									<span
 										class="inline-flex items-center gap-1.5 rounded-[2px] border border-black bg-ink-950 py-0.5 pr-1 pl-2 text-[12px]"

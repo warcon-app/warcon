@@ -30,7 +30,7 @@
 
 <svelte:window {onkeydown} />
 
-<div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+<div class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
 	<button
 		type="button"
 		class="absolute inset-0 cursor-default bg-black/70"
@@ -40,7 +40,7 @@
 	></button>
 	<div
 		bind:this={box}
-		class="relative max-h-[92vh] w-full rise overflow-y-auto panel shadow-pop {wide
+		class="relative max-h-[calc(100dvh-1.5rem)] w-full rise overflow-y-auto panel shadow-pop {wide
 			? 'max-w-3xl'
 			: 'max-w-lg'}"
 		role="dialog"

@@ -126,70 +126,75 @@
 			</tbody>
 		</table>
 	</div>
-	<div class="mt-3 flex flex-wrap gap-2">
+	<div class="mt-3 flex flex-wrap items-end gap-x-4 gap-y-3">
+		<div class="field-group">
+			<span class="field-label">Selected entry</span>
+			<div class="join join-stack w-full">
+				<button
+					class="btn"
+					disabled={!operator}
+					onclick={() =>
+						withSel((i) =>
+							act(
+								'rotationMove',
+								{ index: i, direction: 'up' },
+								{
+									after: async () => {
+										selected = Math.max(0, i - 1);
+										await refresh();
+									}
+								}
+							)
+						)}>Move up</button
+				>
+				<button
+					class="btn"
+					disabled={!operator}
+					onclick={() =>
+						withSel((i) =>
+							act(
+								'rotationMove',
+								{ index: i, direction: 'down' },
+								{
+									after: async () => {
+										selected = i + 1;
+										await refresh();
+									}
+								}
+							)
+						)}>Move down</button
+				>
+				<button
+					class="btn"
+					disabled={!operator}
+					onclick={() =>
+						withSel((i) =>
+							act('setNextMap', entryToSelection(rotation!.entries[i]), { after: refresh })
+						)}>Play next</button
+				>
+				<button
+					class="btn btn-danger"
+					disabled={!operator}
+					onclick={() =>
+						withSel((i) =>
+							act(
+								'rotationRemove',
+								{ index: i },
+								{
+									confirm: `Remove rotation entry ${i + 1}?`,
+									danger: true,
+									after: async () => {
+										selected = -1;
+										await refresh();
+									}
+								}
+							)
+						)}>Remove</button
+				>
+			</div>
+		</div>
 		<button
-			class="btn"
-			disabled={!operator}
-			onclick={() =>
-				withSel((i) =>
-					act(
-						'rotationMove',
-						{ index: i, direction: 'up' },
-						{
-							after: async () => {
-								selected = Math.max(0, i - 1);
-								await refresh();
-							}
-						}
-					)
-				)}>Move up</button
-		>
-		<button
-			class="btn"
-			disabled={!operator}
-			onclick={() =>
-				withSel((i) =>
-					act(
-						'rotationMove',
-						{ index: i, direction: 'down' },
-						{
-							after: async () => {
-								selected = i + 1;
-								await refresh();
-							}
-						}
-					)
-				)}>Move down</button
-		>
-		<button
-			class="btn btn-danger"
-			disabled={!operator}
-			onclick={() =>
-				withSel((i) =>
-					act(
-						'rotationRemove',
-						{ index: i },
-						{
-							confirm: `Remove rotation entry ${i + 1}?`,
-							danger: true,
-							after: async () => {
-								selected = -1;
-								await refresh();
-							}
-						}
-					)
-				)}>Remove</button
-		>
-		<button
-			class="btn"
-			disabled={!operator}
-			onclick={() =>
-				withSel((i) =>
-					act('setNextMap', entryToSelection(rotation!.entries[i]), { after: refresh })
-				)}>Play next</button
-		>
-		<button
-			class="ml-auto btn btn-primary"
+			class="btn w-full btn-primary sm:ml-auto sm:w-auto"
 			disabled={!admin}
 			onclick={() => act('rotationSave', {})}>Save rotation</button
 		>

@@ -218,9 +218,22 @@
 				)} · {lightingLabel(data.catalog, next.lighting)}
 			</p>
 		{/if}
-		<div class="mt-3 flex flex-wrap gap-2">
+		<div class="join join-stack mt-3">
 			<button class="btn" disabled={!operator} onclick={() => (showPicker = !showPicker)}
 				>Override map</button
+			>
+			<button
+				class="btn"
+				disabled={!operator}
+				onclick={() =>
+					act(
+						'restartMatch',
+						{},
+						{
+							confirm: 'Restart the current match? Scores reset; the rotation pointer stays put.',
+							after: refreshStatus
+						}
+					)}>Restart match</button
 			>
 			<button
 				class="btn btn-danger"
@@ -237,19 +250,6 @@
 						}
 					)}>Force end match</button
 			>
-			<button
-				class="btn"
-				disabled={!operator}
-				onclick={() =>
-					act(
-						'restartMatch',
-						{},
-						{
-							confirm: 'Restart the current match? Scores reset; the rotation pointer stays put.',
-							after: refreshStatus
-						}
-					)}>Restart match</button
-			>
 		</div>
 		<p class="note">
 			{operator
@@ -257,23 +257,24 @@
 				: 'You have view-only access to this server.'}
 		</p>
 		<form
-			class="mt-3 flex gap-2"
+			class="mt-4"
 			onsubmit={(e) => {
 				e.preventDefault();
 				void sendBroadcast();
 			}}
 		>
-			<input
-				class="input"
-				type="text"
-				maxlength="200"
-				placeholder="Announcement for all players…"
-				bind:value={broadcast}
-				disabled={!operator}
-			/>
-			<button class="btn shrink-0 btn-primary" type="submit" disabled={!operator}
-				>Send announcement</button
-			>
+			<span class="field-label">Announcement to all players</span>
+			<div class="join w-full">
+				<input
+					class="input"
+					type="text"
+					maxlength="200"
+					placeholder="Message shown to everyone on the server…"
+					bind:value={broadcast}
+					disabled={!operator}
+				/>
+				<button class="btn btn-primary" type="submit" disabled={!operator}>Send</button>
+			</div>
 		</form>
 	</div>
 </div>
@@ -281,7 +282,7 @@
 <div class="mt-4 panel" hidden={!showPicker}>
 	<span class="label-sm">Map override</span>
 	<MapPicker bind:this={picker} serverId={id} catalog={data.catalog} disabled={!operator} />
-	<div class="mt-4 flex flex-wrap gap-2">
+	<div class="join join-stack mt-4">
 		<button
 			class="btn btn-primary"
 			disabled={!operator}
@@ -309,18 +310,20 @@
 </div>
 
 <div class="mt-4 panel">
-	<div class="mb-3 flex flex-wrap items-center gap-2">
+	<div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
 		<span class="label-sm mb-0">Scoreboard</span>
-		<button
-			class="btn btn-sm {teamFilter === '' ? 'btn-primary' : ''}"
-			onclick={() => (teamFilter = '')}>All {players.length}</button
-		>
-		{#each teams as [f, n] (f)}
+		<div class="join">
 			<button
-				class="btn btn-sm {teamFilter === (f || 'unassigned') ? 'btn-primary' : ''}"
-				onclick={() => (teamFilter = f || 'unassigned')}>{f || 'unassigned'} {n}</button
+				class="btn btn-sm {teamFilter === '' ? 'btn-primary' : ''}"
+				onclick={() => (teamFilter = '')}>All {players.length}</button
 			>
-		{/each}
+			{#each teams as [f, n] (f)}
+				<button
+					class="btn btn-sm {teamFilter === (f || 'unassigned') ? 'btn-primary' : ''}"
+					onclick={() => (teamFilter = f || 'unassigned')}>{f || 'unassigned'} {n}</button
+				>
+			{/each}
+		</div>
 		<span class="ml-auto text-[12.5px] text-mist-600">{players.length} on the server</span>
 	</div>
 	<div class="table-wrap">

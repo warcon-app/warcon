@@ -46,12 +46,14 @@
 </script>
 
 <div class="mb-4 flex flex-wrap items-center gap-2">
-	{#each RANGES as r (r.key)}
-		<button
-			class="btn btn-sm {range === r.key ? 'btn-primary' : ''}"
-			onclick={() => (range = r.key)}>{r.label}</button
-		>
-	{/each}
+	<div class="join">
+		{#each RANGES as r (r.key)}
+			<button
+				class="btn btn-sm {range === r.key ? 'btn-primary' : ''}"
+				onclick={() => (range = r.key)}>{r.label}</button
+			>
+		{/each}
+	</div>
 	<span class="ml-auto text-[12.5px] text-mist-600">
 		{#if a}sampled every {a.pollSeconds}s · {fmtNum(a.summary.samples)} samples{#if loading}
 				· refreshing…{/if}{:else}Loading…{/if}
@@ -69,12 +71,12 @@
 	</div>
 
 	<div class="mb-4 panel">
-		<div class="mb-3 flex items-center gap-3">
+		<div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
 			<span class="label-sm mb-0">Players online</span>
 			<span class="text-[12px] text-mist-600"
 				>average per {a.bucketSeconds / 60} min bucket · red bands are outages</span
 			>
-			<span class="ml-auto inline-flex gap-1">
+			<span class="join ml-auto">
 				<button
 					class="btn btn-sm {view === 'chart' ? 'btn-primary' : ''}"
 					onclick={() => (view = 'chart')}>Chart</button

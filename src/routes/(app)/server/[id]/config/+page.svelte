@@ -159,7 +159,7 @@
 	<div class="panel">
 		<span class="label-sm">Sponsor image</span>
 		<form
-			class="flex gap-2"
+			class="join w-full"
 			onsubmit={(e) => {
 				e.preventDefault();
 				void saveSponsor();
@@ -172,7 +172,7 @@
 				bind:value={sponsor}
 				disabled={!admin}
 			/>
-			<button class="btn shrink-0 btn-primary" type="submit" disabled={!admin}>Save</button>
+			<button class="btn btn-primary" type="submit" disabled={!admin}>Save</button>
 		</form>
 		{#if sponsorShown}<img
 				src={sponsorShown}
@@ -193,23 +193,25 @@
 		<span class="text-[12.5px] text-mist-400"
 			>Revision <span class="font-mono">{doc?.revision || (doc ? '(none)' : '—')}</span></span
 		>
-		<button class="btn btn-sm" onclick={loadDoc}>Reload</button>
-		<button
-			class="btn btn-sm"
-			disabled={!admin || !doc || busy}
-			onclick={() => runConfig('configValidate')}>Validate</button
-		>
-		<button
-			class="btn btn-sm btn-primary"
-			disabled={readOnly || busy}
-			onclick={() => runConfig('configApply')}>Apply to server</button
-		>
+		<div class="join">
+			<button class="btn btn-sm" onclick={loadDoc}>Reload</button>
+			<button
+				class="btn btn-sm"
+				disabled={!admin || !doc || busy}
+				onclick={() => runConfig('configValidate')}>Validate</button
+			>
+			<button
+				class="btn btn-sm btn-primary"
+				disabled={readOnly || busy}
+				onclick={() => runConfig('configApply')}>Apply to server</button
+			>
+		</div>
 		<label class="inline-flex items-center gap-2 text-[12.5px]"
 			><input type="checkbox" bind:checked={force} /> Force (ignore revision conflict)</label
 		>
 	</div>
 	<textarea
-		class="min-h-[420px] input font-mono text-[12.5px] leading-relaxed"
+		class="min-h-[420px] input font-mono text-[12.5px] leading-relaxed pointer-coarse:text-[16px]"
 		rows="26"
 		spellcheck="false"
 		bind:value={text}

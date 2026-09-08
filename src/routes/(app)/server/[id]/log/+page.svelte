@@ -57,7 +57,7 @@
 						<td class="font-mono text-[12px]">{e.peer}</td>
 						<td class="font-mono text-[12px] text-mist-400">{e.sessionId}</td>
 						<td class="font-semibold {EVENT_CLASS[e.event] || ''}">{e.event}</td>
-						<td class="font-mono text-[12px]">{e.detail}</td>
+						<td class="max-w-[480px] font-mono text-[12px] break-words">{e.detail}</td>
 					</tr>
 				{:else}
 					<tr

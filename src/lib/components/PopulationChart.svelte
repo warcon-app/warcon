@@ -3,7 +3,10 @@
 
 	let { points, range }: { points: PopulationPoint[]; range: string } = $props();
 
-	const W = 900;
+	// The SVG is drawn at its rendered width so labels stay 10px on a phone rather than scaling
+	// down with a fixed 900-unit viewBox.
+	let width = $state(0);
+	let W = $derived(Math.max(320, width || 900));
 	const H = 220;
 	const PAD = { l: 34, r: 12, t: 12, b: 26 };
 	let hover = $state<number | null>(null);
@@ -89,7 +92,7 @@
 		No samples yet. The poller records one every few seconds once it can reach the server.
 	</div>
 {:else}
-	<div class="relative">
+	<div class="relative" bind:clientWidth={width}>
 		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 		<svg
 			bind:this={svg}

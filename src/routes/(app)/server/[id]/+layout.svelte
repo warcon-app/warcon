@@ -23,6 +23,16 @@
 		setHealth(data.server.id, data.reachable);
 	});
 	let live = $derived(health[data.server.id]);
+
+	// On phones the tab row scrolls sideways; keep the active tab in view after navigating.
+	let tabs = $state<HTMLElement>();
+	$effect(() => {
+		void current;
+		const active = tabs?.querySelector<HTMLElement>('.tab-link-active');
+		if (!active || !tabs || tabs.scrollWidth <= tabs.clientWidth) return;
+		const left = active.offsetLeft - (tabs.clientWidth - active.offsetWidth) / 2;
+		tabs.scrollTo({ left, behavior: 'smooth' });
+	});
 </script>
 
 <svelte:head><title>{data.server.name} · {data.appName}</title></svelte:head>
@@ -49,7 +59,11 @@
 	</div>
 </div>
 
-<nav class="mb-5 flex flex-wrap gap-1 border-b border-white/8 pb-3" aria-label="Server sections">
+<nav
+	bind:this={tabs}
+	class="strip mb-5 gap-1 border-b border-white/8 pb-3"
+	aria-label="Server sections"
+>
 	{#each TABS as [path, label] (path)}
 		<a href="{base}{path}" class="tab-link {current === path ? 'tab-link-active' : ''}">{label}</a>
 	{/each}

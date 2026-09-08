@@ -95,13 +95,15 @@
 
 <div class="panel">
 	<div class="mb-3 flex flex-wrap items-center gap-2">
-		<input
-			class="input max-w-xs"
-			type="search"
-			placeholder="Filter by name or SteamID…"
-			bind:value={search}
-		/>
-		<button class="btn" onclick={refreshPlayers}>Refresh</button>
+		<div class="join w-full sm:w-auto sm:min-w-[320px]">
+			<input
+				class="input"
+				type="search"
+				placeholder="Filter by name or SteamID…"
+				bind:value={search}
+			/>
+			<button class="btn" onclick={refreshPlayers}>Refresh</button>
+		</div>
 		<span class="ml-auto text-[12.5px] text-mist-600">{rows.length} / {all.length} players</span>
 	</div>
 	<div class="table-wrap">
@@ -132,78 +134,112 @@
 	</div>
 	{#if player}
 		<div
-			class="mt-3 flex rise flex-wrap items-center gap-2 rounded-ctl border border-l-2 border-black border-l-accent bg-ink-950 p-3"
+			class="mt-3 rise rounded-ctl border border-l-2 border-black border-l-accent bg-ink-950 p-3"
 		>
-			<span class="mr-1 text-[13px] text-mist-400"
-				>{player.name} · <span class="font-mono">{player.steamId}</span></span
-			>
-			<input
-				class="input max-w-[220px]"
-				type="text"
-				placeholder="Reason…"
-				maxlength="200"
-				bind:value={reason}
-			/>
-			<button
-				class="btn btn-danger"
-				disabled={!operator}
-				onclick={withPlayer((p) =>
-					act(
-						'kick',
-						{ steamId: p.steamId, reason: reason.trim() },
-						{ confirm: `Kick ${p.name}?`, danger: true, after: refreshPlayers }
-					)
-				)}>Kick</button
-			>
-			<button
-				class="btn btn-danger"
-				disabled={!admin}
-				onclick={withPlayer((p) =>
-					act(
-						'ban',
-						{ steamId: p.steamId, reason: reason.trim() },
-						{
-							confirm: `Ban ${p.name} (${p.steamId})? This persists in the server's config.`,
-							danger: true,
-							after: refreshAll
-						}
-					)
-				)}>Ban</button
-			>
-			<button
-				class="btn"
-				disabled={!operator}
-				onclick={withPlayer((p) => act('kill', { steamId: p.steamId }, { after: refreshPlayers }))}
-				>Kill</button
-			>
-			{#if data.features.changeTeam}
-				<select class="input max-w-[160px]" bind:value={team}>
-					{#each status?.scores ?? [] as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
-				</select>
-				<button
-					class="btn"
-					disabled={!operator}
-					onclick={withPlayer((p) =>
-						act('changeTeam', { steamId: p.steamId, faction: team }, { after: refreshPlayers })
-					)}>Change team</button
+			<div class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+				<FactionChip faction={player.faction} scores={status?.scores} />
+				<span class="min-w-0 truncate font-semibold">{player.name}</span>
+				<span
+					class="order-last basis-full font-mono text-[12px] text-mist-400 sm:order-none sm:basis-auto"
+					>{player.steamId}</span
 				>
-			{/if}
-			<input
-				class="input max-w-[220px]"
-				type="text"
-				placeholder="Whisper…"
-				maxlength="200"
-				bind:value={whisper}
-			/>
-			<button
-				class="btn"
-				disabled={!operator}
-				onclick={withPlayer(async (p) => {
-					const message = whisper.trim();
-					if (!message) return;
-					if (await act('whisper', { steamId: p.steamId, message })) whisper = '';
-				})}>Whisper</button
-			>
+				<button
+					type="button"
+					class="ml-auto btn btn-sm btn-ghost"
+					onclick={() => (selected = null)}
+					aria-label="Deselect player">✕</button
+				>
+			</div>
+			<div class="flex flex-wrap gap-x-5 gap-y-3">
+				<div class="field-group sm:min-w-[340px] sm:flex-1">
+					<span class="field-label">Discipline</span>
+					<div class="join join-wrap w-full">
+						<input
+							class="input"
+							type="text"
+							placeholder="Reason (optional)…"
+							maxlength="200"
+							bind:value={reason}
+						/>
+						<button
+							class="btn"
+							disabled={!operator}
+							onclick={withPlayer((p) =>
+								act('kill', { steamId: p.steamId }, { after: refreshPlayers })
+							)}>Kill</button
+						>
+						<button
+							class="btn btn-danger"
+							disabled={!operator}
+							onclick={withPlayer((p) =>
+								act(
+									'kick',
+									{ steamId: p.steamId, reason: reason.trim() },
+									{ confirm: `Kick ${p.name}?`, danger: true, after: refreshPlayers }
+								)
+							)}>Kick</button
+						>
+						<button
+							class="btn btn-danger"
+							disabled={!admin}
+							onclick={withPlayer((p) =>
+								act(
+									'ban',
+									{ steamId: p.steamId, reason: reason.trim() },
+									{
+										confirm: `Ban ${p.name} (${p.steamId})? This persists in the server's config.`,
+										danger: true,
+										after: refreshAll
+									}
+								)
+							)}>Ban</button
+						>
+					</div>
+				</div>
+				{#if data.features.changeTeam}
+					<div class="field-group">
+						<span class="field-label">Team</span>
+						<div class="join w-full">
+							<select class="input sm:w-40 sm:flex-none" bind:value={team}>
+								{#each status?.scores ?? [] as f (f.name)}<option value={f.name}>{f.name}</option
+									>{/each}
+							</select>
+							<button
+								class="btn"
+								disabled={!operator}
+								onclick={withPlayer((p) =>
+									act(
+										'changeTeam',
+										{ steamId: p.steamId, faction: team },
+										{ after: refreshPlayers }
+									)
+								)}>Move</button
+							>
+						</div>
+					</div>
+				{/if}
+				<div class="field-group sm:min-w-[300px] sm:flex-1">
+					<span class="field-label">Whisper</span>
+					<div class="join w-full">
+						<input
+							class="input"
+							type="text"
+							placeholder="Private message to {player.name}…"
+							maxlength="200"
+							bind:value={whisper}
+						/>
+						<button
+							class="btn btn-primary"
+							disabled={!operator}
+							onclick={withPlayer(async (p) => {
+								const message = whisper.trim();
+								if (!message) return;
+								if (await act('whisper', { steamId: p.steamId, message })) whisper = '';
+							})}>Send</button
+						>
+					</div>
+				</div>
+			</div>
 		</div>
 	{/if}
 	{#if !operator}<p class="note">You have view-only access; player actions are disabled.</p>{/if}
@@ -223,7 +259,7 @@
 				<span class="text-mist-600">None.</span>
 			{/each}
 		</div>
-		<div class="flex gap-2">
+		<div class="join join-wrap w-full">
 			<input
 				class="input font-mono"
 				type="text"
@@ -269,15 +305,17 @@
 	<div class="panel lg:col-span-2">
 		<span class="label-sm">Bans</span>
 		<div class="mb-3 flex flex-wrap items-center gap-2">
-			<input
-				class="input max-w-xs"
-				type="search"
-				placeholder="Filter bans by SteamID, admin, reason…"
-				bind:value={banSearch}
-			/>
-			<button class="btn" onclick={refreshBans}>Refresh</button>
+			<div class="join w-full sm:w-auto sm:min-w-[320px]">
+				<input
+					class="input"
+					type="search"
+					placeholder="Filter bans by SteamID, admin, reason…"
+					bind:value={banSearch}
+				/>
+				<button class="btn" onclick={refreshBans}>Refresh</button>
+			</div>
 			<button
-				class="btn btn-danger"
+				class="btn btn-danger sm:ml-auto"
 				disabled={!admin || !selectedBan}
 				onclick={() =>
 					selectedBan &&

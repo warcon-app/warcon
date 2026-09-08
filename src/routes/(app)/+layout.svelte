@@ -29,18 +29,24 @@
 
 <header class="sticky top-0 z-30 border-b border-black bg-ink-900">
 	<div class="page-x flex h-[58px] items-center gap-3">
-		<a href="/" class="flex items-center gap-2.5 font-semibold tracking-tight">
+		<a
+			href="/"
+			class="flex shrink-0 items-center gap-2.5 font-semibold tracking-tight"
+			aria-label="{data.appName} dashboard"
+		>
 			<Mark />
-			<span class="font-display text-[19px] font-semibold tracking-[0.1em] uppercase"
-				>{data.appName}</span
+			<span
+				class="font-display text-[19px] font-semibold tracking-[0.1em] uppercase {current
+					? 'hidden sm:inline'
+					: ''}">{data.appName}</span
 			>
 			<span class="hidden caps text-mist-600 sm:inline">rcon</span>
 		</a>
 
-		<div class="relative ml-1">
+		<div class="relative ml-1 min-w-0 flex-1 sm:flex-none">
 			<button
 				type="button"
-				class="btn max-w-[260px] gap-2 pr-2.5 text-[13px] font-medium tracking-normal normal-case"
+				class="btn max-w-full gap-2 pr-2.5 text-[13px] font-medium tracking-normal normal-case sm:max-w-[260px]"
 				aria-haspopup="menu"
 				aria-expanded={switcherOpen}
 				onclick={(e) => {
@@ -95,7 +101,7 @@
 			{/if}
 		</nav>
 
-		<div class="relative ml-auto">
+		<div class="relative ml-auto shrink-0">
 			<button
 				type="button"
 				class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-ctl border border-black bg-accent text-[12px] font-bold text-ink-950"
@@ -122,7 +128,7 @@
 			{#if userOpen}
 				<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 				<div
-					class="menu right-0 left-auto"
+					class="menu right-0 left-auto max-sm:left-3"
 					role="menu"
 					tabindex="-1"
 					onclick={(e) => e.stopPropagation()}

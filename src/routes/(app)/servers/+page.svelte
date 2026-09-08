@@ -199,8 +199,8 @@
 					required
 				/></label
 			>
-			<div class="grid grid-cols-[3fr_1fr_1fr] gap-2">
-				<label class="block"
+			<div class="grid grid-cols-2 gap-2 sm:grid-cols-[3fr_1fr_1fr]">
+				<label class="col-span-2 block sm:col-span-1"
 					><span class="field-label">Host</span><input
 						class="input"
 						type="text"
@@ -238,7 +238,7 @@
 					required={!d.server}
 				/></label
 			>
-			<div class="grid grid-cols-[4fr_1fr] gap-2">
+			<div class="grid grid-cols-1 gap-2 sm:grid-cols-[4fr_1fr]">
 				<label class="block"
 					><span class="field-label">Notes</span><textarea
 						class="input"
