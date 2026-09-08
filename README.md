@@ -133,6 +133,8 @@ way to reach the port; otherwise anyone can spoof the recorded IP.
 | `POLL_SECONDS`                                | `20`               | Analytics sampling interval per server; `0` disables the poller.                                                                                      |
 | `APP_NAME`                                    | `Warcon`           | Name shown in the UI.                                                                                                                                 |
 | `AUDIT_LOG_READS`                             | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                |
+| `ALLOW_ORG_SIGNUP`                            | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                          |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | unset              | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.         |
 | `ALLOW_DEMO_SERVER`                           | `true`             | Allow a server with host `demo` served by the built-in mock.                                                                                          |
 | `GAME_TLS_INSECURE`                           | `false`            | Accept self-signed certificates on `https` game servers.                                                                                              |
 | `SETUP_TOKEN`                                 | unset              | When set, first-run setup requires it.                                                                                                                |
@@ -154,6 +156,15 @@ from first-run setup, plus anyone it promotes on the Users page) runs the whole 
 | create and delete organisations; every account on the panel; the whole audit trail                                     |        |          |       |           | ✓          |
 
 Members see the audit trail for their own actions plus everything on servers where they are admin.
+
+### Self-service sign-up
+
+Invite links always let a newcomer create an account, with Discord or with a username and password
+(8 sign-ups per IP address per half hour; add a [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/)
+widget with `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` to keep bots off the password form).
+With `ALLOW_ORG_SIGNUP=true`, `/sign-up` additionally
+lets anyone create an organisation of their own and become its owner, up to three per person; the
+site owner still sees and can rename or delete every org. Leave it off for a single-clan install.
 
 ### Invite links
 

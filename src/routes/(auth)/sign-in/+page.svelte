@@ -64,3 +64,11 @@
 		<button class="btn w-full" type="submit">Sign in with Discord</button>
 	</form>
 {/if}
+
+{#if data.orgSignup}
+	<p class="note text-center">
+		Run a clan or community? <a href="/sign-up" class="text-accent underline"
+			>Create your own organisation</a
+		>.
+	</p>
+{/if}

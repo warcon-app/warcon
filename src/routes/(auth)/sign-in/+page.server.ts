@@ -6,6 +6,7 @@ import { clientIp, str } from '$lib/server/http';
 import { writeAudit } from '$lib/server/audit';
 import { clearLoginFailures, loginLockSeconds, noteLoginFailure } from '$lib/server/access';
 import { userCount } from '$lib/server/users';
+import { orgSignupEnabled } from '$lib/server/signup';
 
 /**
  * Where to go after signing in: a same-site path from ?next (an invite link), else the dashboard.
@@ -21,7 +22,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const env = getEnv();
 	if (locals.user) redirect(303, nextPath(url));
 	if ((await userCount(env)) === 0) redirect(303, '/setup');
-	return { discord: discordEnabled(env), next: nextPath(url) };
+	return { discord: discordEnabled(env), next: nextPath(url), orgSignup: orgSignupEnabled(env) };
 };
 
 export const actions: Actions = {

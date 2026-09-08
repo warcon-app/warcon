@@ -32,7 +32,7 @@
 
 <div class="mb-5 flex items-center gap-3">
 	<h1 class="text-xl font-semibold tracking-tight">Organisations</h1>
-	{#if data.user.role === 'owner'}
+	{#if data.canCreateOrg}
 		<button class="ml-auto btn btn-primary" onclick={() => (creating = true)}
 			>New organisation</button
 		>
@@ -83,7 +83,9 @@
 					><td colspan="5" class="py-8 text-center text-mist-600"
 						>{data.user.role === 'owner'
 							? 'No organisations yet.'
-							: 'You are not in an organisation yet. Ask for an invite link.'}</td
+							: data.canCreateOrg
+								? 'You are not in an organisation yet. Ask for an invite link, or create your own.'
+								: 'You are not in an organisation yet. Ask for an invite link.'}</td
 					></tr
 				>
 			{/each}

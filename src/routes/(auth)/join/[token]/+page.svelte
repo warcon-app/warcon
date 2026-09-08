@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
+	import RegisterForm from '$lib/components/RegisterForm.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
 	import type { PageProps } from './$types';
 
@@ -81,19 +82,15 @@
 			</form>
 		{/if}
 	{:else}
-		{#if data.discord}
-			<form method="post" action="?/discord" class="mt-5" use:enhance>
-				<button class="btn w-full btn-primary" type="submit">Sign in with Discord to join</button>
-			</form>
-			<p class="note text-center">
-				New here? Discord creates your account. Already have a username?
-				<a href={signInHref} class="text-accent underline">Sign in with it instead</a>.
-			</p>
-		{:else}
-			<a href={signInHref} class="mt-5 btn w-full btn-primary">Sign in to join</a>
-			<p class="note text-center">
-				Discord sign-in is not set up on this panel; ask an owner for an account.
-			</p>
-		{/if}
+		<RegisterForm
+			discord={data.discord}
+			discordAction="?/discord"
+			registerAction="?/register"
+			{signInHref}
+			discordLabel="Sign in with Discord to join"
+			registerLabel="Create account and join"
+			turnstileSiteKey={data.turnstileSiteKey}
+			{form}
+		/>
 	{/if}
 {/if}

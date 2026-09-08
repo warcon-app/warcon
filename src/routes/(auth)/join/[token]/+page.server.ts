@@ -2,9 +2,10 @@
 // account, and "Sign in with Discord" here is the one place a Discord account may be created.
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { discordEnabled, getEnv } from '$lib/server/env';
+import { discordEnabled, getEnv, turnstileSiteKey } from '$lib/server/env';
 import { normalizeError } from '$lib/server/http';
 import { findInvite, inviteProblem, isMember, joinOrg } from '$lib/server/orgs';
+import { registerFromForm } from '$lib/server/signup';
 
 export const load: PageServerLoad = async ({ locals, params }) => {
 	const env = getEnv();
@@ -24,7 +25,8 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		orgRole: invite.orgRole,
 		serverRole: invite.serverRole,
 		alreadyMember,
-		discord: discordEnabled(env)
+		discord: discordEnabled(env),
+		turnstileSiteKey: turnstileSiteKey(env)
 	};
 };
 
@@ -48,6 +50,15 @@ export const actions: Actions = {
 		});
 		if (!res.url) return fail(500, { error: 'Discord did not return an authorization URL.' });
 		redirect(303, res.url);
+	},
+
+	/** Create a username-and-password account (for people without Discord), then come back here. */
+	register: async (event) => {
+		const env = getEnv();
+		const found = await findInvite(env, event.params.token);
+		if (!found || inviteProblem(found.invite))
+			return fail(410, { error: 'This invite link can no longer be used.' });
+		return registerFromForm(event, env, `/join/${encodeURIComponent(event.params.token)}`);
 	},
 
 	join: async ({ request, locals, params }) => {

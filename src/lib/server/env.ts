@@ -23,6 +23,11 @@ export interface Env {
 	APP_NAME?: string;
 	AUDIT_LOG_READS?: string;
 	ALLOW_DEMO_SERVER?: string;
+	/** Let anyone create an account and their own organisation from /sign-up. */
+	ALLOW_ORG_SIGNUP?: string;
+	/** Cloudflare Turnstile on the password sign-up forms; both keys, or neither. */
+	TURNSTILE_SITE_KEY?: string;
+	TURNSTILE_SECRET_KEY?: string;
 	/** Accept self-signed certificates on https game servers. */
 	GAME_TLS_INSECURE?: string;
 	/** Analytics sampling interval in seconds; 0 disables the poller. */
@@ -36,6 +41,12 @@ export const flag = (value: string | undefined, fallback = false): boolean =>
 export const discordEnabled = (
 	env: Pick<Env, 'DISCORD_CLIENT_ID' | 'DISCORD_CLIENT_SECRET'>
 ): boolean => Boolean(env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET);
+
+/** The Turnstile site key for the browser when the challenge is on, else null. */
+export const turnstileSiteKey = (
+	env: Pick<Env, 'TURNSTILE_SITE_KEY' | 'TURNSTILE_SECRET_KEY'>
+): string | null =>
+	env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY ? env.TURNSTILE_SITE_KEY : null;
 
 /** Host name of the built-in mock game server (when ALLOW_DEMO_SERVER is on). */
 export const DEMO_HOST = 'demo';
@@ -88,6 +99,9 @@ export async function initEnv(): Promise<Env> {
 		APP_NAME: processEnv.APP_NAME,
 		AUDIT_LOG_READS: processEnv.AUDIT_LOG_READS,
 		ALLOW_DEMO_SERVER: processEnv.ALLOW_DEMO_SERVER ?? 'true',
+		ALLOW_ORG_SIGNUP: processEnv.ALLOW_ORG_SIGNUP,
+		TURNSTILE_SITE_KEY: processEnv.TURNSTILE_SITE_KEY,
+		TURNSTILE_SECRET_KEY: processEnv.TURNSTILE_SECRET_KEY,
 		GAME_TLS_INSECURE: processEnv.GAME_TLS_INSECURE,
 		POLL_SECONDS: processEnv.POLL_SECONDS
 	};

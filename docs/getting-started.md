@@ -158,7 +158,19 @@ anyone takes is recorded in **Audit**.
 3. Copy the client ID and a client secret into `.env` as `DISCORD_CLIENT_ID` and
    `DISCORD_CLIENT_SECRET`, then `docker compose up -d` again.
 
-Without it, invite links still work for people who already have a username and password.
+Without it, invite links still work: people create a username and password on the invite page
+instead.
+
+### Letting other clans in
+
+Running Warcon for more than your own clan? Set `ALLOW_ORG_SIGNUP=true` in `.env`. The sign-in page
+then offers **Create your own organisation**, where anyone can sign up and start their own org
+with their own servers and invite links. You remain site owner over all of them.
+
+On a public instance, also add a free [Cloudflare Turnstile](https://dash.cloudflare.com/?to=/:account/turnstile)
+widget: create one for your domain, then put its keys in `.env` as `TURNSTILE_SITE_KEY` and
+`TURNSTILE_SECRET_KEY`. The username-and-password sign-up forms then carry an invisible bot check.
+Discord sign-in does not need one.
 
 ## Turning on RCON on the game server
 
