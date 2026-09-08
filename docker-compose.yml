@@ -1,4 +1,4 @@
-# Warcon + TimescaleDB. Run it next to (or anywhere near) your WARDOGS dedicated server.
+# Warcon + TimescaleDB. Runs anywhere that can reach your WARDOGS servers' RCON ports (see README).
 #   cp .env.example .env   # set BETTER_AUTH_SECRET, ENCRYPTION_KEY, POSTGRES_PASSWORD, ORIGIN
 #   docker compose up -d   # then open http://<host>:3000
 services:

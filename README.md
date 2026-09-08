@@ -144,15 +144,32 @@ Members see the audit trail for their own actions plus everything on servers whe
 
 ### Reaching the game server
 
-- The RCON listener (`[/Script/WDRCON.WDRCONSettings]` in `ServerSettings.ini`) must be enabled.
-- **Best**: run Warcon on the same machine as the game server and keep `BindAddress=127.0.0.1`.
-  The RCON port never touches the internet. From Compose, add the `extra_hosts` line in
-  `docker-compose.yml` and use host `host.docker.internal` (or run the container with
-  `network_mode: host`).
-- Otherwise bind to a reachable address (`BindAddress=0.0.0.0`) and firewall the port to Warcon's
-  IP, or front it with a reverse proxy.
-- Plain `http` on any port works. `https` needs a certificate the runtime trusts, or
-  `GAME_TLS_INSECURE=true` for self-signed.
+Warcon talks to the game's RCON listener over HTTP from its own process, so the panel can run
+anywhere that can reach `Port` (default 7776) on each game host. Enable the listener in
+`ServerSettings.ini` under `[/Script/WDRCON.WDRCONSettings]`, then connect however suits your setup:
+
+- **Direct.** Set `BindAddress=0.0.0.0` (or the host's public address) and add the server in Warcon
+  with scheme `http`. Restrict the port to Warcon's IP in whatever firewall the game host already
+  has: the hosting provider's panel, `ufw`, a cloud security group. The RCON password is sent as a
+  bearer token on every request, so the firewall is what keeps it private.
+- **Private network.** Over WireGuard, Tailscale, or a provider LAN, bind the listener to the
+  private address and use plain `http`.
+- **TLS proxy on the game host.** Keep `BindAddress=127.0.0.1` and put Caddy (or nginx) in front of
+  it; add the server with scheme `https` and port `443`. Caddy fetches a certificate for a public
+  DNS name by itself.
+
+      rcon.game1.example.com {
+          reverse_proxy 127.0.0.1:7776
+      }
+
+  For a self-signed certificate set `GAME_TLS_INSECURE=true`. This applies to every `https` server,
+  not just the one that needs it.
+- **Same host as the game server.** Keep `BindAddress=127.0.0.1`. From Compose, uncomment the
+  `extra_hosts` line in `docker-compose.yml` and use host `host.docker.internal`, or run the
+  container with `network_mode: host`.
+
+The ini comments say a non-loopback `BindAddress` expects TLS and `PasswordHash=`; the official web
+console connects over plain `http` regardless, and so can Warcon.
 
 ## Local development
 
