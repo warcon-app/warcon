@@ -1,0 +1,267 @@
+@import '@fontsource/barlow/400.css';
+@import '@fontsource/barlow/500.css';
+@import '@fontsource/barlow/600.css';
+@import '@fontsource/barlow-condensed/500.css';
+@import '@fontsource/barlow-condensed/600.css';
+@import '@fontsource-variable/jetbrains-mono';
+@import 'tailwindcss';
+
+/*
+ * Warcon "field terminal" tokens, in the Bulkhead Interactive idiom: charcoal panels on
+ * near-black, hard 1px black borders, tight corners, tracked uppercase labels in Barlow, and one
+ * brass accent. Semantic colours carry state; nothing glows.
+ *
+ * Token names are kept generic (ink / mist / accent) so components read the same whatever the skin.
+ */
+@theme {
+	--font-sans: 'Barlow', 'Segoe UI', system-ui, -apple-system, sans-serif;
+	--font-display: 'Barlow Condensed', 'Barlow', 'Segoe UI', system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono Variable', 'Cascadia Code', Consolas, ui-monospace, monospace;
+
+	--color-ink-950: #0f0f12; /* page */
+	--color-ink-900: #1a1a1e; /* panel */
+	--color-ink-800: #26262c; /* raised / hover */
+	--color-ink-700: #2f2f35;
+
+	--color-mist-100: #e8e8e8;
+	--color-mist-400: #8a8a90;
+	--color-mist-600: #55555c;
+
+	--color-accent: #d4a843; /* brass */
+	--color-accent-2: #e6c56a; /* brass, lit */
+	--color-lilac: #d4a843; /* legacy alias: accent text */
+	--color-ok: #7bc462;
+	--color-warn: #d4a843;
+	--color-danger: #d86060;
+	--color-info: #5b95d8;
+	--color-override: #9b7fd4;
+
+	--radius-card: 4px;
+	--radius-ctl: 3px;
+	--shadow-glass: 0 4px 12px rgb(0 0 0 / 0.5);
+	--shadow-pop: 0 6px 20px rgb(0 0 0 / 0.65);
+}
+
+@layer base {
+	html {
+		color-scheme: dark;
+		-webkit-text-size-adjust: 100%;
+	}
+	body {
+		@apply bg-ink-950 font-sans text-[14px] leading-normal text-mist-100 antialiased;
+	}
+	h1,
+	h2 {
+		@apply font-display tracking-[0.04em] uppercase;
+	}
+	::selection {
+		background: var(--color-accent);
+		color: var(--color-ink-950);
+	}
+	:focus-visible {
+		outline: 1px solid var(--color-accent);
+		outline-offset: 2px;
+	}
+	select {
+		appearance: none;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238A8A90' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 10px center;
+		padding-right: 30px;
+	}
+	select option {
+		background: var(--color-ink-900);
+	}
+	input[type='checkbox'],
+	input[type='radio'],
+	input[type='range'] {
+		accent-color: var(--color-accent);
+	}
+	::-webkit-scrollbar {
+		width: 10px;
+		height: 10px;
+	}
+	::-webkit-scrollbar-thumb {
+		background: var(--color-ink-700);
+		border: 2px solid var(--color-ink-950);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.01ms !important;
+			transition-duration: 0.01ms !important;
+		}
+	}
+}
+
+@utility page-x {
+	@apply mx-auto w-full max-w-[1320px] px-6;
+}
+
+/* Tracked uppercase caption, the signature of the console. */
+@utility caps {
+	@apply text-[11px] font-semibold tracking-[0.12em] uppercase;
+}
+
+/* Charcoal panel with a hard black edge. */
+@utility panel {
+	@apply rounded-card border border-black bg-ink-900 p-5;
+	box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
+}
+
+/* Small muted heading inside a panel. */
+@utility label-sm {
+	@apply mb-3 block caps text-mist-400;
+}
+
+@utility btn {
+	@apply inline-flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-ctl border border-black bg-ink-800 px-3.5 caps whitespace-nowrap text-mist-100 transition;
+	@apply hover:bg-ink-700 hover:text-white active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40;
+}
+@utility btn-primary {
+	@apply border-accent bg-accent text-ink-950 hover:border-accent-2 hover:bg-accent-2 hover:text-ink-950;
+}
+@utility btn-danger {
+	@apply border-danger/60 bg-danger/10 text-danger hover:border-danger hover:bg-danger/20 hover:text-danger;
+}
+@utility btn-ghost {
+	@apply border-transparent bg-transparent text-mist-400 hover:bg-transparent hover:text-mist-100;
+}
+@utility btn-sm {
+	@apply h-[30px] px-2.5 text-[10px];
+}
+
+@utility input {
+	@apply w-full rounded-ctl border border-black bg-ink-950 px-3 py-2 text-[13.5px] text-mist-100 transition placeholder:text-mist-600;
+	@apply focus:border-accent focus:outline-none;
+	box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.5);
+}
+
+@utility badge {
+	@apply inline-flex items-center gap-1 rounded-[2px] border border-white/10 bg-white/5 px-1.5 py-0.5 caps text-[10px] leading-tight text-mist-400;
+}
+
+@utility chip {
+	@apply inline-block rounded-[2px] bg-white/[0.06] px-1.5 py-0.5 font-mono text-[11.5px];
+}
+
+@utility kv {
+	@apply flex justify-between gap-3 border-b border-white/[0.06] py-2 last:border-0;
+}
+
+@utility callout {
+	@apply mb-4 rounded-card border border-l-2 border-black border-l-accent bg-ink-900 px-4 py-3 text-[13.5px] leading-relaxed;
+}
+
+@utility table-wrap {
+	@apply overflow-x-auto rounded-card border border-black bg-ink-950;
+}
+
+@utility tabular {
+	font-variant-numeric: tabular-nums;
+}
+
+@utility pulse-ok {
+	@apply bg-ok;
+	animation: pulse-ring 2s infinite;
+}
+@keyframes pulse-ring {
+	0% {
+		box-shadow: 0 0 0 0 rgb(123 196 98 / 0.55);
+	}
+	70% {
+		box-shadow: 0 0 0 6px rgb(123 196 98 / 0);
+	}
+	100% {
+		box-shadow: 0 0 0 0 rgb(123 196 98 / 0);
+	}
+}
+
+@utility rise {
+	animation: rise 0.16s ease-out;
+}
+@keyframes rise {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+@utility note {
+	@apply mt-2 text-[12.5px] leading-relaxed text-mist-400;
+}
+@utility field-label {
+	@apply mb-1.5 block caps text-mist-400;
+}
+
+/* Top bar navigation: flat text, brass underline when active. */
+@utility nav-pill {
+	@apply relative px-3 py-2 caps text-mist-400 transition hover:text-mist-100;
+}
+@utility nav-pill-active {
+	@apply text-mist-100;
+	box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+
+/* Section tabs on a server page. */
+@utility tab-link {
+	@apply -mb-px border-b-2 border-transparent px-3.5 py-2.5 caps text-mist-400 transition hover:text-mist-100;
+}
+@utility tab-link-active {
+	@apply border-accent text-mist-100;
+}
+
+@utility menu {
+	@apply absolute top-[calc(100%+6px)] left-0 z-40 min-w-[240px] rise rounded-card border border-black bg-ink-900 p-1 shadow-pop;
+}
+@utility menu-item {
+	@apply flex w-full items-center gap-2 rounded-ctl border-l-2 border-transparent px-3 py-2 text-left text-[13px] text-mist-100 transition hover:border-mist-600 hover:bg-ink-800;
+}
+
+@utility stat-big {
+	@apply flex items-baseline justify-between gap-3 py-1.5;
+}
+@utility pip {
+	@apply inline-block min-w-[86px] rounded-[2px] px-2 py-0.5 text-center caps text-[10px];
+}
+@utility progress {
+	@apply h-1 w-full overflow-hidden rounded-none bg-white/[0.08];
+}
+@utility progress-bar {
+	@apply block h-full bg-accent transition-[width] duration-500;
+}
+
+@layer components {
+	.table-wrap table {
+		@apply w-full border-collapse text-[13.5px];
+	}
+	.table-wrap th {
+		@apply sticky top-0 border-b border-black bg-ink-900 px-3.5 py-2.5 text-left caps whitespace-nowrap text-mist-400;
+	}
+	.table-wrap td {
+		@apply border-b border-white/[0.05] px-3.5 py-2.5 align-middle;
+	}
+	.table-wrap tr:last-child td {
+		@apply border-b-0;
+	}
+	.table-wrap tbody tr:hover td {
+		@apply bg-ink-900;
+	}
+	.table-wrap tbody tr.selected td {
+		@apply bg-accent/10;
+	}
+	.table-wrap tbody tr.selected td:first-child {
+		box-shadow: inset 2px 0 0 var(--color-accent);
+	}
+	.table-wrap tbody tr.clickable {
+		@apply cursor-pointer;
+	}
+	.table-wrap .num {
+		@apply text-right tabular;
+	}
+}
