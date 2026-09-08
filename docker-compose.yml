@@ -21,14 +21,14 @@ services:
     #   - 'host.docker.internal:host-gateway'
 
   db:
-    image: timescale/timescaledb:latest-pg17
+    image: timescale/timescaledb:2.30.0-pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: warcon
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-warcon}
       POSTGRES_DB: warcon
     volumes:
-      - warcon-db:/var/lib/postgresql/data
+      - warcon-db:/var/lib/postgresql # PostgreSQL 18+ images keep data in a versioned subdirectory here
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U warcon -d warcon']
       interval: 5s

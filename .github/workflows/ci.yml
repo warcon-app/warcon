@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       db:
-        image: timescale/timescaledb:latest-pg17
+        image: timescale/timescaledb:2.30.0-pg18
         env:
           POSTGRES_USER: warcon
           POSTGRES_PASSWORD: warcon

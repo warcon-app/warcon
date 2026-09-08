@@ -222,7 +222,7 @@ Prerequisites: [Bun](https://bun.sh) 1.2+ and a Postgres (the TimescaleDB image 
 ```bash
 bun install
 docker run -d --name warcon-pg -p 5432:5432 -e POSTGRES_USER=warcon -e POSTGRES_PASSWORD=warcon \
-  -e POSTGRES_DB=warcon timescale/timescaledb:latest-pg17
+  -e POSTGRES_DB=warcon timescale/timescaledb:2.30.0-pg18
 cp .env.example .env      # set the two secrets, ORIGIN=http://localhost:5173, DATABASE_URL=postgres://warcon:warcon@127.0.0.1:5432/warcon
 bun run dev               # http://localhost:5173
 bun run check             # svelte-check
