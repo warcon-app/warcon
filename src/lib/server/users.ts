@@ -7,7 +7,16 @@ import type { Env } from './env';
 import { ApiError, str } from './http';
 import { writeAudit } from './audit';
 import { SERVER_ROLES, type ServerRole, type SessionUser } from './access';
-import { account, serverGrants, servers, session, user } from './db/schema';
+import {
+	account,
+	orgMembers,
+	organizations,
+	serverGrants,
+	servers,
+	session,
+	user
+} from './db/schema';
+import { ensureMemberships, soleOwnerOf } from './orgs';
 import type { UserView } from '$lib/types';
 
 export function validatePassword(pw: unknown): string {
@@ -75,6 +84,21 @@ export async function listUsers(env: Env): Promise<UserView[]> {
 		if (!byUser.has(g.userId)) byUser.set(g.userId, []);
 		byUser.get(g.userId)!.push({ serverId: g.serverId, serverName: g.serverName, role: g.role });
 	}
+	const memberships = await env.db
+		.select({
+			userId: orgMembers.userId,
+			orgId: orgMembers.orgId,
+			orgName: organizations.name,
+			role: orgMembers.role
+		})
+		.from(orgMembers)
+		.innerJoin(organizations, eq(organizations.id, orgMembers.orgId))
+		.orderBy(asc(organizations.name));
+	const orgsByUser = new Map<string, UserView['orgs']>();
+	for (const m of memberships) {
+		if (!orgsByUser.has(m.userId)) orgsByUser.set(m.userId, []);
+		orgsByUser.get(m.userId)!.push({ orgId: m.orgId, orgName: m.orgName, role: m.role });
+	}
 	return users.map(({ u, lastLoginAt }) => ({
 		id: u.id,
 		username: label(u),
@@ -87,7 +111,8 @@ export async function listUsers(env: Env): Promise<UserView[]> {
 		lastLoginAt: iso(
 			lastLoginAt instanceof Date ? lastLoginAt : lastLoginAt ? new Date(lastLoginAt) : null
 		),
-		grants: byUser.get(u.id) || []
+		grants: byUser.get(u.id) || [],
+		orgs: orgsByUser.get(u.id) || []
 	}));
 }
 
@@ -228,7 +253,13 @@ export async function deleteUser(
 	if (u.id === actor.id) throw new ApiError(400, 'You cannot delete yourself.');
 	if (u.role === 'owner' && (await ownerCount(env)) <= 1)
 		throw new ApiError(400, 'Cannot delete the last owner.');
-	await auth.api.removeUser({ body: { userId: u.id }, headers: req.headers }); // grants cascade
+	const sole = await soleOwnerOf(env, u.id);
+	if (sole.length)
+		throw new ApiError(
+			400,
+			`${label(u)} is the only owner of ${sole.join(', ')}. Promote another owner there first.`
+		);
+	await auth.api.removeUser({ body: { userId: u.id }, headers: req.headers }); // grants and memberships cascade
 	await writeAudit(env, req, {
 		actor,
 		category: 'user',
@@ -238,7 +269,7 @@ export async function deleteUser(
 	});
 }
 
-/** Replaces a user's per-server grants wholesale. */
+/** Replaces a user's per-server grants wholesale (site owner tool); a grant makes them a member of that server's org. */
 export async function setUserGrants(
 	env: Env,
 	req: Request,
@@ -249,12 +280,17 @@ export async function setUserGrants(
 	const u = await getUser(env, userId);
 	if (!u) throw new ApiError(404, 'User not found.');
 	const wanted = Array.isArray(grants) ? (grants as { serverId?: unknown; role?: unknown }[]) : [];
-	const known = new Set((await env.db.select({ id: servers.id }).from(servers)).map((s) => s.id));
+	const orgOf = new Map(
+		(await env.db.select({ id: servers.id, orgId: servers.orgId }).from(servers)).map((s) => [
+			s.id,
+			s.orgId
+		])
+	);
 	const applied: { serverId: string; role: ServerRole }[] = [];
 	for (const g of wanted) {
 		const serverId = str(g.serverId, 64);
 		const role = g.role as ServerRole;
-		if (!known.has(serverId) || !SERVER_ROLES.includes(role)) continue;
+		if (!orgOf.has(serverId) || !SERVER_ROLES.includes(role)) continue;
 		if (!applied.some((a) => a.serverId === serverId)) applied.push({ serverId, role });
 	}
 	await env.db.transaction(async (tx) => {
@@ -268,6 +304,10 @@ export async function setUserGrants(
 					grantedBy: actor.id
 				}))
 			);
+		await ensureMemberships(
+			tx,
+			applied.map((a) => ({ orgId: orgOf.get(a.serverId)!, userId: u.id }))
+		);
 	});
 	await writeAudit(env, req, {
 		actor,

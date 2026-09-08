@@ -39,7 +39,7 @@
 
 {#if !data.servers.length}
 	<div class="callout">
-		{#if data.user.role === 'owner'}
+		{#if data.canManage}
 			No servers yet. <a href="/servers" class="font-semibold text-accent underline"
 				>Add your first server</a
 			>{#if data.demoAllowed}
@@ -47,7 +47,8 @@
 				<code class="chip">1</code>, password <code class="chip">demo</code> to try the panel against
 				the built-in mock game server.{:else}.{/if}
 		{:else}
-			No servers have been shared with you yet. Ask an owner to grant you access.
+			No servers have been shared with you yet. Ask an owner of your organisation to grant you
+			access.
 		{/if}
 	</div>
 {:else}

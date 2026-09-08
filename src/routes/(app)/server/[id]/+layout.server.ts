@@ -1,32 +1,21 @@
 import { error } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
-import { getServer, requireUser, serverRoleFor } from '$lib/server/access';
+import { getServer } from '$lib/server/access';
 import { ACTIONS } from '$lib/server/actions';
 import { publicMessage } from '$lib/server/http';
-import { WardogsClient, isDemoServer } from '$lib/server/rcon';
+import { WardogsClient } from '$lib/server/rcon';
 import type { Catalog, Features, ServerInfo } from '$lib/types';
 
 const EMPTY: Catalog = { maps: [], lightings: [], experiences: [] };
 
-export const load: LayoutServerLoad = async ({ params, locals }) => {
+export const load: LayoutServerLoad = async ({ params, parent }) => {
 	const env = getEnv();
-	const user = requireUser(locals);
-	const row = await getServer(env, params.id);
-	const role = row ? await serverRoleFor(env, user, params.id) : null;
-	if (!row || !role) error(404, 'Server not found, or you have no access to it.');
-
-	const server: ServerInfo = {
-		id: row.id,
-		name: row.name,
-		host: row.host,
-		port: row.port,
-		scheme: row.scheme,
-		notes: row.notes,
-		role,
-		sortOrder: row.sortOrder,
-		demo: isDemoServer(env, row)
-	};
+	// The (app) layout already resolved every server this user may open, with role and org name;
+	// the row itself is still needed for the RCON credentials.
+	const [{ servers }, row] = await Promise.all([parent(), getServer(env, params.id)]);
+	const server: ServerInfo | undefined = servers.find((s) => s.id === params.id);
+	if (!server || !row) error(404, 'Server not found, or you have no access to it.');
 	let catalog: Catalog = EMPTY;
 	let features: Features = { changeTeam: false, configDocument: false };
 	let reachable = true;

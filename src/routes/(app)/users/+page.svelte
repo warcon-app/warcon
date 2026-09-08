@@ -134,19 +134,23 @@
 </div>
 
 <div class="callout">
-	<b>Roles.</b> An <b>owner</b> manages users and servers and is admin everywhere. A <b>member</b>
-	only sees servers they are granted, at one of three levels:
+	<b>Every account on this panel.</b> A site <b>owner</b> runs the whole panel and is admin on every
+	server. A <b>member</b> belongs to one or more
+	<a href="/orgs" class="text-accent underline">organisations</a>, usually by opening an invite
+	link, and sees the servers they are granted there:
 	<b>viewer</b> (read-only), <b>operator</b> (kick, kill, whisper, broadcast, map and match control,
 	live rotation edits),
 	<b>admin</b> (plus bans, reserved slots, settings, sponsor image, saving rotation and the config document).
+	Granting a server here also makes them a member of its organisation.
 </div>
 
 <div class="table-wrap">
 	<table>
 		<thead
 			><tr
-				><th>User</th><th>Role</th><th>Status</th><th>Server access</th><th>Last login</th><th
-				></th></tr
+				><th>User</th><th>Role</th><th>Status</th><th>Organisations</th><th>Server access</th><th
+					>Last login</th
+				><th></th></tr
 			></thead
 		>
 		<tbody>
@@ -163,8 +167,22 @@
 							>{:else}<Badge tone="ok">active</Badge>{/if}
 					</td>
 					<td>
+						{#if u.orgs.length}
+							<div class="flex flex-wrap gap-1.5">
+								{#each u.orgs as o (o.orgId)}
+									<span
+										class="inline-flex items-center gap-1.5 rounded-[2px] border border-black bg-ink-950 py-0.5 pr-1 pl-2 text-[12px]"
+										>{o.orgName} <RoleBadge role={o.role} /></span
+									>
+								{/each}
+							</div>
+						{:else}
+							<span class="text-mist-600">none</span>
+						{/if}
+					</td>
+					<td>
 						{#if u.role === 'owner'}
-							<span class="text-mist-400">all servers (owner)</span>
+							<span class="text-mist-400">all servers (site owner)</span>
 						{:else if u.grants.length}
 							<div class="flex flex-wrap gap-1.5 max-md:max-w-[280px]">
 								{#each u.grants as g (g.serverId)}
@@ -241,7 +259,7 @@
 			<label class="block"
 				><span class="field-label">Global role</span>
 				<select class="input" bind:value={d.role}
-					><option value="member">member</option><option value="owner">owner</option></select
+					><option value="member">member</option><option value="owner">site owner</option></select
 				>
 			</label>
 			<div class="flex flex-wrap gap-5 pt-1 text-[13px]">

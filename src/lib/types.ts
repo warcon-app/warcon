@@ -1,16 +1,20 @@
 // Shapes shared by pages, API routes and the action registry.
-import type { ServerRole } from '$lib/server/access';
+import type { OrgRole, ServerRole } from '$lib/server/access';
 
-export type { ServerRole };
+export type { OrgRole, ServerRole };
 
 export interface ServerInfo {
 	id: string;
+	orgId: string;
+	orgName: string;
 	name: string;
 	host: string;
 	port: number;
 	scheme: 'http' | 'https';
 	notes: string;
 	role: ServerRole;
+	/** true when the role comes from owning the org: may edit, delete and share the server */
+	manager: boolean;
 	sortOrder: number;
 	demo: boolean;
 }
@@ -129,4 +133,45 @@ export interface UserView {
 	createdAt: string | null;
 	lastLoginAt: string | null;
 	grants: { serverId: string; serverName: string; role: ServerRole }[];
+	orgs: { orgId: string; orgName: string; role: OrgRole }[];
+}
+
+export interface OrgView {
+	id: string;
+	name: string;
+	slug: string;
+	memberCount: number;
+	serverCount: number;
+	createdAt: string | null;
+}
+
+export interface OrgMemberView {
+	userId: string;
+	username: string;
+	name: string;
+	image: string | null;
+	siteOwner: boolean;
+	disabled: boolean;
+	role: OrgRole;
+	joinedAt: string | null;
+	grants: { serverId: string; serverName: string; role: ServerRole }[];
+}
+
+/** live: usable now; revoked / expired / used (up): why it is not. */
+export type InviteStatus = 'live' | 'revoked' | 'expired' | 'used';
+
+export interface InviteView {
+	id: string;
+	label: string;
+	orgRole: OrgRole;
+	serverRole: ServerRole | null;
+	maxUses: number | null;
+	uses: number;
+	expiresAt: string | null;
+	revokedAt: string | null;
+	createdAt: string | null;
+	url: string;
+	status: InviteStatus;
+	/** the status as a sentence for people, or null while it is live */
+	problem: string | null;
 }

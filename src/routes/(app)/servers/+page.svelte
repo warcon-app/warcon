@@ -6,7 +6,7 @@
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import Modal from '$lib/components/Modal.svelte';
-	import type { ServerInfo, Status, UserView } from '$lib/types';
+	import type { OrgMemberView, ServerInfo, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -25,6 +25,7 @@
 		| {
 				kind: 'edit';
 				server: ServerInfo | null;
+				orgId: string;
 				name: string;
 				host: string;
 				port: string;
@@ -34,14 +35,22 @@
 				sortOrder: string;
 		  }
 		| { kind: 'test'; server: ServerInfo; result: TestOk }
-		| { kind: 'access'; server: ServerInfo; members: UserView[]; grants: Record<string, string> };
+		| {
+				kind: 'access';
+				server: ServerInfo;
+				members: OrgMemberView[];
+				grants: Record<string, string>;
+		  };
 	let dialog = $state<Dialog | null>(null);
 	let busy = $state(false);
+	// One org column / group header only once there is more than one org to tell apart.
+	let multiOrg = $derived(data.ownedOrgs.length > 1);
 
 	const openEdit = (s: ServerInfo | null) => {
 		dialog = {
 			kind: 'edit',
 			server: s,
+			orgId: s?.orgId ?? data.ownedOrgs[0]?.id ?? '',
 			name: s?.name ?? '',
 			host: s?.host ?? '',
 			port: s ? String(s.port) : '',
@@ -82,6 +91,7 @@
 			const id = d.server.id;
 			void run(() => api('PATCH', `/api/servers/${id}`, payload), 'Server updated.');
 		} else {
+			payload.orgId = d.orgId;
 			void run(() => api('POST', '/api/servers', payload), 'Server added.');
 		}
 	}
@@ -100,13 +110,18 @@
 
 	async function access(s: ServerInfo) {
 		try {
-			const [users, grants] = await Promise.all([
-				api<{ users: UserView[] }>('GET', '/api/users'),
+			const [res, grants] = await Promise.all([
+				api<{ members: OrgMemberView[] }>(
+					'GET',
+					`/api/orgs/${encodeURIComponent(s.orgId)}/members`
+				),
 				api<{ grants: { userId: string; role: string }[] }>('GET', `/api/servers/${s.id}/grants`)
 			]);
-			const members = users.users.filter((u) => u.role !== 'owner');
+			// Org owners and the site owner are admin regardless of grants.
+			const members = res.members.filter((u) => u.role !== 'owner' && !u.siteOwner);
 			const map: Record<string, string> = {};
-			for (const u of members) map[u.id] = grants.grants.find((g) => g.userId === u.id)?.role ?? '';
+			for (const u of members)
+				map[u.userId] = grants.grants.find((g) => g.userId === u.userId)?.role ?? '';
 			dialog = { kind: 'access', server: s, members, grants: map };
 		} catch (err) {
 			toast(errorMessage(err), 'err');
@@ -136,7 +151,11 @@
 
 <div class="mb-5 flex items-center gap-3">
 	<h1 class="text-xl font-semibold tracking-tight">Servers</h1>
-	<button class="ml-auto btn btn-primary" onclick={() => openEdit(null)}>Add server</button>
+	<button
+		class="ml-auto btn btn-primary"
+		onclick={() => openEdit(null)}
+		disabled={!data.ownedOrgs.length}>Add server</button
+	>
 </div>
 
 <div class="callout">
@@ -146,13 +165,21 @@
 	section of its ServerSettings.ini). RCON passwords are encrypted at rest and never shown again.
 	{#if data.demoAllowed}Host <code class="chip">demo</code> with password
 		<code class="chip">demo</code> uses the built-in mock server.{/if}
+	{#if !data.ownedOrgs.length}Servers belong to an organisation, and you do not own one yet: create
+		one under <a href="/orgs" class="font-semibold text-accent underline">Orgs</a> first.{/if}
 </div>
 
 <div class="table-wrap">
 	<table>
-		<thead><tr><th>Name</th><th>Target</th><th class="num">Order</th><th></th></tr></thead>
+		<thead
+			><tr
+				><th>Name</th>{#if multiOrg}<th>Organisation</th>{/if}<th>Target</th><th class="num"
+					>Order</th
+				><th></th></tr
+			></thead
+		>
 		<tbody>
-			{#each data.servers as s (s.id)}
+			{#each data.managed as s (s.id)}
 				<tr>
 					<td>
 						<a
@@ -162,6 +189,10 @@
 						{#if s.demo}<Badge tone="info" class="ml-1">demo</Badge>{/if}
 						{#if s.notes}<div class="text-[12px] text-mist-400">{s.notes}</div>{/if}
 					</td>
+					{#if multiOrg}<td
+							><a href="/orgs/{encodeURIComponent(s.orgId)}" class="hover:underline">{s.orgName}</a
+							></td
+						>{/if}
 					<td class="font-mono text-[12.5px]">{s.scheme}://{s.host}:{s.port}</td>
 					<td class="num">{s.sortOrder}</td>
 					<td class="text-right whitespace-nowrap">
@@ -174,7 +205,10 @@
 					</td>
 				</tr>
 			{:else}
-				<tr><td colspan="4" class="py-8 text-center text-mist-600">No servers yet.</td></tr>
+				<tr
+					><td colspan={multiOrg ? 5 : 4} class="py-8 text-center text-mist-600">No servers yet.</td
+					></tr
+				>
 			{/each}
 		</tbody>
 	</table>
@@ -190,6 +224,14 @@
 				save();
 			}}
 		>
+			{#if !d.server && multiOrg}
+				<label class="block"
+					><span class="field-label">Organisation</span>
+					<select class="input" bind:value={d.orgId} required>
+						{#each data.ownedOrgs as o (o.id)}<option value={o.id}>{o.name}</option>{/each}
+					</select>
+				</label>
+			{/if}
 			<label class="block"
 				><span class="field-label">Name</span><input
 					class="input"
@@ -300,19 +342,24 @@
 {:else if dialog?.kind === 'access'}
 	{@const d = dialog}
 	<Modal title="Access to {d.server.name}" onclose={() => (dialog = null)}>
-		{#each d.members as u (u.id)}
+		{#each d.members as u (u.userId)}
 			<div class="kv items-center">
 				<span
 					>{u.name || u.username}
 					<span class="font-mono text-[12px] text-mist-600">@{u.username}</span></span
 				>
-				<select class="input w-40" bind:value={d.grants[u.id]}>
+				<select class="input w-40" bind:value={d.grants[u.userId]}>
 					<option value="">no access</option>
 					{#each ROLES as r (r)}<option value={r}>{r}</option>{/each}
 				</select>
 			</div>
 		{:else}
-			<p class="text-mist-400">No member accounts yet. Owners always have access.</p>
+			<p class="text-mist-400">
+				No members besides owners yet. Share an invite link from <a
+					href="/orgs/{encodeURIComponent(d.server.orgId)}"
+					class="text-accent underline">{d.server.orgName}</a
+				>. Owners always have access.
+			</p>
 		{/each}
 		{#snippet actions()}
 			<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>

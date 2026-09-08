@@ -2,6 +2,7 @@
 // per-server roles (access.ts) and its own audit trail on top.
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { like } from 'drizzle-orm';
 import { account, session, user, verification } from './db/schema';
 import { admin, username } from 'better-auth/plugins';
 import { createAccessControl } from 'better-auth/plugins/access';
@@ -9,7 +10,7 @@ import { adminAc, defaultStatements, userAc } from 'better-auth/plugins/admin/ac
 import { sveltekitCookies } from 'better-auth/svelte-kit';
 import { getRequestEvent } from '$app/server';
 import { writeAudit } from './audit';
-import type { Env } from './env';
+import { discordEnabled, type Env } from './env';
 import { CLIENT_IP_HEADER } from './http';
 
 export const authConfigured = (env: Partial<Env> | undefined) => Boolean(env?.BETTER_AUTH_SECRET);
@@ -21,6 +22,37 @@ export const emailFor = (username: string) => `${username.toLowerCase()}${EMAIL_
 export const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{1,31}$/i;
 export const MIN_PASSWORD = 10;
 
+const USERNAME_MAX = 32;
+
+/**
+ * Accounts created by Discord (through an invite link) need a panel username. Derive one from the
+ * Discord handle, then add a numeric suffix until it is free. Runs in the provider's profile
+ * mapper, before the username plugin validates the row, so a taken handle becomes "handle2"
+ * instead of a failed sign-in. One query fetches every name that could collide.
+ */
+async function freeUsername(env: Env, wanted: string): Promise<string> {
+	const base =
+		wanted
+			.toLowerCase()
+			.replace(/[^a-z0-9._-]+/g, '')
+			.replace(/^[._-]+/, '')
+			.slice(0, USERNAME_MAX) || 'user';
+	const taken = new Set(
+		(
+			await env.db
+				.select({ username: user.username })
+				.from(user)
+				.where(like(user.username, `${base}%`))
+		).map((r) => (r.username ?? '').toLowerCase())
+	);
+	for (let n = 1; n <= 1000; n++) {
+		const suffix = n === 1 ? '' : String(n);
+		const candidate = base.slice(0, USERNAME_MAX - suffix.length) + suffix;
+		if (USERNAME_RE.test(candidate) && !taken.has(candidate)) return candidate;
+	}
+	return `${base.slice(0, 20)}${Date.now().toString(36)}`;
+}
+
 // Global roles: "owner" runs the panel (every admin-plugin permission), "member" only sees
 // servers they are granted. Per-server roles live in server_grants, not here.
 const ac = createAccessControl(defaultStatements);
@@ -30,7 +62,7 @@ const ROLES = {
 };
 
 function build(env: Env) {
-	const discord = env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET;
+	const discord = discordEnabled(env);
 	return betterAuth({
 		appName: env.APP_NAME || 'Warcon',
 		baseURL: env.ORIGIN,
@@ -50,23 +82,40 @@ function build(env: Env) {
 				mustChangePassword: { type: 'boolean', defaultValue: false, input: false }
 			}
 		},
+		account: {
+			accountLinking: {
+				// Emails here are placeholders (name@warcon.invalid, <id>@discord.invalid) and Discord is
+				// asked for no email at all, so the same-email rule would block every link. Linking is
+				// only ever started by a signed-in user from the account page.
+				allowDifferentEmails: true
+			}
+		},
 		socialProviders: discord
 			? {
 					discord: {
 						clientId: env.DISCORD_CLIENT_ID!,
 						clientSecret: env.DISCORD_CLIENT_SECRET!,
 						disableDefaultScope: true,
-						// Accounts are created by the owner; Discord only signs in users who linked it.
+						// Discord signs in users who linked it. New accounts only appear through an invite
+						// link (/join/<token> passes requestSignUp); hooks.server.ts blocks the public endpoint.
 						disableImplicitSignUp: true,
 						scope: ['identify'],
-						mapProfileToUser: (profile) => ({
-							name: profile.global_name || profile.username,
-							email: `${profile.id}@discord.invalid`,
-							emailVerified: true,
-							image: profile.avatar
-								? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png?size=128`
-								: undefined
-						})
+						// Better Auth calls this on every Discord callback but only uses the result when it
+						// creates an account (existing users are matched by provider account id), so the
+						// derived username is exactly what the username plugin validates on creation.
+						mapProfileToUser: async (profile) => {
+							const username = await freeUsername(env, profile.username);
+							return {
+								name: profile.global_name || profile.username,
+								username,
+								displayUsername: username,
+								email: `${profile.id}@discord.invalid`,
+								emailVerified: true,
+								image: profile.avatar
+									? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png?size=128`
+									: undefined
+							};
+						}
 					}
 				}
 			: undefined,
@@ -102,7 +151,7 @@ function build(env: Env) {
 		plugins: [
 			username({
 				minUsernameLength: 2,
-				maxUsernameLength: 32,
+				maxUsernameLength: USERNAME_MAX,
 				usernameValidator: (u) => USERNAME_RE.test(u)
 			}),
 			admin({ ac, roles: ROLES, defaultRole: 'member', adminRoles: ['owner'] }),

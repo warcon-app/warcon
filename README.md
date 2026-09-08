@@ -12,9 +12,12 @@ Postgres/TimescaleDB, deployed with Docker Compose. Run it beside your game serv
 on a container host, with the database wherever you like.
 
 - **Multiple servers** in one panel, each with its own encrypted RCON password.
-- **User access management**: owner and member accounts (Better Auth); per-server `viewer` /
-  `operator` / `admin` roles; password resets, forced password change, disable, session
-  revocation, login throttling, optional "Sign in with Discord" for linked accounts.
+- **Organisations and invite links**: each clan or community is an organisation with its own
+  servers, owners and members. An owner pastes an invite link into their Discord; whoever opens it
+  signs in with Discord (creating their account on the spot) and joins with the roles the link
+  carries. Per-server `viewer` / `operator` / `admin` roles on top.
+- **Account management**: Better Auth accounts; password resets, forced password change, disable,
+  session revocation, login throttling.
 - **Full audit trail**: every login, user or server change, and every game-server command, with
   actor, server, target, outcome, upstream status, IP and duration. Filterable and exportable
   (CSV/JSON). The game server's own listener log is shown alongside it.
@@ -92,8 +95,11 @@ the app prunes old samples itself).
 Open the URL. The first visit shows the **owner setup** form; after that it is a normal login. Then,
 as owner:
 
-1. **Servers → Add server**: name, host, port, scheme, RCON password. Use **Test** to check reach.
-2. **Users & Access → Add user**, then **Access** to grant `viewer` / `operator` / `admin` per server.
+1. **Orgs → New organisation**, or rename the **Default** organisation every install starts with.
+2. **Servers → Add server**: name, host, port, scheme, RCON password. Use **Test** to check reach.
+3. **Orgs → your org → New invite link**: pick the role joiners get, copy the link into your
+   Discord. People open it, sign in with Discord, and appear under **Members**, where you can adjust
+   their per-server roles.
 
 The database lives in the `warcon-db` volume; back it up with `pg_dump`. Migrations apply
 automatically when Warcon starts. Keep `ENCRYPTION_KEY` safe: losing it means re-entering every
@@ -115,34 +121,49 @@ way to reach the port; otherwise anyone can spoof the recorded IP.
 
 ### Configuration (`.env`)
 
-| Var                                           | Default            | Meaning                                                                                                   |
-| --------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET`                          | required           | Session signing secret.                                                                                   |
-| `ENCRYPTION_KEY`                              | required           | Base64 of 32 random bytes; encrypts stored RCON passwords.                                                |
-| `DATABASE_URL`                                | set by Compose     | `postgres://user:pass@host:5432/warcon`.                                                                  |
-| `POSTGRES_PASSWORD`                           | `warcon`           | Password for the bundled `db` service (Compose only).                                                     |
-| `ORIGIN`                                      | required           | The exact URL people open (scheme, host, port).                                                           |
-| `ADDRESS_HEADER` / `XFF_DEPTH`                | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                            |
-| `PORT` / `HOST`                               | `3000` / `0.0.0.0` | Listen address.                                                                                           |
-| `POLL_SECONDS`                                | `20`               | Analytics sampling interval per server; `0` disables the poller.                                          |
-| `APP_NAME`                                    | `Warcon`           | Name shown in the UI.                                                                                     |
-| `AUDIT_LOG_READS`                             | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                    |
-| `ALLOW_DEMO_SERVER`                           | `true`             | Allow a server with host `demo` served by the built-in mock.                                              |
-| `GAME_TLS_INSECURE`                           | `false`            | Accept self-signed certificates on `https` game servers.                                                  |
-| `SETUP_TOKEN`                                 | unset              | When set, first-run setup requires it.                                                                    |
-| `STEAM_API_KEY`                               | unset              | Steam persona/avatar lookup.                                                                              |
-| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` | unset              | "Sign in with Discord" for accounts that linked it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`. |
+| Var                                           | Default            | Meaning                                                                                                                                               |
+| --------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`                          | required           | Session signing secret.                                                                                                                               |
+| `ENCRYPTION_KEY`                              | required           | Base64 of 32 random bytes; encrypts stored RCON passwords.                                                                                            |
+| `DATABASE_URL`                                | set by Compose     | `postgres://user:pass@host:5432/warcon`.                                                                                                              |
+| `POSTGRES_PASSWORD`                           | `warcon`           | Password for the bundled `db` service (Compose only).                                                                                                 |
+| `ORIGIN`                                      | required           | The exact URL people open (scheme, host, port).                                                                                                       |
+| `ADDRESS_HEADER` / `XFF_DEPTH`                | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                                                                        |
+| `PORT` / `HOST`                               | `3000` / `0.0.0.0` | Listen address.                                                                                                                                       |
+| `POLL_SECONDS`                                | `20`               | Analytics sampling interval per server; `0` disables the poller.                                                                                      |
+| `APP_NAME`                                    | `Warcon`           | Name shown in the UI.                                                                                                                                 |
+| `AUDIT_LOG_READS`                             | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                |
+| `ALLOW_DEMO_SERVER`                           | `true`             | Allow a server with host `demo` served by the built-in mock.                                                                                          |
+| `GAME_TLS_INSECURE`                           | `false`            | Accept self-signed certificates on `https` game servers.                                                                                              |
+| `SETUP_TOKEN`                                 | unset              | When set, first-run setup requires it.                                                                                                                |
+| `STEAM_API_KEY`                               | unset              | Steam persona/avatar lookup.                                                                                                                          |
+| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` | unset              | "Sign in with Discord": invite links create accounts through it, existing accounts can link it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`. |
 
 ### Roles
 
-|                                                                                                                        | viewer | operator | admin | owner |
-| ---------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----- | ----- |
-| status, players, rotation, bans, reserved, config (read), server log, analytics                                        | ✓      | ✓        | ✓     | ✓     |
-| broadcast, whisper, kick, kill, change team, end/restart match, change map, next map, live rotation edits              |        | ✓        | ✓     | ✓     |
-| ban/unban, reserved slots, score tick, rotation mode/enable, save rotation, sponsor image, config apply, raw /v1 calls |        |          | ✓     | ✓     |
-| manage users, servers and access; see the whole audit trail                                                            |        |          |       | ✓     |
+Every server belongs to an **organisation**. People are members of organisations, either as
+**org owner** or **member**, and members get a per-server role. The **site owner** (the account
+from first-run setup, plus anyone it promotes on the Users page) runs the whole panel.
+
+|                                                                                                                        | viewer | operator | admin | org owner | site owner |
+| ---------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----- | --------- | ---------- |
+| status, players, rotation, bans, reserved, config (read), server log, analytics                                        | ✓      | ✓        | ✓     | ✓         | ✓          |
+| broadcast, whisper, kick, kill, change team, end/restart match, change map, next map, live rotation edits              |        | ✓        | ✓     | ✓         | ✓          |
+| ban/unban, reserved slots, score tick, rotation mode/enable, save rotation, sponsor image, config apply, raw /v1 calls |        |          | ✓     | ✓         | ✓          |
+| add, edit and remove the org's servers; members, per-server roles and invite links; the org's audit trail              |        |          |       | ✓         | ✓          |
+| create and delete organisations; every account on the panel; the whole audit trail                                     |        |          |       |           | ✓          |
 
 Members see the audit trail for their own actions plus everything on servers where they are admin.
+
+### Invite links
+
+An org owner mints a link on the org page: it carries the org role joiners get (`member` or
+`owner`), an optional default server role applied to every server the org has at that moment, an
+optional expiry and an optional use limit. Opening `<ORIGIN>/join/<token>` shows the org name and a
+**Sign in with Discord** button; a Discord user without an account gets one (username derived from
+their Discord handle), an existing user simply signs in, and either way they land back on the link
+to confirm the join. People who already have a username can use that instead. Links can be revoked
+at any time; whoever already joined keeps their access until an owner removes them.
 
 ### Reaching the game server
 
@@ -204,6 +225,7 @@ drizzle/                       generated SQL migrations (bun run db:generate) + 
 src/lib/server/auth.ts         Better Auth config (username + admin plugins, Drizzle adapter)
 src/lib/server/access.ts       global/per-server roles, accessible servers, login throttling
 src/lib/server/users.ts        account management on top of Better Auth (create, disable, reset, grants)
+src/lib/server/orgs.ts         organisations: members, per-server roles, invite links, joining
 src/lib/server/servers.ts      server records, reachability test, per-server grants
 src/lib/server/actions.ts      every panel action -> role level + /v1 call(s)
 src/lib/server/rcon-run.ts     /api/servers/:id/rcon/:action dispatcher with audit rows
@@ -214,8 +236,8 @@ src/lib/server/analytics.ts    analytics queries per server and range
 src/lib/server/audit.ts        audit writer/query with secret redaction
 src/lib/server/mockgame.ts     in-process imitation of the WDRCON API for demo/testing
 src/lib/components/            Modal, MapPicker, PopulationChart, Toasts, badges…
-src/routes/(auth)/             /sign-in, /setup (form actions)     src/routes/sign-out
-src/routes/(app)/              dashboard, /server/[id]/{,players,rotation,config,analytics,log}, /audit, /users, /servers, /account
+src/routes/(auth)/             /sign-in, /setup, /join/[token] (form actions)     src/routes/sign-out
+src/routes/(app)/              dashboard, /server/[id]/{,players,rotation,config,analytics,log}, /audit, /orgs, /orgs/[id], /users, /servers, /account
 src/routes/api/                JSON API (below)
 docs/wardogs-api.md            the reverse-engineered game-server API
 ```
@@ -227,8 +249,11 @@ Sign-in, setup, password change and session revocation are SvelteKit form action
 `/api/auth/*` is Better Auth's own endpoint set (public sign-up is disabled).
 
 ```
+GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id
+GET  /api/orgs/:id/members  PATCH/DELETE /api/orgs/:id/members/:userId {role}  PUT .../:userId/grants {grants:[{serverId,role}]}
+GET/POST /api/orgs/:id/invites {label,orgRole,serverRole,expiresDays,maxUses}  DELETE /api/orgs/:id/invites/:inviteId
 GET/POST /api/users  PATCH/DELETE /api/users/:id  PUT /api/users/:id/grants {grants:[{serverId,role}]}
-GET/POST /api/servers  PATCH/DELETE /api/servers/:id  POST /api/servers/:id/test
+GET/POST /api/servers {orgId,...}  PATCH/DELETE /api/servers/:id  POST /api/servers/:id/test
 GET/PUT /api/servers/:id/grants {grants:[{userId,role}]}   GET /api/servers/:id/summary
 GET|POST /api/servers/:id/rcon/:action   (GET for reads with query params, POST JSON for mutations)
 GET  /api/servers/:id/analytics?range=24h|7d|30d
@@ -255,6 +280,11 @@ configApply raw` (admin).
 - Password hashing is Better Auth's default scrypt, which runs natively via `node:crypto` on Bun.
 - Sessions are looked up in the database on every request (no cookie cache), so disabling a user
   or revoking a session takes effect immediately.
-- Discord sign-in never creates accounts: a user links Discord from their Account page first.
+- Discord creates accounts only through an invite link; the public sign-up and social sign-in
+  endpoints are closed. Password accounts can link Discord from their Account page, and accounts
+  created through Discord can set a password there to sign in by username as well.
+- Upgrading an existing install: the migration creates one organisation named "Default" holding
+  every server, with existing owners as its owners and everyone else as members. Rename it on the
+  Orgs page.
 - The demo server's state lives in process memory and resets on restart.
 - Audit rows are never deleted by the panel. Prune them with SQL if you need to.

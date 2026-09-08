@@ -17,7 +17,7 @@ const SECURITY_HEADERS: Record<string, string> = {
 };
 
 // Routes a user who must change their password may still reach.
-const PASSWORD_GATE_EXEMPT = /^\/(account|sign-out|api\/auth)(\/|$)/;
+const PASSWORD_GATE_EXEMPT = /^\/(account|sign-out|join|api\/auth)(\/|$)/;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Reads config, opens the database, applies migrations, builds Better Auth and starts the poller once per process. */
@@ -56,8 +56,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const path = event.url.pathname;
 	const isAuthApi = path.startsWith('/api/auth');
 
-	// Accounts are created by the owner (or by first-run setup), never by public sign-up.
-	if (path.startsWith('/api/auth/sign-up')) {
+	// Accounts come from first-run setup, the site owner, or an invite link (/join/<token>, which
+	// calls Better Auth server-side). The public sign-up and social sign-in endpoints stay closed so
+	// nobody can self-register by posting requestSignUp to them.
+	if (path.startsWith('/api/auth/sign-up') || path.startsWith('/api/auth/sign-in/social')) {
 		return json({ error: 'Sign-up is disabled.' }, { status: 404 });
 	}
 

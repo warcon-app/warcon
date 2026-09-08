@@ -92,8 +92,12 @@ the machine reboots.
 ## Step 4: create your owner account
 
 The very first visit shows a **setup** form. Pick a username and a strong password. This is the
-**owner** account: it can do everything, including adding servers and users. There is only one
-setup screen, and it disappears once the owner exists.
+**site owner** account: it can do everything, including creating organisations, adding servers and
+managing every account. There is only one setup screen, and it disappears once the owner exists.
+
+Every install starts with one organisation called **Default**. Go to **Orgs** and rename it after
+your clan or community, or create a new one. Servers, members and invite links all hang off an
+organisation.
 
 ## Step 5: try the demo server first
 
@@ -127,9 +131,12 @@ Press **Test** before saving. If it fails, see [If Test fails](#if-test-fails) b
 
 ## Step 7: let your team in
 
-1. **Users & Access → Add user.** Give them a username and a temporary password. They will be asked
-   to change it on first login.
-2. Click **Access** next to the user and choose a role for each server:
+1. Set up "Sign in with Discord" once (see [Discord sign-in](#discord-sign-in) below).
+2. **Orgs → your organisation → New invite link.** Choose what joiners become: usually `member`
+   with `viewer` access to your current servers. Give it an expiry and, if you like, a use limit.
+3. **Copy** the link and paste it into your clan's Discord. Whoever opens it clicks **Sign in with
+   Discord**, gets an account, and joins. They appear under **Members** on the org page.
+4. Adjust anyone's per-server role with **Access** next to their name:
 
 | Role       | Can                                                                       |
 | ---------- | ------------------------------------------------------------------------- |
@@ -137,7 +144,21 @@ Press **Test** before saving. If it fails, see [If Test fails](#if-test-fails) b
 | `operator` | Everyday moderation: kick, kill, whisper, broadcast, change map, end match. |
 | `admin`    | Everything on that server: bans, reserved slots, config changes.          |
 
-Only the owner can add servers and users. Every action anyone takes is recorded in **Audit**.
+Promote trusted people to org **owner** on the same page: owners can add servers, mint links and
+manage members, and are admin on every server in the org. **Users** (site owner only) still lets
+you create username-and-password accounts by hand if someone cannot use Discord. Every action
+anyone takes is recorded in **Audit**.
+
+### Discord sign-in
+
+1. Open the [Discord developer portal](https://discord.com/developers/applications) and create an
+   application.
+2. Under **OAuth2**, add the redirect `<ORIGIN>/api/auth/callback/discord`, where `ORIGIN` is the
+   URL from your `.env` (for example `https://rcon.example.com/api/auth/callback/discord`).
+3. Copy the client ID and a client secret into `.env` as `DISCORD_CLIENT_ID` and
+   `DISCORD_CLIENT_SECRET`, then `docker compose up -d` again.
+
+Without it, invite links still work for people who already have a username and password.
 
 ## Turning on RCON on the game server
 

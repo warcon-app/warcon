@@ -32,6 +32,21 @@ export interface Env {
 export const flag = (value: string | undefined, fallback = false): boolean =>
 	value === undefined || value === '' ? fallback : /^(1|true|yes|on)$/i.test(value);
 
+/** Discord sign-in (and account creation through invite links) is on when both secrets are set. */
+export const discordEnabled = (
+	env: Pick<Env, 'DISCORD_CLIENT_ID' | 'DISCORD_CLIENT_SECRET'>
+): boolean => Boolean(env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET);
+
+/** Host name of the built-in mock game server (when ALLOW_DEMO_SERVER is on). */
+export const DEMO_HOST = 'demo';
+
+export function isDemoServer(
+	env: Pick<Env, 'ALLOW_DEMO_SERVER'>,
+	server: { host: string }
+): boolean {
+	return flag(env.ALLOW_DEMO_SERVER, false) && server.host.trim().toLowerCase() === DEMO_HOST;
+}
+
 /** ORIGIN must be a bare origin: scheme, host and optional port, nothing after. */
 function parseOrigin(value: string | undefined): string {
 	const raw = (value || '').trim();

@@ -97,8 +97,66 @@ export const verification = pgTable(
 
 // ---- Warcon ------------------------------------------------------------------------------------
 
+/** A clan / community. Servers belong to exactly one org; people join through invite links. */
+export const organizations = pgTable('organizations', {
+	id: text('id').primaryKey(),
+	name: text('name').notNull(),
+	slug: text('slug').notNull().unique(),
+	createdBy: text('created_by'),
+	createdAt: ts('created_at').notNull().defaultNow(),
+	updatedAt: ts('updated_at').notNull().defaultNow()
+});
+
+export const orgMembers = pgTable(
+	'org_members',
+	{
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		/** owner: manages the org, its servers, members and invites, admin everywhere in it. member: per-server grants. */
+		role: text('role', { enum: ['owner', 'member'] }).notNull(),
+		/** the invite link they joined through, if any */
+		inviteId: text('invite_id'),
+		createdAt: ts('created_at').notNull().defaultNow()
+	},
+	(t) => [primaryKey({ columns: [t.orgId, t.userId] }), index('org_members_user_idx').on(t.userId)]
+);
+
+/** Shareable join links: <ORIGIN>/join/<token>. */
+export const orgInvites = pgTable(
+	'org_invites',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		token: text('token').notNull().unique(),
+		label: text('label').notNull().default(''),
+		orgRole: text('org_role', { enum: ['owner', 'member'] })
+			.notNull()
+			.default('member'),
+		/** granted on every server the org has at join time; null = no server access until an owner grants it */
+		serverRole: text('server_role', { enum: ['viewer', 'operator', 'admin'] }),
+		/** null = unlimited */
+		maxUses: integer('max_uses'),
+		uses: integer('uses').notNull().default(0),
+		/** null = never */
+		expiresAt: ts('expires_at'),
+		revokedAt: ts('revoked_at'),
+		createdBy: text('created_by'),
+		createdAt: ts('created_at').notNull().defaultNow()
+	},
+	(t) => [index('org_invites_org_idx').on(t.orgId)]
+);
+
 export const servers = pgTable('servers', {
 	id: text('id').primaryKey(),
+	orgId: text('org_id')
+		.notNull()
+		.references(() => organizations.id, { onDelete: 'cascade' }),
 	name: text('name').notNull(),
 	host: text('host').notNull(),
 	port: integer('port').notNull(),
@@ -142,7 +200,9 @@ export const auditLog = pgTable(
 		actorName: text('actor_name').notNull().default(''),
 		serverId: text('server_id'),
 		serverName: text('server_name').notNull().default(''),
-		/** auth | user | server | rcon | system */
+		/** the organisation an event belongs to; org owners see these rows, not just their own */
+		orgId: text('org_id'),
+		/** auth | user | org | server | rcon | system */
 		category: text('category').notNull(),
 		/** e.g. login, rcon.kick, config.apply */
 		action: text('action').notNull(),
@@ -159,6 +219,7 @@ export const auditLog = pgTable(
 	(t) => [
 		index('audit_ts_idx').on(t.ts),
 		index('audit_server_idx').on(t.serverId, t.id),
+		index('audit_org_idx').on(t.orgId, t.id),
 		index('audit_actor_idx').on(t.actorId, t.id),
 		index('audit_action_idx').on(t.category, t.action)
 	]
@@ -241,5 +302,7 @@ export const matches = pgTable(
 );
 
 export type ServerRow = typeof servers.$inferSelect;
+export type OrgRow = typeof organizations.$inferSelect;
+export type OrgInviteRow = typeof orgInvites.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
 export type SampleRow = typeof samples.$inferSelect;

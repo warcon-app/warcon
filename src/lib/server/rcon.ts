@@ -1,6 +1,6 @@
 // Server-side client for the WDRCON HTTP API (mirrors rcon.wardogs.com's js/api.js).
 import type { Env } from './env';
-import { flag } from './env';
+import { flag, isDemoServer } from './env';
 import { gameRequest, TransportError, type GameResponse, type GameTarget } from './transport';
 import { mockHandle } from './mockgame';
 import { decryptSecret } from './crypto';
@@ -19,11 +19,7 @@ export class GameError extends ApiError {
 	}
 }
 
-export const DEMO_HOST = 'demo';
-
-export function isDemoServer(env: Env, server: { host: string }): boolean {
-	return flag(env.ALLOW_DEMO_SERVER, false) && server.host.trim().toLowerCase() === DEMO_HOST;
-}
+export { DEMO_HOST, isDemoServer } from './env';
 
 export class WardogsClient {
 	private target: GameTarget;

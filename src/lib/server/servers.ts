@@ -1,7 +1,7 @@
 // Server records: validation, CRUD helpers and the reachability test.
 import { asc, eq } from 'drizzle-orm';
 import type { Env } from './env';
-import { flag } from './env';
+import { isDemoServer } from './env';
 import { ApiError, int, newId, publicMessage, str } from './http';
 import { encryptSecret } from './crypto';
 import { writeAudit } from './audit';
@@ -9,6 +9,7 @@ import { SERVER_ROLES, type ServerRole, type ServerRow, type SessionUser } from 
 import { ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { serverGrants, servers, user } from './db/schema';
+import { ensureMemberships } from './orgs';
 
 export interface TargetFields {
 	name?: string;
@@ -32,8 +33,7 @@ export function validateTarget(
 	if (!partial || body.host !== undefined) {
 		out.host = str(body.host, 253).toLowerCase();
 		if (!out.host) throw new ApiError(400, 'host is required.');
-		const isDemo = flag(env.ALLOW_DEMO_SERVER, false) && out.host === 'demo';
-		if (!isDemo && !/^[a-z0-9.\-:[\]]+$/.test(out.host))
+		if (!isDemoServer(env, { host: out.host }) && !/^[a-z0-9.\-:[\]]+$/.test(out.host))
 			throw new ApiError(400, 'host must be a hostname or IP address.');
 	}
 	if (!partial || body.port !== undefined) {
@@ -51,6 +51,7 @@ export async function createServer(
 	env: Env,
 	req: Request,
 	actor: SessionUser,
+	orgId: string,
 	body: Record<string, unknown>
 ): Promise<string> {
 	const t = validateTarget(env, body);
@@ -59,6 +60,7 @@ export async function createServer(
 	const id = newId();
 	await env.db.insert(servers).values({
 		id,
+		orgId,
 		name: t.name!,
 		host: t.host!,
 		port: t.port!,
@@ -75,7 +77,7 @@ export async function createServer(
 		action: 'server.create',
 		outcome: 'ok',
 		target: `${t.host}:${t.port}`,
-		detail: { scheme: t.scheme }
+		detail: { scheme: t.scheme, orgId }
 	});
 	return id;
 }
@@ -225,10 +227,15 @@ export async function setServerGrants(
 					grantedBy: actor.id
 				}))
 			);
+		await ensureMemberships(
+			tx,
+			applied.map((a) => ({ orgId: server.orgId, userId: a.userId }))
+		);
 	});
 	await writeAudit(env, req, {
 		actor,
 		server: { id: server.id, name: server.name },
+		orgId: server.orgId,
 		category: 'server',
 		action: 'server.grants',
 		outcome: 'ok',

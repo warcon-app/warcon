@@ -7,8 +7,12 @@
 	let busy = $state(false);
 	let oauthError = $derived(
 		page.url.searchParams.get('error') === 'discord'
-			? 'Discord sign-in failed. Link Discord from your account page first.'
+			? 'Discord sign-in failed. That Discord account is not linked to a panel account here: open an invite link from your organisation, or link Discord from your account page.'
 			: ''
+	);
+	let action = $derived(
+		(name: string) =>
+			`?/${name}${data.next === '/' ? '' : `&next=${encodeURIComponent(data.next)}`}`
 	);
 </script>
 
@@ -16,7 +20,7 @@
 
 <form
 	method="post"
-	action="?/password"
+	action={action('password')}
 	class="space-y-4"
 	use:enhance={() => {
 		busy = true;
@@ -56,7 +60,7 @@
 </form>
 
 {#if data.discord}
-	<form method="post" action="?/discord" class="mt-3" use:enhance>
+	<form method="post" action={action('discord')} class="mt-3" use:enhance>
 		<button class="btn w-full" type="submit">Sign in with Discord</button>
 	</form>
 {/if}

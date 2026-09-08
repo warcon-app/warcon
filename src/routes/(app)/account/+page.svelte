@@ -13,6 +13,7 @@
 
 	$effect(() => {
 		if (form?.changed) toast('Password changed. Other sessions were signed out.', 'ok');
+		if (form?.set) toast(`Password set. You can now also sign in as @${data.user.username}.`, 'ok');
 		if (form?.revoked) toast('Session revoked.', 'ok');
 		if (form?.unlinked) toast('Discord unlinked.', 'ok');
 		if (form?.error) toast(form.error, 'err');
@@ -29,7 +30,13 @@
 
 <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
 	<div class="panel">
-		<span class="label-sm">Change password</span>
+		<span class="label-sm">{data.hasPassword ? 'Change password' : 'Set a password'}</span>
+		{#if !data.hasPassword}
+			<p class="mb-2 text-[13px] text-mist-400">
+				This account signs in with Discord. A password lets you sign in with your username as well,
+				and is required before Discord can be unlinked.
+			</p>
+		{/if}
 		<div class="kv">
 			<span class="text-mist-400">Signed in as</span>
 			<span
@@ -49,15 +56,17 @@
 				};
 			}}
 		>
-			<label class="block"
-				><span class="field-label">Current password</span><input
-					class="input"
-					type="password"
-					name="current"
-					autocomplete="current-password"
-					required
-				/></label
-			>
+			{#if data.hasPassword}
+				<label class="block"
+					><span class="field-label">Current password</span><input
+						class="input"
+						type="password"
+						name="current"
+						autocomplete="current-password"
+						required
+					/></label
+				>
+			{/if}
 			<label class="block"
 				><span class="field-label">New password (10+ characters)</span><input
 					class="input"
@@ -78,7 +87,9 @@
 					required
 				/></label
 			>
-			<button class="btn btn-primary" type="submit" disabled={busy}>Change password</button>
+			<button class="btn btn-primary" type="submit" disabled={busy}
+				>{data.hasPassword ? 'Change password' : 'Set password'}</button
+			>
 		</form>
 
 		{#if data.discord}

@@ -13,6 +13,8 @@
 		page.route.id?.includes('/server/[id]') ? (page.params.id ?? null) : null
 	);
 	let current = $derived(data.servers.find((s) => s.id === currentId));
+	// Group the switcher by org once the user can see more than one.
+	let multiOrg = $derived(new Set(data.servers.map((s) => s.orgId)).size > 1);
 	let switcherOpen = $state(false);
 	let userOpen = $state(false);
 
@@ -62,7 +64,10 @@
 			{#if switcherOpen}
 				<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 				<div class="menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-					{#each data.servers as s (s.id)}
+					{#each data.servers as s, i (s.id)}
+						{#if multiOrg && (i === 0 || data.servers[i - 1].orgId !== s.orgId)}
+							<div class="px-3 pt-2 pb-1 caps text-mist-600">{s.orgName}</div>
+						{/if}
 						<a
 							href="/server/{encodeURIComponent(s.id)}"
 							class="menu-item {s.id === currentId
@@ -77,10 +82,10 @@
 						</a>
 					{:else}
 						<div class="px-3 py-2 text-[12.5px] text-mist-400">
-							{data.user.role === 'owner' ? 'No servers yet.' : 'No servers shared with you yet.'}
+							{data.canManage ? 'No servers yet.' : 'No servers shared with you yet.'}
 						</div>
 					{/each}
-					{#if data.user.role === 'owner'}
+					{#if data.canManage}
 						<div class="my-1.5 border-t border-white/8"></div>
 						<a href="/servers" class="menu-item text-mist-400" role="menuitem" onclick={closeAll}
 							>Manage servers…</a
@@ -93,11 +98,14 @@
 		<nav class="ml-2 hidden items-center gap-1 md:flex" aria-label="Main">
 			<a href="/" class="nav-pill {isActive('/') ? 'nav-pill-active' : ''}">Dashboard</a>
 			<a href="/audit" class="nav-pill {isActive('/audit') ? 'nav-pill-active' : ''}">Audit</a>
-			{#if data.user.role === 'owner'}
-				<a href="/users" class="nav-pill {isActive('/users') ? 'nav-pill-active' : ''}">Users</a>
+			{#if data.canManage}
 				<a href="/servers" class="nav-pill {isActive('/servers') ? 'nav-pill-active' : ''}"
 					>Servers</a
 				>
+			{/if}
+			<a href="/orgs" class="nav-pill {isActive('/orgs') ? 'nav-pill-active' : ''}">Orgs</a>
+			{#if data.user.role === 'owner'}
+				<a href="/users" class="nav-pill {isActive('/users') ? 'nav-pill-active' : ''}">Users</a>
 			{/if}
 		</nav>
 
@@ -143,9 +151,12 @@
 					<nav class="md:hidden" aria-label="Main (mobile)">
 						<a href="/" class="menu-item" role="menuitem">Dashboard</a>
 						<a href="/audit" class="menu-item" role="menuitem">Audit</a>
+						{#if data.canManage}
+							<a href="/servers" class="menu-item" role="menuitem">Servers</a>
+						{/if}
+						<a href="/orgs" class="menu-item" role="menuitem">Orgs</a>
 						{#if data.user.role === 'owner'}
 							<a href="/users" class="menu-item" role="menuitem">Users</a>
-							<a href="/servers" class="menu-item" role="menuitem">Servers</a>
 						{/if}
 						<div class="my-1.5 border-t border-white/8"></div>
 					</nav>

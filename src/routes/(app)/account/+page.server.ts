@@ -1,6 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { getEnv } from '$lib/server/env';
+import { discordEnabled, getEnv } from '$lib/server/env';
 import { normalizeError, str } from '$lib/server/http';
 import { writeAudit } from '$lib/server/audit';
 import { requireUser } from '$lib/server/access';
@@ -16,14 +16,21 @@ import {
 export const load: PageServerLoad = async ({ locals }) => {
 	const env = getEnv();
 	const user = requireUser(locals);
+	const [sessions, providers] = await Promise.all([
+		listSessions(env, user.id, locals.session?.id ?? null),
+		linkedProviders(env, user.id)
+	]);
 	return {
-		sessions: await listSessions(env, user.id, locals.session?.id ?? null),
-		discord: Boolean(env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET),
-		providers: await linkedProviders(env, user.id)
+		sessions,
+		discord: discordEnabled(env),
+		providers,
+		/** false for accounts created through Discord: they set a password rather than change one */
+		hasPassword: providers.includes('credential')
 	};
 };
 
 export const actions: Actions = {
+	/** Change the password, or set a first one for an account that signed up through Discord. */
 	password: async ({ request, locals, url }) => {
 		const env = getEnv();
 		const user = requireUser(locals);
@@ -32,12 +39,20 @@ export const actions: Actions = {
 		const next = String(form.get('next') || '');
 		if (next !== String(form.get('again') || ''))
 			return fail(400, { error: 'New passwords do not match.' });
+		const hasPassword = (await linkedProviders(env, user.id)).includes('credential');
 		try {
 			validatePassword(next);
-			await locals.auth!.api.changePassword({
-				body: { currentPassword: current, newPassword: next, revokeOtherSessions: true },
-				headers: request.headers
-			});
+			if (hasPassword) {
+				await locals.auth!.api.changePassword({
+					body: { currentPassword: current, newPassword: next, revokeOtherSessions: true },
+					headers: request.headers
+				});
+			} else {
+				await locals.auth!.api.setPassword({
+					body: { newPassword: next },
+					headers: request.headers
+				});
+			}
 		} catch (err) {
 			const known = normalizeError(err);
 			if (!known) throw err;
@@ -57,11 +72,11 @@ export const actions: Actions = {
 		await writeAudit(env, request, {
 			actor: user,
 			category: 'auth',
-			action: 'password.change',
+			action: hasPassword ? 'password.change' : 'password.set',
 			outcome: 'ok'
 		});
 		if (url.searchParams.get('force')) redirect(303, '/');
-		return { changed: true };
+		return hasPassword ? { changed: true } : { set: true };
 	},
 
 	revoke: async ({ request, locals }) => {
@@ -83,8 +98,7 @@ export const actions: Actions = {
 	linkDiscord: async ({ request, locals }) => {
 		const env = getEnv();
 		requireUser(locals);
-		if (!(env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET))
-			return fail(404, { error: 'Discord is not configured.' });
+		if (!discordEnabled(env)) return fail(404, { error: 'Discord is not configured.' });
 		const res = await locals.auth!.api.linkSocialAccount({
 			body: { provider: 'discord', callbackURL: '/account' },
 			headers: request.headers

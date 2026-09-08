@@ -1,7 +1,7 @@
 // Export up to 10k rows matching the filters as CSV or JSON.
 import { getEnv } from '$lib/server/env';
 import { route } from '$lib/server/http';
-import { adminServerIds, requireUser } from '$lib/server/access';
+import { auditVisibility, requireUser } from '$lib/server/access';
 import { auditFilters, queryAudit, type AuditRow } from '$lib/server/audit';
 
 function csvEscape(v: unknown): string {
@@ -19,10 +19,7 @@ function csvEscape(v: unknown): string {
 export const GET = route(async ({ locals, url }) => {
 	const env = getEnv();
 	const user = requireUser(locals);
-	const visibleTo =
-		user.role === 'owner'
-			? null
-			: { userId: user.id, adminServerIds: await adminServerIds(env, user) };
+	const visibleTo = await auditVisibility(env, user);
 	const format = url.searchParams.get('format') === 'json' ? 'json' : 'csv';
 	const filters = { ...auditFilters(url.searchParams), visibleTo, limit: 500 };
 	const rows: AuditRow[] = [];

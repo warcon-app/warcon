@@ -9,7 +9,9 @@ export type Outcome = 'ok' | 'error' | 'denied';
 export interface AuditEvent {
 	actor?: { id: string; username: string } | null;
 	server?: { id: string; name: string } | null;
-	category: 'auth' | 'user' | 'server' | 'rcon' | 'system';
+	/** set on org events (and server events, when known) so the org's owners can see them */
+	orgId?: string | null;
+	category: 'auth' | 'user' | 'org' | 'server' | 'rcon' | 'system';
 	action: string;
 	target?: string;
 	detail?: unknown;
@@ -56,6 +58,7 @@ export async function writeAudit(env: Env, req: Request | null, ev: AuditEvent):
 		actorName,
 		serverId: ev.server?.id ?? null,
 		serverName: ev.server?.name ?? '',
+		orgId: ev.orgId ?? null,
 		category: ev.category,
 		action: ev.action,
 		target: str(ev.target, 300),
@@ -80,8 +83,8 @@ export interface AuditQuery {
 	to?: string;
 	before?: number;
 	limit?: number;
-	/** Non-owners: their own rows, or rows on servers they admin. */
-	visibleTo?: { userId: string; adminServerIds: string[] } | null;
+	/** Non-owners: their own rows, rows on servers they admin, rows of orgs they own. */
+	visibleTo?: { userId: string; adminServerIds: string[]; ownedOrgIds: string[] } | null;
 }
 
 const parseDate = (v: string | undefined): Date | null => {
@@ -120,12 +123,11 @@ export async function queryAudit(
 		);
 	}
 	if (q.visibleTo) {
-		const ids = q.visibleTo.adminServerIds;
-		where.push(
-			ids.length
-				? or(eq(auditLog.actorId, q.visibleTo.userId), inArray(auditLog.serverId, ids))!
-				: eq(auditLog.actorId, q.visibleTo.userId)
-		);
+		const { userId, adminServerIds, ownedOrgIds } = q.visibleTo;
+		const any: SQL[] = [eq(auditLog.actorId, userId)];
+		if (adminServerIds.length) any.push(inArray(auditLog.serverId, adminServerIds));
+		if (ownedOrgIds.length) any.push(inArray(auditLog.orgId, ownedOrgIds));
+		where.push(or(...any)!);
 	}
 	const limit = int(q.limit, 100, 1, 500);
 	const found = await env.db

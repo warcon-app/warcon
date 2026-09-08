@@ -115,7 +115,9 @@ export function str(value: unknown, max = 500): string {
 		.slice(0, max);
 }
 
+/** An integer clamped to [min, max]; absent (undefined, null, blank) or non-numeric means `fallback`. */
 export function int(value: unknown, fallback: number, min = -Infinity, max = Infinity): number {
+	if (value === undefined || value === null || value === '') return fallback;
 	const n = Number(value);
 	if (!Number.isFinite(n)) return fallback;
 	return Math.min(max, Math.max(min, Math.trunc(n)));

@@ -1,23 +1,31 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { isAPIError } from 'better-auth/api';
 import type { Actions, PageServerLoad } from './$types';
-import { getEnv, type Env } from '$lib/server/env';
+import { discordEnabled, getEnv } from '$lib/server/env';
 import { clientIp, str } from '$lib/server/http';
 import { writeAudit } from '$lib/server/audit';
 import { clearLoginFailures, loginLockSeconds, noteLoginFailure } from '$lib/server/access';
 import { userCount } from '$lib/server/users';
 
-const discordEnabled = (env: Env) => Boolean(env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET);
+/**
+ * Where to go after signing in: a same-site path from ?next (an invite link), else the dashboard.
+ * A second slash or a backslash after the first character would make browsers treat the value
+ * as a protocol-relative URL (//evil.com), so those are rejected, not just "//".
+ */
+const nextPath = (url: URL): string => {
+	const next = url.searchParams.get('next') || '';
+	return /^\/(?![/\\])[^\s\\]*$/.test(next) ? next : '/';
+};
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
 	const env = getEnv();
-	if (locals.user) redirect(303, '/');
+	if (locals.user) redirect(303, nextPath(url));
 	if ((await userCount(env)) === 0) redirect(303, '/setup');
-	return { discord: discordEnabled(env) };
+	return { discord: discordEnabled(env), next: nextPath(url) };
 };
 
 export const actions: Actions = {
-	password: async ({ request, locals }) => {
+	password: async ({ request, locals, url }) => {
 		const env = getEnv();
 		const auth = locals.auth!;
 		const form = await request.formData();
@@ -69,14 +77,19 @@ export const actions: Actions = {
 			return fail(401, { error: 'Bad username or password.', username });
 		}
 		await clearLoginFailures(env, keys);
-		redirect(303, '/');
+		redirect(303, nextPath(url));
 	},
 
-	discord: async ({ request, locals }) => {
+	discord: async ({ request, locals, url }) => {
 		const env = getEnv();
 		if (!discordEnabled(env)) return fail(404, { error: 'Discord sign-in is not configured.' });
+		const next = nextPath(url);
 		const res = await locals.auth!.api.signInSocial({
-			body: { provider: 'discord', callbackURL: '/', errorCallbackURL: '/sign-in?error=discord' },
+			body: {
+				provider: 'discord',
+				callbackURL: next,
+				errorCallbackURL: `/sign-in?error=discord${next === '/' ? '' : `&next=${encodeURIComponent(next)}`}`
+			},
 			headers: request.headers
 		});
 		if (!res.url) return fail(500, { error: 'Discord did not return an authorization URL.' });
