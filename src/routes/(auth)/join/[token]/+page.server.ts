@@ -1,5 +1,6 @@
 // Invite link landing page. Anyone with the link sees the org name; joining needs a signed-in
-// account, and "Sign in with Discord" here is the one place a Discord account may be created.
+// account, and "Continue with Discord" here creates one for a Discord user who has none (the only
+// way in when ALLOW_ORG_SIGNUP is off; /sign-up and the sign-in page offer it too when it is on).
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { discordEnabled, getEnv, turnstileSiteKey } from '$lib/server/env';

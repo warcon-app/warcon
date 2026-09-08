@@ -57,9 +57,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const path = event.url.pathname;
 	const isAuthApi = path.startsWith('/api/auth');
 
-	// Accounts come from first-run setup, the site owner, or an invite link (/join/<token>, which
-	// calls Better Auth server-side). The public sign-up and social sign-in endpoints stay closed so
-	// nobody can self-register by posting requestSignUp to them.
+	// Accounts come from first-run setup, the site owner, an invite link, or (ALLOW_ORG_SIGNUP) the
+	// sign-up and sign-in pages; all of those call Better Auth server-side. The public sign-up and
+	// social sign-in endpoints stay closed so nobody can self-register by posting requestSignUp.
 	if (path.startsWith('/api/auth/sign-up') || path.startsWith('/api/auth/sign-in/social')) {
 		return json({ error: 'Sign-up is disabled.' }, { status: 404 });
 	}

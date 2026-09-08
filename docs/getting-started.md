@@ -134,7 +134,7 @@ Press **Test** before saving. If it fails, see [If Test fails](#if-test-fails) b
 1. Set up "Sign in with Discord" once (see [Discord sign-in](#discord-sign-in) below).
 2. **Orgs → your organisation → New invite link.** Choose what joiners become: usually `member`
    with `viewer` access to your current servers. Give it an expiry and, if you like, a use limit.
-3. **Copy** the link and paste it into your clan's Discord. Whoever opens it clicks **Sign in with
+3. **Copy** the link and paste it into your clan's Discord. Whoever opens it clicks **Continue with
    Discord**, gets an account, and joins. They appear under **Members** on the org page.
 4. Adjust anyone's per-server role with **Access** next to their name:
 

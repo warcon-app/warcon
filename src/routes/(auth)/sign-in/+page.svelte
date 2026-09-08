@@ -6,9 +6,11 @@
 	let { data, form }: PageProps = $props();
 	let busy = $state(false);
 	let oauthError = $derived(
-		page.url.searchParams.get('error') === 'discord'
-			? 'Discord sign-in failed. That Discord account is not linked to a panel account here: open an invite link from your organisation, or link Discord from your account page.'
-			: ''
+		page.url.searchParams.get('error') !== 'discord'
+			? ''
+			: data.orgSignup
+				? 'Discord sign-in failed. Try again, or use a username and password.'
+				: 'Discord sign-in failed. That Discord account is not linked to a panel account here: open an invite link from your organisation, or link Discord from your account page.'
 	);
 	let action = $derived(
 		(name: string) =>
@@ -61,14 +63,24 @@
 
 {#if data.discord}
 	<form method="post" action={action('discord')} class="mt-3" use:enhance>
-		<button class="btn w-full" type="submit">Sign in with Discord</button>
+		<button class="btn w-full" type="submit"
+			>{data.orgSignup ? 'Continue with Discord' : 'Sign in with Discord'}</button
+		>
 	</form>
+	<p class="note text-center">
+		{#if data.orgSignup}
+			New here? Discord creates your account on the spot, no password needed.
+		{:else}
+			New here? Open the invite link from your organisation and sign in with Discord there: it
+			creates your account.
+		{/if}
+	</p>
 {/if}
 
 {#if data.orgSignup}
 	<p class="note text-center">
 		Run a clan or community? <a href="/sign-up" class="text-accent underline"
 			>Create your own organisation</a
-		>.
+		>{#if !data.discord}, with just a username and password{/if}.
 	</p>
 {/if}

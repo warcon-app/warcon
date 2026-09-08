@@ -81,15 +81,23 @@ export const actions: Actions = {
 		redirect(303, nextPath(url));
 	},
 
+	/**
+	 * Existing linked accounts sign in. With ALLOW_ORG_SIGNUP on, a Discord user without an account
+	 * gets one here too (the same as /sign-up) and lands on /sign-up to create their organisation;
+	 * with it off, accounts only come from invite links, so an unknown Discord user is bounced.
+	 */
 	discord: async ({ request, locals, url }) => {
 		const env = getEnv();
 		if (!discordEnabled(env)) return fail(404, { error: 'Discord sign-in is not configured.' });
 		const next = nextPath(url);
+		const open = orgSignupEnabled(env);
 		const res = await locals.auth!.api.signInSocial({
 			body: {
 				provider: 'discord',
 				callbackURL: next,
-				errorCallbackURL: `/sign-in?error=discord${next === '/' ? '' : `&next=${encodeURIComponent(next)}`}`
+				newUserCallbackURL: next === '/' ? '/sign-up' : next,
+				errorCallbackURL: `/sign-in?error=discord${next === '/' ? '' : `&next=${encodeURIComponent(next)}`}`,
+				requestSignUp: open
 			},
 			headers: request.headers
 		});

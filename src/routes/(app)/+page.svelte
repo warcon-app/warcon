@@ -48,7 +48,10 @@
 				the built-in mock game server.{:else}.{/if}
 		{:else}
 			No servers have been shared with you yet. Ask an owner of your organisation to grant you
-			access.
+			access{#if data.canCreateOrg}, or <a
+					href="/sign-up"
+					class="font-semibold text-accent underline">create your own organisation</a
+				>{/if}.
 		{/if}
 	</div>
 {:else}

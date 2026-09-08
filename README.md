@@ -119,6 +119,10 @@ address for the audit trail and login throttling. Use `x-real-ip` for nginx, `x-
 Caddy and Traefik, `cf-connecting-ip` for a Cloudflare Tunnel. Only set it when the proxy is the only
 way to reach the port; otherwise anyone can spoof the recorded IP.
 
+Have the proxy redirect plain `http://` to `https://` (Caddy does this by default; on Cloudflare turn on
+**Always Use HTTPS**). A page served over http has an http origin, and every form post on it is then
+rejected as cross-site against the https `ORIGIN`.
+
 ### Configuration (`.env`)
 
 | Var                                           | Default            | Meaning                                                                                                                                               |
@@ -164,8 +168,10 @@ Invite links always let a newcomer create an account, with Discord or with a use
 (8 sign-ups per IP address per half hour; add a [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/)
 widget with `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` to keep bots off the password form).
 With `ALLOW_ORG_SIGNUP=true`, `/sign-up` additionally
-lets anyone create an organisation of their own and become its owner, up to three per person; the
-site owner still sees and can rename or delete every org. Leave it off for a single-clan install.
+lets anyone create an organisation of their own and become its owner, up to three per person, and
+**Continue with Discord** on the sign-in page creates an account for a Discord user who has none
+and sends them to `/sign-up`; the site owner still sees and can rename or delete every org. Leave
+it off for a single-clan install.
 
 ### Site owner controls
 
@@ -180,7 +186,7 @@ its servers from the panel; the accounts stay.
 An org owner mints a link on the org page: it carries the org role joiners get (`member` or
 `owner`), an optional default server role applied to every server the org has at that moment, an
 optional expiry and an optional use limit. Opening `<ORIGIN>/join/<token>` shows the org name and a
-**Sign in with Discord** button; a Discord user without an account gets one (username derived from
+**Continue with Discord** button; a Discord user without an account gets one (username derived from
 their Discord handle), an existing user simply signs in, and either way they land back on the link
 to confirm the join. People who already have a username can use that instead. Links can be revoked
 at any time; whoever already joined keeps their access until an owner removes them.
@@ -300,9 +306,11 @@ configApply raw` (admin).
 - Password hashing is Better Auth's default scrypt, which runs natively via `node:crypto` on Bun.
 - Sessions are looked up in the database on every request (no cookie cache), so disabling a user
   or revoking a session takes effect immediately.
-- Discord creates accounts only through an invite link; the public sign-up and social sign-in
-  endpoints are closed. Password accounts can link Discord from their Account page, and accounts
-  created through Discord can set a password there to sign in by username as well.
+- Discord creates accounts only through an invite link, or anywhere it is offered when
+  `ALLOW_ORG_SIGNUP` is on (`/sign-up` and the sign-in page); Better Auth's public sign-up and
+  social sign-in endpoints are closed either way. Password accounts can link Discord from their
+  Account page, and accounts created through Discord can set a password there to sign in by
+  username as well.
 - Upgrading an existing install: the migration creates one organisation named "Default" holding
   every server, with existing owners as its owners and everyone else as members. Rename it on the
   Orgs page.

@@ -87,7 +87,7 @@
 			discordAction="?/discord"
 			registerAction="?/register"
 			{signInHref}
-			discordLabel="Sign in with Discord to join"
+			discordLabel="Continue with Discord to join"
 			registerLabel="Create account and join"
 			turnstileSiteKey={data.turnstileSiteKey}
 			{form}

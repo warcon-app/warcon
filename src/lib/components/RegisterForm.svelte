@@ -35,6 +35,9 @@
 	<form method="post" action={discordAction} class="mt-5" use:enhance>
 		<button class="btn w-full btn-primary" type="submit">{discordLabel}</button>
 	</form>
+	<p class="mt-2 text-center text-[12.5px] text-mist-400">
+		No account yet? Discord creates one for you, no password needed.
+	</p>
 	{#if !showPassword}
 		<button type="button" class="mt-3 btn w-full" onclick={() => (wantPassword = true)}
 			>Use a username and password instead</button
