@@ -12,7 +12,8 @@ import { startPoller } from '$lib/server/poller';
 const SECURITY_HEADERS: Record<string, string> = {
 	'x-content-type-options': 'nosniff',
 	'x-frame-options': 'DENY',
-	'referrer-policy': 'no-referrer',
+	// Not no-referrer: browsers then send `Origin: null` on form posts, which SvelteKit rejects as cross-site.
+	'referrer-policy': 'same-origin',
 	'x-robots-tag': 'noindex, nofollow'
 };
 
