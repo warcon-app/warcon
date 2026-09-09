@@ -28,6 +28,7 @@ import {
 import { requireSteamId } from './steam';
 import { desiredFor, fanOut } from './lists-sync';
 import type {
+	ImportCandidate,
 	ListEntryState,
 	ListEntryView,
 	ListKind,
@@ -470,6 +471,158 @@ export async function removeEntry(
 	return { sync };
 }
 
+// ---- import: adopt what servers already hold -----------------------------------------------------
+
+/**
+ * Bans and reserved slots found on the org's servers that the panel did not put there and that are
+ * not on the org list yet, grouped by player, so an owner can review and adopt them.
+ */
+export async function importCandidates(env: Env, org: OrgRow): Promise<ImportCandidate[]> {
+	const srv = await orgServerRefs(env, org.id);
+	if (!srv.length) return [];
+	const serverIds = srv.map((s) => s.id);
+	const nameOf = new Map(srv.map((s) => [s.id, s.name]));
+	const [bans, reserved, state, listRows] = await Promise.all([
+		env.db.select().from(serverBans).where(inArray(serverBans.serverId, serverIds)),
+		env.db.select().from(serverReserved).where(inArray(serverReserved.serverId, serverIds)),
+		env.db.select().from(serverListState).where(inArray(serverListState.serverId, serverIds)),
+		orgLists(env, org.id)
+	]);
+	const active = await env.db
+		.select({ listId: listEntries.listId, steamId: listEntries.steamId })
+		.from(listEntries)
+		.where(
+			and(
+				inArray(
+					listEntries.listId,
+					listRows.map((l) => l.id)
+				),
+				isNull(listEntries.removedAt)
+			)
+		);
+	const kindOf = new Map(listRows.map((l) => [l.id, l.kind]));
+	const listed = new Set(active.map((a) => `${kindOf.get(a.listId)}:${a.steamId}`));
+	const managed = new Set(state.map((s) => `${s.kind}:${s.steamId}:${s.serverId}`));
+	const groups = new Map<string, ImportCandidate>();
+	const add = (kind: Kind, serverId: string, steamId: string, reason: string, bannedBy: string) => {
+		if (listed.has(`${kind}:${steamId}`) || managed.has(`${kind}:${steamId}:${serverId}`)) return;
+		const key = `${kind}:${steamId}`;
+		let g = groups.get(key);
+		if (!g) {
+			g = { kind, steamId, name: null, servers: [] };
+			groups.set(key, g);
+		}
+		g.servers.push({ serverId, serverName: nameOf.get(serverId) || serverId, reason, bannedBy });
+	};
+	for (const b of bans) add('ban', b.serverId, b.steamId, b.reason, b.bannedBy);
+	for (const r of reserved) add('reserve', r.serverId, r.steamId, '', '');
+	const out = [...groups.values()];
+	const names = await namesFor(
+		env,
+		serverIds,
+		out.map((c) => c.steamId)
+	);
+	for (const c of out) c.name = names.get(c.steamId) ?? null;
+	return out.sort(
+		(a, b) => b.servers.length - a.servers.length || a.steamId.localeCompare(b.steamId)
+	);
+}
+
+/**
+ * Adopts server entries into the org list: each pick becomes a list entry (reason as given, else
+ * the first reason a server recorded) and the servers that already hold it are marked as managed,
+ * so the panel will lift it there when the entry is removed. Other servers get it on the fan-out.
+ */
+export async function importEntries(
+	env: Env,
+	req: Request,
+	actor: SessionUser,
+	org: OrgRow,
+	picksIn: unknown
+): Promise<{ imported: number; skipped: number; sync: ListSyncSummary }> {
+	const picks = (Array.isArray(picksIn) ? picksIn : []).slice(0, 500).map((p) => {
+		const o = (p ?? {}) as Record<string, unknown>;
+		return {
+			kind: parseKind(o.kind),
+			steamId: requireSteamId(o.steamId),
+			reason: str(o.reason, 200)
+		};
+	});
+	if (!picks.length) throw new ApiError(400, 'Nothing to import.');
+	const candidates = await importCandidates(env, org);
+	const byKey = new Map(candidates.map((c) => [`${c.kind}:${c.steamId}`, c]));
+	const listRows = await orgLists(env, org.id);
+	const listOfKind = new Map(listRows.map((l) => [l.kind, l]));
+	const now = new Date();
+	let imported = 0;
+	const adopted: string[] = [];
+	await env.db.transaction(async (tx) => {
+		for (const p of picks) {
+			const c = byKey.get(`${p.kind}:${p.steamId}`);
+			if (!c) continue;
+			const list = listOfKind.get(p.kind)!;
+			const reason = p.reason || c.servers.find((s) => s.reason)?.reason || '';
+			await tx.insert(listEntries).values({
+				id: newId(),
+				listId: list.id,
+				steamId: p.steamId,
+				reason,
+				addedBy: actor.id,
+				addedByName: actor.username
+			});
+			for (const s of c.servers)
+				await tx
+					.insert(serverListState)
+					.values({
+						serverId: s.serverId,
+						kind: p.kind,
+						steamId: p.steamId,
+						sourceListId: list.id,
+						state: 'applied',
+						error: '',
+						attemptedAt: now,
+						updatedAt: now
+					})
+					.onConflictDoUpdate({
+						target: [serverListState.serverId, serverListState.kind, serverListState.steamId],
+						set: { sourceListId: list.id, state: 'applied', error: '', updatedAt: now }
+					});
+			await touch(tx, list.id);
+			imported++;
+			adopted.push(`${p.kind}:${p.steamId}`);
+		}
+	});
+	if (imported)
+		await writeAudit(env, req, {
+			actor,
+			orgId: org.id,
+			category: 'org',
+			action: 'list.import',
+			target: `${imported} entr${imported === 1 ? 'y' : 'ies'}`,
+			outcome: 'ok',
+			message: `Imported ${imported} server entr${imported === 1 ? 'y' : 'ies'} into ${org.name}'s lists`,
+			detail: { orgId: org.id, org: org.name, entries: adopted }
+		});
+	const sync = imported ? await fanOut(env, org) : { servers: [] };
+	return { imported, skipped: picks.length - imported, sync };
+}
+
+/** The org's active ban and reserved entries for one player, for the dossier. */
+export async function orgListMembership(
+	env: Env,
+	org: OrgRow,
+	steamId: string
+): Promise<{ ban: ListEntryView | null; reserve: ListEntryView | null }> {
+	const [bans, reserved] = await Promise.all([
+		entriesView(env, org, 'ban'),
+		entriesView(env, org, 'reserve')
+	]);
+	return {
+		ban: bans.find((e) => e.steamId === steamId) ?? null,
+		reserve: reserved.find((e) => e.steamId === steamId) ?? null
+	};
+}
+
 // ---- per-server view (players page) ------------------------------------------------------------
 
 /** Which of a server's bans and reserved slots the org lists manage, plus what is still pending. */
@@ -493,6 +646,7 @@ export async function serverListsState(
 	]);
 	const out: ServerListsState = {
 		canEditOrg: role !== null,
+		orgOwner: role === 'owner',
 		orgId: server.orgId,
 		bans: {},
 		reserved: {},

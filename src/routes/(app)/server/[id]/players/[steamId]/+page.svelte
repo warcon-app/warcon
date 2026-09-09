@@ -5,7 +5,9 @@
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import type { DossierView } from '$lib/types';
+	import BanDialog from '$lib/components/BanDialog.svelte';
+	import { describeSync, STATE_TONE } from '$lib/lists';
+	import type { DossierView, ListSyncSummary } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -15,8 +17,37 @@
 	let admin = $derived(can(data.server.role, 'admin'));
 	let base = $derived(`/api/servers/${encodeURIComponent(id)}/players/${d.steamId}`);
 	let onThisServer = $derived(d.online?.serverId === id);
+	let orgListsPath = $derived(`/api/orgs/${encodeURIComponent(data.server.orgId)}/lists`);
 
 	let busy = $state(false);
+	let banning = $state(false);
+
+	/** remove the player from an org list (unban across the org, or withdraw the reserved slot) */
+	async function orgRemove(kind: 'ban' | 'reserve') {
+		const what =
+			kind === 'ban'
+				? `Unban ${d.name} across ${data.server.orgName}? The panel lifts the ban on every server it applied it to.`
+				: `Withdraw ${d.name}'s reserved slot across ${data.server.orgName}?`;
+		if (
+			!(await confirmDialog(what, { okLabel: kind === 'ban' ? 'Unban' : 'Withdraw', danger: true }))
+		)
+			return;
+		await run(async () => {
+			const r = await api<{ sync: ListSyncSummary }>(
+				'DELETE',
+				`${orgListsPath}/${kind}/entries/${d.steamId}`
+			);
+			toast(describeSync(r.sync, kind === 'ban' ? 'Unbanned.' : 'Slot withdrawn.'), 'ok', 8000);
+		}, '');
+	}
+	const orgReserve = () =>
+		run(async () => {
+			const r = await api<{ sync: ListSyncSummary }>('POST', `${orgListsPath}/reserve/entries`, {
+				steamId: d.steamId,
+				reason: d.name
+			});
+			toast(describeSync(r.sync, 'Reserved slot handed out.'), 'ok', 8000);
+		}, '');
 	let note = $state('');
 	let watchReason = $state('');
 	let whisper = $state('');
@@ -130,7 +161,11 @@
 	<div class="space-y-4">
 		{#if d.bannedOn.length}
 			<div class="callout border-l-danger">
-				<b>Banned elsewhere in this organisation.</b>
+				<b
+					>Banned on {d.bannedOn.length} of {d.orgServerCount} server{d.orgServerCount === 1
+						? ''
+						: 's'} in this organisation.</b
+				>
 				{#each d.bannedOn as b (b.serverId)}
 					<div>
 						{b.serverName}{#if b.reason}: {b.reason}{/if}{#if b.bannedBy}
@@ -293,6 +328,80 @@
 
 		<div class="panel">
 			<div class="mb-3 flex items-center gap-2">
+				<span class="label-sm mb-0!">Organisation lists</span>
+				{#if d.orgLists.canEdit}
+					<a
+						href="/orgs/{encodeURIComponent(data.server.orgId)}/bans"
+						class="ml-auto text-[12px] text-accent hover:underline">Open →</a
+					>
+				{/if}
+			</div>
+			<div class="space-y-3 text-[13px]">
+				<div class="flex flex-wrap items-center gap-2">
+					{#if d.orgLists.ban}
+						{@const b = d.orgLists.ban}
+						<Badge tone="err">banned org-wide</Badge>
+						<span class="min-w-0 flex-1 truncate text-mist-400"
+							>{b.reason || 'no reason'} · by {b.addedByName || '—'}{#if b.expiresAt}
+								· until {fmtTime(b.expiresAt)}{/if}</span
+						>
+						<span class="inline-flex flex-wrap gap-1">
+							{#each b.servers as s (s.serverId)}
+								<span title="{s.serverName}: {s.state}{s.error ? ` — ${s.error}` : ''}"
+									><Badge tone={STATE_TONE[s.state]}>{s.serverName}</Badge></span
+								>
+							{/each}
+						</span>
+						{#if d.orgLists.canEdit}
+							<button class="btn btn-sm" disabled={busy} onclick={() => orgRemove('ban')}
+								>Unban org-wide</button
+							>
+						{/if}
+					{:else}
+						<span class="text-mist-400">Not on the organisation's ban list.</span>
+						{#if d.orgLists.canEdit}
+							<button
+								class="ml-auto btn btn-sm btn-danger"
+								disabled={busy}
+								onclick={() => (banning = true)}>Ban org-wide</button
+							>
+						{/if}
+					{/if}
+				</div>
+				<div class="flex flex-wrap items-center gap-2">
+					{#if d.orgLists.reserve}
+						{@const r = d.orgLists.reserve}
+						<Badge tone="accent">reserved slot</Badge>
+						<span class="min-w-0 flex-1 truncate text-mist-400"
+							>{r.reason || 'org-wide'} · priority {r.priority}{#if r.member}
+								· member{/if}</span
+						>
+						<span class="inline-flex flex-wrap gap-1">
+							{#each r.servers as s (s.serverId)}
+								<span title="{s.serverName}: {s.state}{s.error ? ` — ${s.error}` : ''}"
+									><Badge tone={STATE_TONE[s.state]}>{s.serverName}</Badge></span
+								>
+							{/each}
+						</span>
+						{#if d.orgLists.canEdit && !r.member}
+							<button class="btn btn-sm" disabled={busy} onclick={() => orgRemove('reserve')}
+								>Withdraw</button
+							>
+						{/if}
+					{:else}
+						<span class="text-mist-400">No reserved slot from the organisation.</span>
+						{#if d.orgLists.canEdit}
+							<button class="ml-auto btn btn-sm" disabled={busy} onclick={orgReserve}
+								>Reserve a slot</button
+							>
+						{/if}
+					{/if}
+				</div>
+			</div>
+		</div>
+
+		<div class="panel">
+			<div class="mb-3 flex items-center gap-2">
 				<span class="label-sm mb-0!">Risk</span>
 				<Badge tone={RISK_TONE[d.risk.level]} class="ml-auto">{d.risk.level} · {d.risk.score}</Badge
 				>
@@ -448,3 +557,15 @@
 		</div>
 	</div>
 </div>
+
+{#if banning}
+	<BanDialog
+		orgId={data.server.orgId}
+		orgName={data.server.orgName}
+		steamId={d.steamId}
+		name={d.name}
+		canOrg
+		onclose={() => (banning = false)}
+		ondone={() => invalidateAll()}
+	/>
+{/if}

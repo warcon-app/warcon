@@ -7,8 +7,15 @@
 	import FactionChip from '$lib/components/FactionChip.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
-	import { STATE_TONE } from '$lib/lists';
-	import type { Ban, Player, PlayerMark, ServerListsState, Status } from '$lib/types';
+	import { describeSync, STATE_TONE } from '$lib/lists';
+	import type {
+		Ban,
+		ListSyncSummary,
+		Player,
+		PlayerMark,
+		ServerListsState,
+		Status
+	} from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -133,6 +140,34 @@
 	});
 
 	const banSource = (steamId: string) => listState?.bans[steamId] ?? null;
+	let busy = $state(false);
+	/**
+	 * Put a local ban on the org list. Owners import it (the panel then manages it here too);
+	 * editors add it to the list, and this server's copy stays local.
+	 */
+	async function promoteSelected() {
+		if (!selectedBan || !listState) return;
+		const steamId = selectedBan;
+		const ban = bans.find((b) => b.steamId === steamId);
+		const orgPath = `/api/orgs/${encodeURIComponent(listState.orgId)}/lists`;
+		busy = true;
+		try {
+			const res = listState.orgOwner
+				? await api<{ sync: ListSyncSummary }>('POST', `${orgPath}/import`, {
+						entries: [{ kind: 'ban', steamId, reason: ban?.reason ?? '' }]
+					})
+				: await api<{ sync: ListSyncSummary }>('POST', `${orgPath}/ban/entries`, {
+						steamId,
+						reason: ban?.reason ?? ''
+					});
+			toast(describeSync(res.sync, `${steamId} is on the org ban list.`), 'ok', 8000);
+			await refreshBans();
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
 	const slotSource = (steamId: string) => listState?.reserved[steamId] ?? null;
 	async function unbanSelected() {
 		if (!selectedBan) return;
@@ -411,11 +446,16 @@
 				/>
 				<button class="btn" onclick={refreshBans}>Refresh</button>
 			</div>
-			<button
-				class="btn btn-danger sm:ml-auto"
-				disabled={!admin || !selectedBan}
-				onclick={unbanSelected}>Unban selected</button
-			>
+			<span class="inline-flex gap-1.5 sm:ml-auto">
+				{#if selectedBan && listState?.canEditOrg && !banSource(selectedBan)?.managed}
+					<button class="btn" disabled={busy} onclick={promoteSelected}
+						>{listState.orgOwner ? 'Promote to org list' : 'Add to org list'}</button
+					>
+				{/if}
+				<button class="btn btn-danger" disabled={!admin || !selectedBan} onclick={unbanSelected}
+					>Unban selected</button
+				>
+			</span>
 		</div>
 		<div class="table-wrap">
 			<table>

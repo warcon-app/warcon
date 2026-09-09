@@ -251,6 +251,10 @@ export interface DossierView {
 	risk: RiskView;
 	watch: { watched: boolean; reason: string; updatedByName: string; updatedAt: string | null };
 	bannedOn: { serverId: string; serverName: string; reason: string; bannedBy: string }[];
+	/** how many servers the organisation runs (for "banned on N of M") */
+	orgServerCount: number;
+	/** the player's standing on the organisation's lists, and whether the viewer may change it */
+	orgLists: { ban: ListEntryView | null; reserve: ListEntryView | null; canEdit: boolean };
 	summary: {
 		sessions: number;
 		minutes: number;
@@ -410,6 +414,8 @@ export interface ImportCandidate {
 /** Per-server view of which bans and reserved slots the org lists manage; for the players page. */
 export interface ServerListsState {
 	canEditOrg: boolean;
+	/** owners may import (adopt) local entries into the org list */
+	orgOwner: boolean;
 	orgId: string;
 	bans: Record<string, { state: ListEntryState; managed: boolean }>;
 	reserved: Record<string, { state: ListEntryState; managed: boolean }>;

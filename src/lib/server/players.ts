@@ -8,11 +8,14 @@ import { queryAudit, writeAudit } from './audit';
 import {
 	accessibleServers,
 	auditVisibility,
+	getOrg,
+	listsRoleFor,
 	roleAtLeast,
 	type ServerRole,
 	type ServerRow,
 	type SessionUser
 } from './access';
+import { orgListMembership } from './lists';
 import { playerMarks, playerNotes, playerSessions, serverBans, servers } from './db/schema';
 import { getProfiles, isSteamId, steamEnabled, type SteamProfileRow } from './steam';
 import { accountAgeDays, assessRisk, namesResemble, type Risk } from './risk';
@@ -256,31 +259,38 @@ export async function dossier(
 	const online = recent.find((s) => s.leftAt === null) ?? null;
 	const name = names[0]?.name || steamId;
 
-	const [profiles, local, [mark], noteRows, actions] = await Promise.all([
-		getProfiles(env, [steamId], { refresh: !!opts.refreshSteam }),
-		localSignals(env, server.orgId, ids, null, [{ steamId, name }]),
-		db
-			.select()
-			.from(playerMarks)
-			.where(and(eq(playerMarks.orgId, server.orgId), eq(playerMarks.steamId, steamId)))
-			.limit(1),
-		db
-			.select()
-			.from(playerNotes)
-			.where(and(eq(playerNotes.orgId, server.orgId), eq(playerNotes.steamId, steamId)))
-			.orderBy(desc(playerNotes.id))
-			.limit(100),
-		auditVisibility(env, user).then((visibleTo) =>
-			queryAudit(env, {
-				target: steamId,
-				scope: { orgId: server.orgId, serverIds: ids },
-				visibleTo,
-				limit: 50
-			})
-		)
-	]);
+	const [profiles, local, [mark], noteRows, actions, org, listsRole, allOrgServers] =
+		await Promise.all([
+			getProfiles(env, [steamId], { refresh: !!opts.refreshSteam }),
+			localSignals(env, server.orgId, ids, null, [{ steamId, name }]),
+			db
+				.select()
+				.from(playerMarks)
+				.where(and(eq(playerMarks.orgId, server.orgId), eq(playerMarks.steamId, steamId)))
+				.limit(1),
+			db
+				.select()
+				.from(playerNotes)
+				.where(and(eq(playerNotes.orgId, server.orgId), eq(playerNotes.steamId, steamId)))
+				.orderBy(desc(playerNotes.id))
+				.limit(100),
+			auditVisibility(env, user).then((visibleTo) =>
+				queryAudit(env, {
+					target: steamId,
+					scope: { orgId: server.orgId, serverIds: ids },
+					visibleTo,
+					limit: 50
+				})
+			),
+			getOrg(env, server.orgId),
+			listsRoleFor(env, user, server.orgId),
+			orgServers(env, server.orgId)
+		]);
 	const l = local.get(steamId);
 	const admin = roleAtLeast(role, 'admin');
+	const membership = org
+		? await orgListMembership(env, org, steamId)
+		: { ban: null, reserve: null };
 	return {
 		steamId,
 		name,
@@ -288,6 +298,8 @@ export async function dossier(
 		online: online
 			? { serverId: online.serverId, serverName: nameOf.get(online.serverId) || '' }
 			: null,
+		orgServerCount: allOrgServers.length,
+		orgLists: { ...membership, canEdit: listsRole !== null },
 		steamEnabled: steamEnabled(env),
 		steam: steamView(profiles.get(steamId)),
 		risk: riskFor(env, profiles.get(steamId), l),

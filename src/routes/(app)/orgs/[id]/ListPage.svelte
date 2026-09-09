@@ -9,7 +9,14 @@
 	import { describeSync, KIND_TITLE, STATE_TEXT, STATE_TONE } from '$lib/lists';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
-	import type { ListEntryView, ListKind, ListSyncSummary, OrgListsView } from '$lib/types';
+	import Modal from '$lib/components/Modal.svelte';
+	import type {
+		ImportCandidate,
+		ListEntryView,
+		ListKind,
+		ListSyncSummary,
+		OrgListsView
+	} from '$lib/types';
 
 	let {
 		kind,
@@ -27,6 +34,60 @@
 	let search = $state('');
 	let busy = $state(false);
 	let banning = $state(false);
+	// import: entries the servers hold that the org list does not
+	let candidates = $state<ImportCandidate[] | null>(null);
+	let importing = $state(false);
+	let picked = $state<Record<string, boolean>>({});
+	let owner = $derived(lists.role === 'owner');
+	let mine = $derived((candidates ?? []).filter((c) => c.kind === kind));
+
+	$effect(() => {
+		void org.id;
+		void kind;
+		api<{ candidates: ImportCandidate[] }>(
+			'GET',
+			`/api/orgs/${encodeURIComponent(org.id)}/lists/import`
+		)
+			.then((r) => (candidates = r.candidates))
+			.catch((err) => console.warn('import candidates', err));
+	});
+
+	function openImport() {
+		const next: Record<string, boolean> = {};
+		for (const c of mine) next[c.steamId] = true;
+		picked = next;
+		importing = true;
+	}
+	async function runImport() {
+		const entries = mine
+			.filter((c) => picked[c.steamId])
+			.map((c) => ({ kind: c.kind, steamId: c.steamId }));
+		if (!entries.length) {
+			importing = false;
+			return;
+		}
+		busy = true;
+		try {
+			const res = await api<{ imported: number; sync: ListSyncSummary }>(
+				'POST',
+				`/api/orgs/${encodeURIComponent(org.id)}/lists/import`,
+				{ entries }
+			);
+			toast(describeSync(res.sync, `Imported ${res.imported}.`), 'ok', 8000);
+			importing = false;
+			candidates = null;
+			await invalidateAll();
+			const r = await api<{ candidates: ImportCandidate[] }>(
+				'GET',
+				`/api/orgs/${encodeURIComponent(org.id)}/lists/import`
+			);
+			candidates = r.candidates;
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
 	// reserved-slot add form
 	let newId = $state('');
 	let newReason = $state('');
@@ -210,6 +271,21 @@
 	</div>
 {/if}
 
+{#if mine.length}
+	<div class="callout mb-4 flex flex-wrap items-center gap-3">
+		<span
+			><b>{mine.length} {noun}{mine.length === 1 ? '' : 's'}</b> found on your servers that
+			{mine.length === 1 ? 'is' : 'are'} not on the organisation list.
+			{#if owner}Import {mine.length === 1 ? 'it' : 'them'} to manage
+				{mine.length === 1 ? 'it' : 'them'} from here and apply
+				{mine.length === 1 ? 'it' : 'them'} everywhere.{:else}An owner of {org.name} can import them.{/if}</span
+		>
+		{#if owner}
+			<button class="ml-auto btn btn-sm" onclick={openImport}>Review and import</button>
+		{/if}
+	</div>
+{/if}
+
 {#if !lists.servers.length}
 	<div class="callout mb-4">
 		{org.name} has no servers yet, so there is nothing to push the list to. Entries are kept and applied
@@ -316,4 +392,71 @@
 		onclose={() => (banning = false)}
 		ondone={() => invalidateAll()}
 	/>
+{/if}
+
+{#if importing}
+	<Modal title="Import {noun}s from your servers" wide onclose={() => (importing = false)}>
+		<p class="mb-3 text-[13px] text-mist-400">
+			These {noun}s exist on the servers below but not on the organisation list. Importing puts them
+			on the list, marks them as managed where they already exist, and applies them to every other
+			server in {org.name}. Removing an imported entry later lifts it everywhere the panel manages
+			it.
+		</p>
+		<div class="max-h-[50vh] table-wrap overflow-y-auto">
+			<table>
+				<thead>
+					<tr>
+						<th></th>
+						<th>Player</th>
+						<th>On</th>
+						{#if kind === 'ban'}<th>Reason</th>{/if}
+					</tr>
+				</thead>
+				<tbody>
+					{#each mine as c (c.steamId)}
+						<tr>
+							<td><input type="checkbox" bind:checked={picked[c.steamId]} /></td>
+							<td>
+								<span class="font-medium">{c.name || c.steamId}</span>
+								{#if c.name}<div class="font-mono text-[12px] text-mist-600">{c.steamId}</div>{/if}
+							</td>
+							<td>
+								<span class="inline-flex flex-wrap gap-1">
+									{#each c.servers as s (s.serverId)}<Badge>{s.serverName}</Badge>{/each}
+								</span>
+							</td>
+							{#if kind === 'ban'}
+								<td class="max-w-[280px] text-[12.5px]">
+									{#each c.servers.filter((s) => s.reason || s.bannedBy) as s (s.serverId)}
+										<div>
+											{s.reason || '—'}{#if s.bannedBy}
+												<span class="text-mist-600">by {s.bannedBy}</span>{/if}
+										</div>
+									{/each}
+								</td>
+							{/if}
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+		<div class="mt-4 flex flex-wrap justify-end gap-2">
+			<button
+				type="button"
+				class="mr-auto btn"
+				onclick={() => {
+					const all = mine.every((c) => picked[c.steamId]);
+					const next: Record<string, boolean> = {};
+					for (const c of mine) next[c.steamId] = !all;
+					picked = next;
+				}}>{mine.every((c) => picked[c.steamId]) ? 'Select none' : 'Select all'}</button
+			>
+			<button type="button" class="btn" data-close onclick={() => (importing = false)}
+				>Cancel</button
+			>
+			<button type="button" class="btn btn-primary" disabled={busy} onclick={runImport}
+				>Import {mine.filter((c) => picked[c.steamId]).length}</button
+			>
+		</div>
+	</Modal>
 {/if}

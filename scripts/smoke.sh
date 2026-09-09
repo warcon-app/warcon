@@ -226,6 +226,14 @@ req $J1 POST /api/servers/$SID/rcon/configApply "$BODY" >/dev/null
 check reserve-full 'Reserved slots are full' "$(req $J1 POST /api/orgs/$ORG/lists/reserve/entries '{"steamId":"76561198100000602"}')"
 check reserve-full-state '"state":"failed"' "$(req $J1 GET /api/orgs/$ORG/lists/reserve/entries)"
 check audit-sync '"action":"lists.sync"' "$(req $J1 GET '/api/audit?action=lists.sync')"
+# import: the seeded local ban is a candidate; adopting it makes it managed; editors may look but not adopt
+check import-candidates '"steamId":"76561198100000301"' "$(req $J1 GET /api/orgs/$ORG/lists/import)"
+check import-editor-denied 'Only an owner' "$(req $J5 POST /api/orgs/$ORG/lists/import '{"entries":[{"kind":"ban","steamId":"76561198100000301"}]}')"
+check import-post '"imported":1' "$(req $J1 POST /api/orgs/$ORG/lists/import '{"entries":[{"kind":"ban","steamId":"76561198100000301"}]}')"
+check import-managed '"76561198100000301":{"state":"applied","managed":true}' "$(req $J1 GET /api/servers/$SID/lists/state)"
+check import-reason '"reason":"Cheating - aimbot"' "$(req $J1 GET /api/orgs/$ORG/lists/ban/entries)"
+check import-gone '0' "$(req $J1 GET /api/orgs/$ORG/lists/import | grep -c 76561198100000301)"
+check dossier-orglists '"orgLists":{"ban":{' "$(req $J1 GET /api/servers/$SID/players/76561198100000301)"
 
 echo "== analytics"
 sleep 12

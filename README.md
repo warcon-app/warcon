@@ -227,6 +227,13 @@ banned (or reserved) on that server by someone working outside the panel. The pa
 what it did not add, so removing an org entry lifts it only where the panel applied it, and a
 local ban stays until an owner imports it into the org list or unbans it on that server.
 
+Bans and reserved slots that your servers already hold show up on the list pages as candidates to
+**import**: an owner reviews them, and importing puts them on the org list, marks them as managed
+on the servers that have them, and applies them to the rest. On the players page a local ban can be
+promoted the same way (owners), or added to the org list while this server's own copy stays local
+(server admins). Every dossier shows the player's standing on the org lists and lets an editor ban
+or unban org-wide, or hand out and withdraw a reserved slot, without leaving the page.
+
 Sync happens twice over: right away when a list is edited (the toast says on how many servers the
 change landed, and which are unreachable and will be retried), and on every poll, where the
 poller re-applies anything missing, so an org ban that someone lifts on the server directly comes
@@ -419,6 +426,7 @@ GET/POST /api/orgs/:id/webhooks {label,url,events,serverIds,enabled}   PATCH/DEL
 GET  /api/orgs/:id/lists                                 the org's ban and reserved-slot lists, and the caller's role on them
 GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt,priority}   DELETE .../entries/:steamId   (kind = ban | reserve; ?includeRemoved=1)
 POST /api/orgs/:id/lists/sync                            push the lists to every org server now
+GET  /api/orgs/:id/lists/import                          server entries not on the org list   POST {entries:[{kind,steamId,reason}]} adopts them (owner)
 GET  /api/servers/:id/lists/state                        which bans / reserved slots here come from the org lists   POST .../lists/sync
 GET  /api/actions                     lists actions with their role level
 GET  /api/audit?server=&actor=&action=&outcome=&q=&from=&to=&before=&limit=
