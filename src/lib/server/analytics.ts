@@ -2,7 +2,7 @@
 import { and, count, desc, eq, gte, isNull, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { matches, playerSessions } from './db/schema';
-import { pollSeconds } from './poller';
+import { pollSeconds } from './env';
 
 export type Range = '24h' | '7d' | '30d';
 const RANGE_MS: Record<Range, number> = {

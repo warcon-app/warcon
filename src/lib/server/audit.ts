@@ -2,16 +2,19 @@ import { and, desc, eq, gte, inArray, isNotNull, like, lt, lte, or, type SQL } f
 import type { Env } from './env';
 import { clientIp, userAgent, int, str } from './http';
 import { auditLog, user, type AuditRow } from './db/schema';
+import { notifyWebhooks } from './webhook-delivery';
 
 export type { AuditRow };
 export type Outcome = 'ok' | 'error' | 'denied';
 
 export interface AuditEvent {
 	actor?: { id: string; username: string } | null;
+	/** shown as the actor when there is no account behind the event (triggers) */
+	actorName?: string;
 	server?: { id: string; name: string } | null;
 	/** set on org events (and server events, when known) so the org's owners can see them */
 	orgId?: string | null;
-	category: 'auth' | 'user' | 'org' | 'server' | 'rcon' | 'system';
+	category: 'auth' | 'user' | 'org' | 'server' | 'rcon' | 'trigger' | 'player' | 'system';
 	action: string;
 	target?: string;
 	detail?: unknown;
@@ -51,7 +54,7 @@ export function redact(value: unknown, depth = 0): unknown {
 
 export async function writeAudit(env: Env, req: Request | null, ev: AuditEvent): Promise<void> {
 	// Session-create hooks only know the user id; fill the name from the user table.
-	let actorName = ev.actor?.username ?? '';
+	let actorName = ev.actor?.username ?? ev.actorName ?? '';
 	if (ev.actor?.id && !actorName) {
 		const [row] = await env.db
 			.select({ username: user.username, name: user.name })
@@ -60,24 +63,29 @@ export async function writeAudit(env: Env, req: Request | null, ev: AuditEvent):
 			.limit(1);
 		actorName = row?.username || row?.name || '';
 	}
-	await env.db.insert(auditLog).values({
-		ts: new Date(),
-		actorId: ev.actor?.id ?? null,
-		actorName,
-		serverId: ev.server?.id ?? null,
-		serverName: ev.server?.name ?? '',
-		orgId: ev.orgId ?? null,
-		category: ev.category,
-		action: ev.action,
-		target: str(ev.target, 300),
-		detail: ev.detail === undefined || ev.detail === null ? null : redact(ev.detail),
-		outcome: ev.outcome,
-		status: ev.status ?? null,
-		message: str(ev.message, 1000),
-		ip: ev.ip ?? (req ? clientIp(req) : ''),
-		userAgent: ev.userAgent ?? (req ? userAgent(req) : ''),
-		durationMs: ev.durationMs ?? null
-	});
+	const [row] = await env.db
+		.insert(auditLog)
+		.values({
+			ts: new Date(),
+			actorId: ev.actor?.id ?? null,
+			actorName,
+			serverId: ev.server?.id ?? null,
+			serverName: ev.server?.name ?? '',
+			orgId: ev.orgId ?? null,
+			category: ev.category,
+			action: ev.action,
+			target: str(ev.target, 300),
+			detail: ev.detail === undefined || ev.detail === null ? null : redact(ev.detail),
+			outcome: ev.outcome,
+			status: ev.status ?? null,
+			message: str(ev.message, 1000),
+			ip: ev.ip ?? (req ? clientIp(req) : ''),
+			userAgent: ev.userAgent ?? (req ? userAgent(req) : ''),
+			durationMs: ev.durationMs ?? null
+		})
+		.returning();
+	// Discord mirroring happens after the row is safe; it never delays or fails the caller.
+	if (row) void notifyWebhooks(env, row);
 }
 
 /** What a non-site-owner may see (see access.ts auditVisibility); null means everything. */
@@ -103,6 +111,10 @@ export interface AuditQuery {
 	action?: string;
 	outcome?: string;
 	q?: string;
+	/** exact target (a SteamID on a player dossier) */
+	target?: string;
+	/** rows of one org: tagged with its id, or on one of its servers (older rows carry only the server) */
+	scope?: { orgId: string; serverIds: string[] };
 	from?: string;
 	to?: string;
 	before?: number;
@@ -132,6 +144,12 @@ export async function queryAudit(
 	const to = parseDate(q.to);
 	if (from) where.push(gte(auditLog.ts, from));
 	if (to) where.push(lte(auditLog.ts, to));
+	if (q.target) where.push(eq(auditLog.target, q.target));
+	if (q.scope) {
+		const any: SQL[] = [eq(auditLog.orgId, q.scope.orgId)];
+		if (q.scope.serverIds.length) any.push(inArray(auditLog.serverId, q.scope.serverIds));
+		where.push(or(...any)!);
+	}
 	if (q.before) where.push(lt(auditLog.id, q.before));
 	if (q.q) {
 		const pattern = `%${q.q}%`;

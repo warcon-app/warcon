@@ -139,15 +139,60 @@ check audit-export-csv 'id,ts,actorName' "$(req $J1 GET '/api/audit/export?forma
 check audit-export-json '"category"' "$(req $J1 GET '/api/audit/export?format=json' | head -40)"
 check steam-disabled 'not configured' "$(req $J1 GET '/api/steam/profiles?ids=76561198100000101')"
 
+echo "== player intel"
+P1=76561198100000104
+check dossier '"steamId":"'$P1'"' "$(req $J1 GET /api/servers/$SID/players/$P1)"
+check dossier-badid '17-digit' "$(req $J1 GET /api/servers/$SID/players/abc)"
+check marks '"marks"' "$(req $J1 GET "/api/servers/$SID/players/marks?ids=$P1,76561198100000105&names=a%0Ab")"
+check note-add '"body":"keeps team-killing"' "$(req $J1 POST /api/servers/$SID/players/$P1/notes '{"body":"keeps team-killing"}')"
+check note-empty 'empty' "$(req $J1 POST /api/servers/$SID/players/$P1/notes '{"body":"  "}')"
+NOTE=$(req $J1 GET /api/servers/$SID/players/$P1 | grep -o '"notes":\[{"id":[0-9]*' | grep -o '[0-9]*$')
+check watch-on '"ok":true' "$(req $J1 PUT /api/servers/$SID/players/$P1/watch '{"watched":true,"reason":"tk"}')"
+check dossier-watched '"watched":true,"reason":"tk"' "$(req $J1 GET /api/servers/$SID/players/$P1)"
+check marks-watched '"watched":true' "$(req $J1 GET "/api/servers/$SID/players/marks?ids=$P1")"
+check note-delete '"ok":true' "$(req $J1 DELETE /api/servers/$SID/players/$P1/notes/$NOTE)"
+check steam-refresh-disabled 'not configured' "$(req $J1 POST /api/servers/$SID/players/$P1/steam)"
+check audit-player '"action":"player.watch"' "$(req $J1 GET '/api/audit?action=player.watch')"
+
+echo "== triggers"
+check trigger-badkind 'Unknown trigger kind' "$(req $J1 POST /api/servers/$SID/triggers '{"kind":"nope"}')"
+check trigger-badcfg 'empty' "$(req $J1 POST /api/servers/$SID/triggers '{"kind":"welcome","config":{"message":""}}')"
+R=$(req $J1 POST /api/servers/$SID/triggers '{"kind":"welcome","name":"Hello","enabled":true,"config":{"message":"Welcome {name} to {server}"}}'); check trigger-create '"kind":"welcome"' "$R"
+TID=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+check trigger-list '"name":"Hello"' "$(req $J1 GET /api/servers/$SID/triggers)"
+check trigger-update '"enabled":false' "$(req $J1 PATCH /api/servers/$SID/triggers/$TID '{"enabled":false}')"
+check trigger-dryrun '"fires"' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"welcome","config":{"message":"hi {name}"}}')"
+check trigger-dryrun-risk 'Steam lookup is off' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"risk_kick","config":{"watchlist":true}}')"
+check trigger-dryrun-broadcast '"kind":"broadcast"' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"broadcast","config":{"messages":["a"],"everyMinutes":1}}')"
+R=$(req $J1 POST /api/servers/$SID/triggers '{"kind":"risk_kick","name":"Watch kick","enabled":true,"config":{"watchlist":true,"reason":"watched"}}'); TID2=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+R=$(req $J1 POST /api/servers/$SID/triggers '{"kind":"welcome","name":"Hello 2","enabled":true,"config":{"message":"Welcome {name}"}}'); TID3=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+check trigger-delete '"ok":true' "$(req $J1 DELETE /api/servers/$SID/triggers/$TID)"
+check trigger-gone 'not found' "$(req $J1 PATCH /api/servers/$SID/triggers/$TID '{"enabled":true}')"
+
+echo "== webhooks"
+check webhook-badurl 'Discord webhook URL' "$(req $J1 POST /api/orgs/$ORG/webhooks '{"label":"x","url":"https://example.com/hook","events":["bans"]}')"
+check webhook-noevents 'at least one' "$(req $J1 POST /api/orgs/$ORG/webhooks '{"label":"x","url":"https://discord.com/api/webhooks/123456789012345678/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","events":[]}')"
+R=$(req $J1 POST /api/orgs/$ORG/webhooks '{"label":"#log","url":"https://discord.com/api/webhooks/123456789012345678/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","events":["bans","triggers"]}'); check webhook-create '"urlHint":"discord.com/api/webhooks/123456789012345678/…"' "$R"
+WID=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+check webhook-no-url-leak '0' "$(req $J1 GET /api/orgs/$ORG/webhooks | grep -c aaaaaaaaaaaaaaaa)"
+check webhook-update '"enabled":false' "$(req $J1 PATCH /api/orgs/$ORG/webhooks/$WID '{"enabled":false}')"
+check webhook-test-fails '"ok":false' "$(req $J1 POST /api/orgs/$ORG/webhooks/$WID/test)"
+check webhook-delete '"ok":true' "$(req $J1 DELETE /api/orgs/$ORG/webhooks/$WID)"
+
 echo "== analytics"
 sleep 12
 check analytics '"population"' "$(req $J1 GET "/api/servers/$SID/analytics?range=24h")"
 check analytics-sessions '"steamId"' "$(req $J1 GET "/api/servers/$SID/analytics?range=24h")"
 check analytics-anon 'Sign in required' "$(req $J3 GET "/api/servers/$SID/analytics")"
 check analytics-page '200' "$(pagecode $J1 "/server/$SID/analytics")"
+# The demo server gains players at random; the welcome trigger fires one poll after a join.
+for i in $(seq 1 30); do R=$(req $J1 GET '/api/audit?action=trigger.welcome&limit=5'); [[ "$R" == *'"action":"trigger.welcome"'* ]] && break; sleep 3; done
+check trigger-fired '"action":"trigger.welcome"' "$R"
+check trigger-firecount '"fireCount":' "$(req $J1 GET /api/servers/$SID/triggers | grep -o '"fireCount":[1-9]' | head -1)"
+req $J1 DELETE /api/servers/$SID/triggers/$TID2 >/dev/null; req $J1 DELETE /api/servers/$SID/triggers/$TID3 >/dev/null
 
 echo "== pages (owner)"
-for p in / /audit /users /servers /orgs "/orgs/$ORG" /account "/server/$SID" "/server/$SID/players" "/server/$SID/rotation" "/server/$SID/config" "/server/$SID/log" "/audit?outcome=denied&q=kick"; do check "page $p" '200' "$(pagecode $J1 "$p")"; done
+for p in / /audit /users /servers /orgs "/orgs/$ORG" /account "/server/$SID" "/server/$SID/players" "/server/$SID/players/$P1" "/server/$SID/automation" "/server/$SID/rotation" "/server/$SID/config" "/server/$SID/log" "/audit?outcome=denied&q=kick"; do check "page $p" '200' "$(pagecode $J1 "$p")"; done
 check page-unknown-server '404' "$(pagecode $J1 /server/nope)"
 check server-delete '"ok":true' "$(req $J1 DELETE /api/servers/$SID2)"
 check page-sessions 'this session' "$(curl -s -b $J1 $B/account)"

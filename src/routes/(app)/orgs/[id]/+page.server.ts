@@ -4,6 +4,7 @@ import { discordEnabled, getEnv } from '$lib/server/env';
 import { requireOrgRole, type OrgRow } from '$lib/server/access';
 import { normalizeError } from '$lib/server/http';
 import { listInvites, listMembers, listOrgs } from '$lib/server/orgs';
+import { listWebhooks, WEBHOOK_EVENT_LABELS } from '$lib/server/webhooks';
 
 /** Org management: owners of the org (and the site owner) only. Same rule as the API routes. */
 export const load: PageServerLoad = async ({ locals, params, parent }) => {
@@ -16,17 +17,20 @@ export const load: PageServerLoad = async ({ locals, params, parent }) => {
 		if (!known) throw err;
 		error(known.status, known.message);
 	}
-	const [{ servers }, members, invites, [view]] = await Promise.all([
+	const [{ servers }, members, invites, [view], webhooks] = await Promise.all([
 		parent(),
 		listMembers(env, org.id),
 		listInvites(env, org.id),
-		listOrgs(env, [org.id])
+		listOrgs(env, [org.id]),
+		listWebhooks(env, org.id)
 	]);
 	return {
 		org: view,
 		orgServers: servers.filter((s) => s.orgId === org.id),
 		members,
 		invites,
+		webhooks,
+		webhookEvents: Object.entries(WEBHOOK_EVENT_LABELS).map(([key, label]) => ({ key, label })),
 		discord: discordEnabled(env)
 	};
 };

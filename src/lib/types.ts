@@ -181,3 +181,142 @@ export interface InviteView {
 	/** the status as a sentence for people, or null while it is live */
 	problem: string | null;
 }
+
+// ---- player intelligence ------------------------------------------------------------------------
+
+export interface SteamView {
+	persona: string;
+	avatar: string;
+	profileUrl: string;
+	public: boolean;
+	accountCreatedAt: string | null;
+	accountAgeDays: number | null;
+	vacBans: number;
+	gameBans: number;
+	daysSinceLastBan: number | null;
+	communityBanned: boolean;
+	economyBan: string;
+	fetchedAt: string;
+	error: string;
+}
+
+export interface RiskView {
+	score: number;
+	level: 'low' | 'medium' | 'high';
+	reasons: { code: string; text: string; weight: number }[];
+	steamChecked: boolean;
+}
+
+/** What the players table shows next to each connected player. */
+export interface PlayerMark {
+	steamId: string;
+	watched: boolean;
+	reason: string;
+	firstVisit: boolean;
+	risk: RiskView;
+}
+
+export interface PlayerNoteView {
+	id: number;
+	authorId: string | null;
+	authorName: string;
+	body: string;
+	createdAt: string;
+	/** the caller may delete it (author, or admin on this server) */
+	deletable: boolean;
+}
+
+export interface DossierSession {
+	id: number;
+	serverId: string;
+	serverName: string;
+	name: string;
+	faction: string | null;
+	joinedAt: string;
+	lastSeen: string;
+	leftAt: string | null;
+	minutes: number;
+	kills: number;
+	deaths: number;
+	cash: number;
+}
+
+export interface DossierView {
+	steamId: string;
+	name: string;
+	names: string[];
+	online: { serverId: string; serverName: string } | null;
+	steamEnabled: boolean;
+	steam: SteamView | null;
+	risk: RiskView;
+	watch: { watched: boolean; reason: string; updatedByName: string; updatedAt: string | null };
+	bannedOn: { serverId: string; serverName: string; reason: string; bannedBy: string }[];
+	summary: {
+		sessions: number;
+		minutes: number;
+		kills: number;
+		deaths: number;
+		firstSeen: string | null;
+		lastSeen: string | null;
+	};
+	perServer: {
+		serverId: string;
+		serverName: string;
+		sessions: number;
+		minutes: number;
+		kills: number;
+		deaths: number;
+		lastSeen: string;
+	}[];
+	recent: DossierSession[];
+	notes: PlayerNoteView[];
+	actions: {
+		id: number;
+		ts: string;
+		actorName: string;
+		action: string;
+		serverName: string;
+		outcome: string;
+		message: string;
+	}[];
+}
+
+// ---- automation ---------------------------------------------------------------------------------
+
+export type TriggerKind = 'welcome' | 'broadcast' | 'empty_reset' | 'risk_kick';
+
+export interface TriggerView {
+	id: string;
+	kind: TriggerKind;
+	name: string;
+	enabled: boolean;
+	config: Record<string, unknown>;
+	lastFiredAt: string | null;
+	lastResult: string;
+	fireCount: number;
+	createdAt: string | null;
+}
+
+export interface DryRunResult {
+	kind: TriggerKind;
+	from: string;
+	to: string;
+	fires: number;
+	items: { at: string; text: string }[];
+	notes: string[];
+}
+
+// ---- webhooks -----------------------------------------------------------------------------------
+
+export interface WebhookView {
+	id: string;
+	label: string;
+	urlHint: string;
+	events: string[];
+	serverIds: string[] | null;
+	enabled: boolean;
+	lastSentAt: string | null;
+	lastStatus: number | null;
+	lastError: string;
+	createdAt: string | null;
+}

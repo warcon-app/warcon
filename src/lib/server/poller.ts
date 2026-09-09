@@ -1,14 +1,19 @@
 // Background sampler: every POLL_SECONDS it asks each game server for status and players, stores
 // a sample, and turns the player list into sessions and match boundaries. Only one process polls:
 // the leader holds a Postgres advisory lock on a reserved connection, so extra replicas stay idle.
-import { and, desc, eq, gt, isNull, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, lt, notInArray, sql } from 'drizzle-orm';
 import type { Env } from './env';
+import { pollSeconds } from './env';
 import { publicMessage } from './http';
 import type { ServerRow } from './access';
 import { ACTIONS } from './actions';
 import { WardogsClient } from './rcon';
-import { matches, playerSessions, samples, servers } from './db/schema';
-import type { Player, Status } from '$lib/types';
+import { matches, playerSessions, samples, serverBans, servers } from './db/schema';
+import { getProfiles, steamEnabled } from './steam';
+import { runTriggers } from './triggers';
+import type { Ban, Player, Status } from '$lib/types';
+
+export { pollSeconds };
 
 const SAMPLE_RETENTION_DAYS = 90;
 const SESSION_RETENTION_DAYS = 365;
@@ -16,6 +21,8 @@ const SESSION_RETENTION_DAYS = 365;
 const OFFLINE_AFTER_FAILURES = 3;
 /** Any stable 64-bit constant; identifies "the Warcon poller" to pg_try_advisory_lock. */
 const LEADER_LOCK_KEY = 7741221;
+/** How often each server's ban list and reserved slots are re-read for the trigger engine. */
+const LISTS_TTL_MS = 5 * 60_000;
 
 interface Memory {
 	inFlight: boolean;
@@ -23,13 +30,26 @@ interface Memory {
 	lastMatchSeconds: number | null;
 	/** Scores from the previous sample: the last known state of a match that just ended. */
 	lastScores: unknown;
+	/** No successful tick yet in this process: every open session would look like a join. */
+	firstTick: boolean;
+	/** Ban list and reserved slots, refreshed every LISTS_TTL_MS. */
+	listsAt: number;
+	reserved: Set<string>;
 }
 
 const memory = new Map<string, Memory>();
 const mem = (id: string): Memory => {
 	let m = memory.get(id);
 	if (!m) {
-		m = { inFlight: false, failures: 0, lastMatchSeconds: null, lastScores: null };
+		m = {
+			inFlight: false,
+			failures: 0,
+			lastMatchSeconds: null,
+			lastScores: null,
+			firstTick: true,
+			listsAt: 0,
+			reserved: new Set()
+		};
 		memory.set(id, m);
 	}
 	return m;
@@ -38,11 +58,6 @@ const mem = (id: string): Memory => {
 declare global {
 	// Survives Vite HMR re-evaluation in dev so we never run two loops.
 	var __warconPoller: ReturnType<typeof setInterval> | undefined;
-}
-
-export function pollSeconds(env: Env): number {
-	const n = Number(env.POLL_SECONDS ?? 20);
-	return Number.isFinite(n) && n > 0 ? Math.max(5, Math.floor(n)) : 0;
 }
 
 type Reserved = Awaited<ReturnType<Env['sql']['reserve']>>;
@@ -100,8 +115,9 @@ export async function pollServer(env: Env, server: ServerRow): Promise<void> {
 	try {
 		let status: Status;
 		let players: Player[];
+		let client: WardogsClient;
 		try {
-			const client = await WardogsClient.forServer(env, server);
+			client = await WardogsClient.forServer(env, server);
 			status = (await ACTIONS.status.run(client, {})) as Status;
 			players = ((await ACTIONS.players.run(client, {})) as { players: Player[] }).players;
 		} catch (err) {
@@ -122,7 +138,11 @@ export async function pollServer(env: Env, server: ServerRow): Promise<void> {
 			}
 			return;
 		}
+		// Joins seen on the first tick of a process, or right after an outage closed every session,
+		// are reconnects or people who were there all along: no whispers or kicks for those.
+		const joinsReliable = !m.firstTick && m.failures === 0;
 		m.failures = 0;
+		m.firstTick = false;
 		const scores = status.scores.map((s) => ({ name: s.name, score: s.score }));
 		await env.db.insert(samples).values({
 			serverId: server.id,
@@ -137,25 +157,100 @@ export async function pollServer(env: Env, server: ServerRow): Promise<void> {
 			scores,
 			latencyMs: Date.now() - started
 		});
-		await reconcileSessions(env, server.id, ts, players);
+		const { joined, firstVisit } = await reconcileSessions(env, server.id, ts, players);
 		await reconcileMatch(env, server.id, ts, status, m, scores);
+		await refreshLists(env, server, client, m, ts).catch((err) =>
+			console.warn('[warcon] ban list snapshot', publicMessage(err))
+		);
+		// Warm the Steam cache for newcomers so the players table and dossier have their data.
+		if (joined.length && steamEnabled(env))
+			await getProfiles(
+				env,
+				joined.map((p) => p.steamId)
+			);
+		await runTriggers(env, {
+			server,
+			client,
+			status,
+			players,
+			joined,
+			firstVisit,
+			reserved: m.reserved,
+			joinsReliable,
+			ts
+		});
 	} finally {
 		m.inFlight = false;
 	}
 }
 
+/** Re-reads the ban list and reserved slots now and then; bans are kept in server_bans for the dossier. */
+async function refreshLists(
+	env: Env,
+	server: ServerRow,
+	client: WardogsClient,
+	m: Memory,
+	ts: Date
+): Promise<void> {
+	if (ts.getTime() - m.listsAt < LISTS_TTL_MS) return;
+	m.listsAt = ts.getTime();
+	const [bans, reserved] = await Promise.all([
+		ACTIONS.bans.run(client, {}) as Promise<{ bans: Ban[] }>,
+		(ACTIONS.reserved.run(client, {}) as Promise<{ reserved: string[] }>).catch(() => ({
+			reserved: [...m.reserved]
+		}))
+	]);
+	m.reserved = new Set(reserved.reserved);
+	const rows = bans.bans.filter((b) => /^\d{17}$/.test(b.steamId));
+	await env.db.transaction(async (tx) => {
+		const ids = rows.map((b) => b.steamId);
+		await tx
+			.delete(serverBans)
+			.where(
+				ids.length
+					? and(eq(serverBans.serverId, server.id), notInArray(serverBans.steamId, ids))
+					: eq(serverBans.serverId, server.id)
+			);
+		if (rows.length)
+			await tx
+				.insert(serverBans)
+				.values(
+					rows.map((b) => ({
+						serverId: server.id,
+						steamId: b.steamId,
+						reason: b.reason || '',
+						bannedBy: b.bannedBy || '',
+						bannedAtUtc: b.bannedAtUtc || '',
+						seenAt: ts
+					}))
+				)
+				.onConflictDoUpdate({
+					target: [serverBans.serverId, serverBans.steamId],
+					set: {
+						reason: sql`excluded.reason`,
+						bannedBy: sql`excluded.banned_by`,
+						bannedAtUtc: sql`excluded.banned_at_utc`,
+						seenAt: ts
+					}
+				});
+	});
+}
+
+/** Returns who joined this tick (no open session before it) and which of those were never seen on this server. */
 async function reconcileSessions(
 	env: Env,
 	serverId: string,
 	ts: Date,
 	players: Player[]
-): Promise<void> {
+): Promise<{ joined: Player[]; firstVisit: Set<string> }> {
 	const open = await env.db
 		.select({ id: playerSessions.id, steamId: playerSessions.steamId })
 		.from(playerSessions)
 		.where(and(eq(playerSessions.serverId, serverId), isNull(playerSessions.leftAt)));
 	const byId = new Map(open.map((s) => [s.steamId, s.id]));
 	const seen = new Set<string>();
+	const joined: Player[] = [];
+	const firstVisit = new Set<string>();
 	await env.db.transaction(async (tx) => {
 		const joins: (typeof playerSessions.$inferInsert)[] = [];
 		for (const p of players) {
@@ -175,6 +270,7 @@ async function reconcileSessions(
 					})
 					.where(eq(playerSessions.id, id));
 			} else {
+				joined.push(p);
 				joins.push({
 					serverId,
 					steamId: p.steamId,
@@ -188,7 +284,23 @@ async function reconcileSessions(
 				});
 			}
 		}
-		if (joins.length) await tx.insert(playerSessions).values(joins);
+		if (joins.length) {
+			const known = await tx
+				.selectDistinct({ steamId: playerSessions.steamId })
+				.from(playerSessions)
+				.where(
+					and(
+						eq(playerSessions.serverId, serverId),
+						inArray(
+							playerSessions.steamId,
+							joins.map((j) => j.steamId)
+						)
+					)
+				);
+			const knownIds = new Set(known.map((k) => k.steamId));
+			for (const j of joins) if (!knownIds.has(j.steamId)) firstVisit.add(j.steamId);
+			await tx.insert(playerSessions).values(joins);
+		}
 		const gone = open.filter((s) => !seen.has(s.steamId)).map((s) => s.id);
 		for (const id of gone)
 			await tx
@@ -196,6 +308,7 @@ async function reconcileSessions(
 				.set({ leftAt: sql`${playerSessions.lastSeen}` })
 				.where(eq(playerSessions.id, id));
 	});
+	return { joined, firstVisit };
 }
 
 async function reconcileMatch(

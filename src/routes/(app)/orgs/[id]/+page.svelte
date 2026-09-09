@@ -7,7 +7,7 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
-	import type { InviteView, OrgMemberView } from '$lib/types';
+	import type { InviteView, OrgMemberView, WebhookView } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -24,7 +24,16 @@
 				maxUses: string;
 		  }
 		| { kind: 'created'; invite: InviteView }
-		| { kind: 'grants'; member: OrgMemberView; grants: Record<string, string> };
+		| { kind: 'grants'; member: OrgMemberView; grants: Record<string, string> }
+		| {
+				kind: 'webhook';
+				id: string | null;
+				label: string;
+				url: string;
+				events: Record<string, boolean>;
+				allServers: boolean;
+				servers: Record<string, boolean>;
+		  };
 	let dialog = $state<Dialog | null>(null);
 	let busy = $state(false);
 
@@ -165,6 +174,68 @@
 		};
 	const usesLabel = (inv: InviteView) =>
 		inv.maxUses === null ? `${inv.uses}` : `${inv.uses} / ${inv.maxUses}`;
+
+	// --- Discord webhooks ---
+	const openWebhook = (w: WebhookView | null) => {
+		const events: Record<string, boolean> = {};
+		for (const e of data.webhookEvents)
+			events[e.key] = w
+				? w.events.includes(e.key)
+				: e.key === 'bans' || e.key === 'commands' || e.key === 'triggers';
+		const servers: Record<string, boolean> = {};
+		for (const s of data.orgServers) servers[s.id] = !!w?.serverIds?.includes(s.id);
+		dialog = {
+			kind: 'webhook',
+			id: w?.id ?? null,
+			label: w?.label ?? '',
+			url: '',
+			events,
+			allServers: !w?.serverIds,
+			servers
+		};
+	};
+	function saveWebhook() {
+		const d = dialog;
+		if (!d || d.kind !== 'webhook') return;
+		const body: Record<string, unknown> = {
+			label: d.label.trim(),
+			events: Object.entries(d.events)
+				.filter(([, on]) => on)
+				.map(([k]) => k),
+			serverIds: d.allServers
+				? null
+				: Object.entries(d.servers)
+						.filter(([, on]) => on)
+						.map(([k]) => k)
+		};
+		if (d.url.trim()) body.url = d.url.trim();
+		void run(
+			() =>
+				d.id
+					? api('PATCH', `${orgPath}/webhooks/${d.id}`, body)
+					: api('POST', `${orgPath}/webhooks`, body),
+			d.id ? 'Webhook updated.' : 'Webhook added.'
+		);
+	}
+	function toggleWebhook(w: WebhookView) {
+		void run(
+			() => api('PATCH', `${orgPath}/webhooks/${w.id}`, { enabled: !w.enabled }),
+			w.enabled ? 'Webhook paused.' : 'Webhook enabled.',
+			false
+		);
+	}
+	function testWebhook(w: WebhookView) {
+		void run(() => api('POST', `${orgPath}/webhooks/${w.id}/test`), 'Test message sent.', false);
+	}
+	async function deleteWebhook(w: WebhookView) {
+		if (
+			!(await confirmDialog(`Remove the ${w.label} webhook?`, { okLabel: 'Remove', danger: true }))
+		)
+			return;
+		await run(() => api('DELETE', `${orgPath}/webhooks/${w.id}`), 'Webhook removed.', false);
+	}
+	const eventLabel = (key: string) =>
+		data.webhookEvents.find((e) => e.key === key)?.label.split(' (')[0] ?? key;
 
 	// --- site owner controls ---
 	// A number input binds a number, or null when blank (blank = the instance default).
@@ -418,6 +489,52 @@
 
 		<div class="panel">
 			<div class="mb-3 flex items-center gap-3">
+				<span class="label-sm mb-0!">Discord webhooks</span>
+				<button class="ml-auto btn btn-sm btn-primary" onclick={() => openWebhook(null)}
+					>New webhook</button
+				>
+			</div>
+			<p class="mb-3 text-[13px] text-mist-400">
+				Mirror the audit trail into a channel: bans, kicks, trigger actions, sign-ins. In Discord,
+				open the channel's settings → Integrations → Webhooks, copy the URL and paste it here.
+			</p>
+			{#each data.webhooks as w (w.id)}
+				<div class="kv items-start">
+					<div class="min-w-0">
+						<div>
+							{w.label}
+							{#if !w.enabled}<Badge class="ml-1">paused</Badge>{/if}
+							{#if w.lastError}<Badge tone="err" class="ml-1">failing</Badge
+								>{:else if w.lastSentAt}<Badge tone="ok" class="ml-1">ok</Badge>{/if}
+						</div>
+						<div class="truncate font-mono text-[11px] text-mist-600">{w.urlHint}</div>
+						<div class="text-[12px] text-mist-400">
+							{w.events.map(eventLabel).join(' · ')}
+							{#if w.serverIds}· {w.serverIds.length} server{w.serverIds.length === 1
+									? ''
+									: 's'}{/if}
+							{#if w.lastError}<div class="text-danger">{w.lastError}</div>{:else if w.lastSentAt}·
+								last sent {fmtTime(w.lastSentAt)}{/if}
+						</div>
+					</div>
+					<span class="inline-flex shrink-0 flex-wrap justify-end gap-1.5">
+						<button class="btn btn-sm" onclick={() => testWebhook(w)} disabled={busy}>Test</button>
+						<button class="btn btn-sm" onclick={() => openWebhook(w)}>Edit</button>
+						<button class="btn btn-sm" onclick={() => toggleWebhook(w)} disabled={busy}
+							>{w.enabled ? 'Pause' : 'Enable'}</button
+						>
+						<button class="btn btn-sm btn-danger" onclick={() => deleteWebhook(w)} disabled={busy}
+							>Remove</button
+						>
+					</span>
+				</div>
+			{:else}
+				<p class="text-[13px] text-mist-600">No webhooks yet.</p>
+			{/each}
+		</div>
+
+		<div class="panel">
+			<div class="mb-3 flex items-center gap-3">
 				<span class="label-sm mb-0!"
 					>Servers <span class="text-mist-600"
 						>{data.orgServers.length} / {data.org.serverLimit}</span
@@ -549,6 +666,74 @@
 		{#snippet actions()}<button type="button" class="btn" onclick={() => (dialog = null)}
 				>Done</button
 			>{/snippet}
+	</Modal>
+{:else if dialog?.kind === 'webhook'}
+	{@const d = dialog}
+	<Modal title={d.id ? 'Edit webhook' : 'New Discord webhook'} onclose={() => (dialog = null)}>
+		<form
+			class="space-y-3"
+			onsubmit={(e) => {
+				e.preventDefault();
+				saveWebhook();
+			}}
+		>
+			<label class="block"
+				><span class="field-label">Label</span><input
+					class="input"
+					type="text"
+					bind:value={d.label}
+					placeholder="e.g. #admin-log"
+					maxlength="60"
+				/></label
+			>
+			<label class="block"
+				><span class="field-label">Webhook URL{d.id ? ' (leave blank to keep)' : ''}</span><input
+					class="input font-mono text-[12.5px]"
+					type="url"
+					bind:value={d.url}
+					placeholder="https://discord.com/api/webhooks/…"
+					required={!d.id}
+					autocomplete="off"
+				/></label
+			>
+			<div>
+				<span class="field-label">Mirror</span>
+				<div class="space-y-1">
+					{#each data.webhookEvents as e (e.key)}
+						<label class="flex items-center gap-2 text-[13px]"
+							><input type="checkbox" bind:checked={d.events[e.key]} /> {e.label}</label
+						>
+					{/each}
+				</div>
+			</div>
+			{#if data.orgServers.length > 1}
+				<div>
+					<span class="field-label">Servers</span>
+					<label class="flex items-center gap-2 text-[13px]"
+						><input type="checkbox" bind:checked={d.allServers} /> Every server in the organisation</label
+					>
+					{#if !d.allServers}
+						<div class="mt-1 space-y-1 pl-5">
+							{#each data.orgServers as s (s.id)}
+								<label class="flex items-center gap-2 text-[13px]"
+									><input type="checkbox" bind:checked={d.servers[s.id]} /> {s.name}</label
+								>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
+			<p class="note">
+				The URL lets anyone post to that channel, so it is stored encrypted and never shown again.
+				IP addresses are never sent to Discord.
+			</p>
+			<div class="flex justify-end gap-2 pt-2">
+				<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>
+				<button type="submit" class="btn btn-primary" disabled={busy}
+					>{d.id ? 'Save' : 'Add webhook'}</button
+				>
+			</div>
+		</form>
 	</Modal>
 {:else if dialog?.kind === 'grants'}
 	{@const d = dialog}

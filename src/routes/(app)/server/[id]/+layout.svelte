@@ -13,11 +13,15 @@
 		['/players', 'Players'],
 		['/rotation', 'Map rotation'],
 		['/config', 'Configuration'],
+		['/automation', 'Automation'],
 		['/analytics', 'Analytics'],
 		['/log', 'Server log']
 	] as const;
 	let base = $derived(`/server/${encodeURIComponent(data.server.id)}`);
 	let current = $derived(page.url.pathname.slice(base.length) || '');
+	// A dossier (/players/<steamId>) keeps the Players tab lit.
+	const isCurrent = (path: string) =>
+		current === path || (path !== '' && current.startsWith(path + '/'));
 
 	$effect(() => {
 		setHealth(data.server.id, data.reachable);
@@ -65,7 +69,7 @@
 	aria-label="Server sections"
 >
 	{#each TABS as [path, label] (path)}
-		<a href="{base}{path}" class="tab-link {current === path ? 'tab-link-active' : ''}">{label}</a>
+		<a href="{base}{path}" class="tab-link {isCurrent(path) ? 'tab-link-active' : ''}">{label}</a>
 	{/each}
 </nav>
 

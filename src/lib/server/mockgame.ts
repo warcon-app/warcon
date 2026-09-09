@@ -413,7 +413,9 @@ function tick(s: State): void {
 		}
 		p.pingMs = Math.max(5, p.pingMs + Math.floor(Math.random() * 9) - 4);
 	}
-	if (s.players.length < 16 && Math.random() < 0.04) {
+	// Someone new drifts in now and then; quicker while the server is quiet, so joins (and the
+	// triggers that watch for them) are easy to see on the demo.
+	if (s.players.length < 16 && Math.random() < (s.players.length < 12 ? 0.2 : 0.04)) {
 		s.players.push({
 			name: JOINERS[s.nextJoiner % JOINERS.length],
 			steamId: String(76561198100000401n + BigInt(s.nextJoiner++)),

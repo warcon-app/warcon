@@ -64,6 +64,7 @@ export async function runAction(
 	const base = {
 		actor: user,
 		server: { id: server.id, name: server.name },
+		orgId: server.orgId,
 		category: 'rcon' as const,
 		action: `rcon.${name}`,
 		target

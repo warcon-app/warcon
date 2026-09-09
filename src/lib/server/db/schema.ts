@@ -308,8 +308,142 @@ export const matches = pgTable(
 	(t) => [index('matches_server_idx').on(t.serverId, t.startedAt)]
 );
 
+// ---- Player intelligence: org-scoped notes and watchlist, cached Steam data, ban snapshots ------
+
+/** One row per (org, player): the watchlist flag and why. */
+export const playerMarks = pgTable(
+	'player_marks',
+	{
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		steamId: text('steam_id').notNull(),
+		watched: boolean('watched').notNull().default(false),
+		reason: text('reason').notNull().default(''),
+		updatedBy: text('updated_by'),
+		updatedByName: text('updated_by_name').notNull().default(''),
+		updatedAt: ts('updated_at').notNull().defaultNow()
+	},
+	(t) => [primaryKey({ columns: [t.orgId, t.steamId] })]
+);
+
+/** Free-text notes admins leave on a player, shared across the org's servers. */
+export const playerNotes = pgTable(
+	'player_notes',
+	{
+		id: bigserial('id', { mode: 'number' }).primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		steamId: text('steam_id').notNull(),
+		authorId: text('author_id'),
+		authorName: text('author_name').notNull().default(''),
+		body: text('body').notNull(),
+		createdAt: ts('created_at').notNull().defaultNow()
+	},
+	(t) => [index('player_notes_idx').on(t.orgId, t.steamId, t.id)]
+);
+
+/** What the Steam Web API last said about a SteamID (persona, account age, VAC and game bans). */
+export const steamProfiles = pgTable('steam_profiles', {
+	steamId: text('steam_id').primaryKey(),
+	persona: text('persona').notNull().default(''),
+	avatar: text('avatar').notNull().default(''),
+	profileUrl: text('profile_url').notNull().default(''),
+	/** community visibility: only public profiles expose the creation date */
+	public: boolean('public').notNull().default(false),
+	accountCreatedAt: ts('account_created_at'),
+	vacBans: integer('vac_bans').notNull().default(0),
+	gameBans: integer('game_bans').notNull().default(0),
+	daysSinceLastBan: integer('days_since_last_ban'),
+	communityBanned: boolean('community_banned').notNull().default(false),
+	economyBan: text('economy_ban').notNull().default('none'),
+	fetchedAt: ts('fetched_at').notNull().defaultNow(),
+	error: text('error').notNull().default('')
+});
+
+/** The poller's copy of each game server's ban list, so bans on one server are visible from another. */
+export const serverBans = pgTable(
+	'server_bans',
+	{
+		serverId: text('server_id')
+			.notNull()
+			.references(() => servers.id, { onDelete: 'cascade' }),
+		steamId: text('steam_id').notNull(),
+		reason: text('reason').notNull().default(''),
+		bannedBy: text('banned_by').notNull().default(''),
+		bannedAtUtc: text('banned_at_utc').notNull().default(''),
+		seenAt: ts('seen_at').notNull().defaultNow()
+	},
+	(t) => [
+		primaryKey({ columns: [t.serverId, t.steamId] }),
+		index('server_bans_steam_idx').on(t.steamId)
+	]
+);
+
+// ---- Automation: per-server triggers run by the poller ----------------------------------------
+
+export const triggers = pgTable(
+	'triggers',
+	{
+		id: text('id').primaryKey(),
+		serverId: text('server_id')
+			.notNull()
+			.references(() => servers.id, { onDelete: 'cascade' }),
+		orgId: text('org_id').notNull(),
+		kind: text('kind', { enum: ['welcome', 'broadcast', 'empty_reset', 'risk_kick'] }).notNull(),
+		name: text('name').notNull(),
+		enabled: boolean('enabled').notNull().default(false),
+		/** kind-specific settings, validated in triggers.ts */
+		config: jsonb('config').notNull(),
+		/** kind-specific runtime state (e.g. the next broadcast index) */
+		state: jsonb('state'),
+		lastFiredAt: ts('last_fired_at'),
+		lastResult: text('last_result').notNull().default(''),
+		fireCount: integer('fire_count').notNull().default(0),
+		createdBy: text('created_by'),
+		createdAt: ts('created_at').notNull().defaultNow(),
+		updatedAt: ts('updated_at').notNull().defaultNow()
+	},
+	(t) => [index('triggers_server_idx').on(t.serverId)]
+);
+
+// ---- Outbound: Discord webhooks that mirror the audit trail -----------------------------------
+
+export const webhooks = pgTable(
+	'webhooks',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		label: text('label').notNull().default(''),
+		/** the webhook URL is a bearer credential; AES-GCM like RCON passwords */
+		urlEnc: text('url_enc').notNull(),
+		/** what the UI shows instead of the URL: host and webhook id */
+		urlHint: text('url_hint').notNull().default(''),
+		/** event classes to mirror; see webhook-delivery.ts */
+		events: jsonb('events').notNull(),
+		/** null = every server in the org */
+		serverIds: jsonb('server_ids'),
+		enabled: boolean('enabled').notNull().default(true),
+		lastSentAt: ts('last_sent_at'),
+		lastStatus: integer('last_status'),
+		lastError: text('last_error').notNull().default(''),
+		createdBy: text('created_by'),
+		createdAt: ts('created_at').notNull().defaultNow(),
+		updatedAt: ts('updated_at').notNull().defaultNow()
+	},
+	(t) => [index('webhooks_org_idx').on(t.orgId)]
+);
+
 export type ServerRow = typeof servers.$inferSelect;
 export type OrgRow = typeof organizations.$inferSelect;
 export type OrgInviteRow = typeof orgInvites.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
 export type SampleRow = typeof samples.$inferSelect;
+export type SteamProfileRow = typeof steamProfiles.$inferSelect;
+export type TriggerRow = typeof triggers.$inferSelect;
+export type WebhookRow = typeof webhooks.$inferSelect;
+export type PlayerNoteRow = typeof playerNotes.$inferSelect;
+export type PlayerMarkRow = typeof playerMarks.$inferSelect;

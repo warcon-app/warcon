@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { rconGet, rconPost, errorMessage } from '$lib/api';
+	import { api, qs, rconGet, rconPost, errorMessage } from '$lib/api';
 	import { poll } from '$lib/poll';
 	import { can, fmtNum } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
-	import type { Ban, Player, Status } from '$lib/types';
+	import Badge from '$lib/components/Badge.svelte';
+	import type { Ban, Player, PlayerMark, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -25,6 +26,11 @@
 	let whisper = $state('');
 	let team = $state('');
 	let reservedId = $state('');
+	/** watchlist, first-visit and risk marks by SteamID; refreshed when the roster changes */
+	let marks = $state<Record<string, PlayerMark>>({});
+	let marksKey = '';
+	let marksAt = 0;
+	let base = $derived(`/server/${encodeURIComponent(data.server.id)}/players`);
 
 	let rows = $derived.by(() => {
 		const q = search.trim().toLowerCase();
@@ -70,6 +76,30 @@
 		all = d.players;
 		status = s;
 		if (!team && s.scores.length) team = s.scores[0].name;
+		void refreshMarks(d.players);
+	}
+	async function refreshMarks(players: Player[]) {
+		const ids = players.map((p) => p.steamId).filter((s) => /^\d{17}$/.test(s));
+		const key = ids.join(',');
+		if (!ids.length) {
+			marks = {};
+			marksKey = '';
+			return;
+		}
+		if (key === marksKey && Date.now() - marksAt < 30000) return;
+		marksKey = key;
+		marksAt = Date.now();
+		try {
+			const d = await api<{ marks: PlayerMark[] }>(
+				'GET',
+				`/api/servers/${encodeURIComponent(id)}/players/marks${qs({ ids: key, names: players.map((p) => p.name).join('\n') })}`
+			);
+			const next: Record<string, PlayerMark> = {};
+			for (const m of d.marks) next[m.steamId] = m;
+			marks = next;
+		} catch (err) {
+			console.warn('marks', err);
+		}
 	}
 	async function refreshReserved() {
 		reserved = (await rconGet<{ reserved: string[] }>(id, 'reserved')).reserved;
@@ -110,24 +140,43 @@
 		<table>
 			<thead
 				><tr
-					><th>Player</th><th>Faction</th><th class="num">K</th><th class="num">D</th><th
-						class="num">Cash</th
-					><th class="num">Ping</th></tr
+					><th>Player</th><th>Flags</th><th>Faction</th><th class="num">K</th><th class="num">D</th
+					><th class="num">Cash</th><th class="num">Ping</th></tr
 				></thead
 			>
 			<tbody>
 				{#each rows as p (p.steamId)}
+					{@const m = marks[p.steamId]}
 					<tr
 						class="clickable {selected === p.steamId ? 'selected' : ''}"
 						onclick={() => (selected = selected === p.steamId ? null : p.steamId)}
 					>
-						<td>{p.name} <span class="font-mono text-[12px] text-mist-600">{p.steamId}</span></td>
+						<td
+							><a
+								href="{base}/{p.steamId}"
+								class="hover:text-accent hover:underline"
+								title="Open dossier"
+								onclick={(e) => e.stopPropagation()}>{p.name}</a
+							>
+							<span class="font-mono text-[12px] text-mist-600">{p.steamId}</span></td
+						>
+						<td class="whitespace-nowrap">
+							{#if m}
+								{#if m.watched}<Badge tone="warn" class="mr-1">watch</Badge>{/if}
+								{#if m.risk.level === 'high'}<Badge tone="err" class="mr-1"
+										>risk {m.risk.score}</Badge
+									>{:else if m.risk.level === 'medium'}<Badge tone="warn" class="mr-1"
+										>risk {m.risk.score}</Badge
+									>{/if}
+								{#if m.firstVisit}<Badge tone="info">new</Badge>{/if}
+							{/if}
+						</td>
 						<td><FactionChip faction={p.faction} scores={status?.scores} /></td>
 						<td class="num">{p.kills}</td><td class="num">{p.deaths}</td>
 						<td class="num">{fmtNum(p.cash)}</td><td class="num">{p.ping ?? '—'}</td>
 					</tr>
 				{:else}
-					<tr><td colspan="6" class="py-6 text-center text-mist-600">No players connected.</td></tr>
+					<tr><td colspan="7" class="py-6 text-center text-mist-600">No players connected.</td></tr>
 				{/each}
 			</tbody>
 		</table>
@@ -143,9 +192,10 @@
 					class="order-last basis-full font-mono text-[12px] text-mist-400 sm:order-none sm:basis-auto"
 					>{player.steamId}</span
 				>
+				<a href="{base}/{player.steamId}" class="ml-auto btn btn-sm">Dossier</a>
 				<button
 					type="button"
-					class="ml-auto btn btn-sm btn-ghost"
+					class="btn btn-sm btn-ghost"
 					onclick={() => (selected = null)}
 					aria-label="Deselect player">✕</button
 				>

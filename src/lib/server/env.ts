@@ -47,6 +47,12 @@ export const positiveInt = (value: string | undefined, fallback: number): number
 	return Number.isInteger(n) && n > 0 ? n : fallback;
 };
 
+/** Analytics sampling interval in seconds (at least 5), or 0 when the poller is off. */
+export function pollSeconds(env: Pick<Env, 'POLL_SECONDS'>): number {
+	const n = Number(env.POLL_SECONDS ?? 20);
+	return Number.isFinite(n) && n > 0 ? Math.max(5, Math.floor(n)) : 0;
+}
+
 export const DEFAULT_MAX_ORGS_PER_USER = 3;
 export const DEFAULT_MAX_SERVERS_PER_ORG = 10;
 export const maxOrgsPerUser = (env: Pick<Env, 'MAX_ORGS_PER_USER'>) =>

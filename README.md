@@ -24,6 +24,17 @@ on a container host, with the database wherever you like.
 - **Analytics**: a background poller samples every server and keeps what the game does not:
   players online over time, uptime, time per map, busiest hours, player playtime and sessions,
   match history with results.
+- **Player dossiers**: click any player for their history across the organisation's servers
+  (sessions, playtime, names used, K/D), the admin actions taken on them, shared notes and a
+  watchlist, and, with a Steam key, their Steam persona, account age and VAC / game-ban record.
+- **Connect-time risk**: an advisory score from the Steam Web API, bans on the org's other
+  servers, lookalike names of banned players and the watchlist, shown next to each connected
+  player. It sees what RCON exposes and nothing more: no aim, position or input telemetry.
+- **Automation**: per-server triggers run by the poller, each dry-runnable against the last 24
+  hours before it is switched on: welcome whisper on join, scheduled broadcasts, empty-server map
+  reset, and kick-on-connect for VAC bans, brand-new accounts or bans elsewhere in the org.
+- **Discord mirror**: an org owner points a channel webhook at the audit trail and picks what to
+  mirror (bans, commands, trigger actions, sign-ins…), per server if wanted.
 - **Everything the official console does**: status, scoreboard, kick/ban/kill/whisper/change-team,
   broadcasts, map override, next map, end/restart match, map rotation editing and saving, reserved
   slots, bans, score tick, sponsor image, and the full `ServerSettings.ini` config document with
@@ -53,11 +64,15 @@ Taken against the built-in demo server, so the numbers are synthetic.
 | -------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | ![Score tick, sponsor image and ServerSettings.ini](docs/screenshots/config.png) | ![The game server's own RCON listener log](docs/screenshots/log.png) |
 
+| Player dossier                                                                   | Automation                                                              |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| ![Player dossier: history, risk, watchlist, notes](docs/screenshots/dossier.png) | ![Automation: triggers with a dry run](docs/screenshots/automation.png) |
+
 | Users and access                              | Servers                                  |
 | --------------------------------------------- | ---------------------------------------- |
 | ![Users & Access](docs/screenshots/users.png) | ![Servers](docs/screenshots/servers.png) |
 
-More in [docs/screenshots/](docs/screenshots/): the [dashboard](docs/screenshots/dashboard.png), [time per map and most active players](docs/screenshots/analytics-2.png), and the [sign-in page](docs/screenshots/sign-in.png).
+More in [docs/screenshots/](docs/screenshots/): the [dashboard](docs/screenshots/dashboard.png), the [players table with watchlist and risk flags](docs/screenshots/players-flags.png), [Discord webhooks on the org page](docs/screenshots/org-webhooks.png), [time per map and most active players](docs/screenshots/analytics-2.png), and the [sign-in page](docs/screenshots/sign-in.png).
 
 ## How it works
 
@@ -128,27 +143,27 @@ rejected as cross-site against the https `ORIGIN`.
 
 ### Configuration (`.env`)
 
-| Var                                                          | Default            | Meaning                                                                                                                                               |
-| ------------------------------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET`                                         | required           | Session signing secret.                                                                                                                               |
-| `ENCRYPTION_KEY`                                             | required           | Base64 of 32 random bytes; encrypts stored RCON passwords.                                                                                            |
-| `DATABASE_URL`                                               | unset              | `postgres://user:pass@host:5432/warcon`. Overrides the `PG*` fields; percent-encode `/ # % ?` in the password.                                        |
-| `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | set by Compose     | The database as separate fields (no encoding needed). Used when `DATABASE_URL` is unset.                                                              |
-| `POSTGRES_PASSWORD`                                          | `warcon`           | Password for the bundled `db` service (Compose only).                                                                                                 |
-| `ORIGIN`                                                     | required           | The exact URL people open (scheme, host, port).                                                                                                       |
-| `ADDRESS_HEADER` / `XFF_DEPTH`                               | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                                                                        |
-| `PORT` / `HOST`                                              | `3000` / `0.0.0.0` | Listen address.                                                                                                                                       |
-| `POLL_SECONDS`                                               | `20`               | Analytics sampling interval per server; `0` disables the poller.                                                                                      |
-| `APP_NAME`                                                   | `Warcon`           | Name shown in the UI.                                                                                                                                 |
-| `AUDIT_LOG_READS`                                            | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                |
-| `ALLOW_ORG_SIGNUP`                                           | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                          |
-| `MAX_ORGS_PER_USER` / `MAX_SERVERS_PER_ORG`                  | `3` / `10`         | Self-serve limits. The site owner is exempt and can raise the server limit per organisation, or suspend one, from the Orgs page.                      |
-| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`                | unset              | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.         |
-| `ALLOW_DEMO_SERVER`                                          | `true`             | Allow a server with host `demo` served by the built-in mock.                                                                                          |
-| `GAME_TLS_INSECURE`                                          | `false`            | Accept self-signed certificates on `https` game servers.                                                                                              |
-| `SETUP_TOKEN`                                                | unset              | When set, first-run setup requires it.                                                                                                                |
-| `STEAM_API_KEY`                                              | unset              | Steam persona/avatar lookup.                                                                                                                          |
-| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`                | unset              | "Sign in with Discord": invite links create accounts through it, existing accounts can link it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`. |
+| Var                                                          | Default            | Meaning                                                                                                                                                                           |
+| ------------------------------------------------------------ | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`                                         | required           | Session signing secret.                                                                                                                                                           |
+| `ENCRYPTION_KEY`                                             | required           | Base64 of 32 random bytes; encrypts stored RCON passwords.                                                                                                                        |
+| `DATABASE_URL`                                               | unset              | `postgres://user:pass@host:5432/warcon`. Overrides the `PG*` fields; percent-encode `/ # % ?` in the password.                                                                    |
+| `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | set by Compose     | The database as separate fields (no encoding needed). Used when `DATABASE_URL` is unset.                                                                                          |
+| `POSTGRES_PASSWORD`                                          | `warcon`           | Password for the bundled `db` service (Compose only).                                                                                                                             |
+| `ORIGIN`                                                     | required           | The exact URL people open (scheme, host, port).                                                                                                                                   |
+| `ADDRESS_HEADER` / `XFF_DEPTH`                               | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                                                                                                    |
+| `PORT` / `HOST`                                              | `3000` / `0.0.0.0` | Listen address.                                                                                                                                                                   |
+| `POLL_SECONDS`                                               | `20`               | Analytics sampling interval per server; `0` disables the poller.                                                                                                                  |
+| `APP_NAME`                                                   | `Warcon`           | Name shown in the UI.                                                                                                                                                             |
+| `AUDIT_LOG_READS`                                            | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                                            |
+| `ALLOW_ORG_SIGNUP`                                           | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                                                      |
+| `MAX_ORGS_PER_USER` / `MAX_SERVERS_PER_ORG`                  | `3` / `10`         | Self-serve limits. The site owner is exempt and can raise the server limit per organisation, or suspend one, from the Orgs page.                                                  |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`                | unset              | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.                                     |
+| `ALLOW_DEMO_SERVER`                                          | `true`             | Allow a server with host `demo` served by the built-in mock.                                                                                                                      |
+| `GAME_TLS_INSECURE`                                          | `false`            | Accept self-signed certificates on `https` game servers.                                                                                                                          |
+| `SETUP_TOKEN`                                                | unset              | When set, first-run setup requires it.                                                                                                                                            |
+| `STEAM_API_KEY`                                              | unset              | Steam lookups: persona and avatar, account age, VAC and game bans, for dossiers, the risk score and the kick-on-connect trigger. Free at <https://steamcommunity.com/dev/apikey>. |
+| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`                | unset              | "Sign in with Discord": invite links create accounts through it, existing accounts can link it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`.                             |
 
 ### Roles
 
@@ -156,13 +171,13 @@ Every server belongs to an **organisation**. People are members of organisations
 **org owner** or **member**, and members get a per-server role. The **site owner** (the account
 from first-run setup, plus anyone it promotes on the Users page) runs the whole panel.
 
-|                                                                                                                        | viewer | operator | admin | org owner | site owner |
-| ---------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----- | --------- | ---------- |
-| status, players, rotation, bans, reserved, config (read), server log, analytics                                        | ✓      | ✓        | ✓     | ✓         | ✓          |
-| broadcast, whisper, kick, kill, change team, end/restart match, change map, next map, live rotation edits              |        | ✓        | ✓     | ✓         | ✓          |
-| ban/unban, reserved slots, score tick, rotation mode/enable, save rotation, sponsor image, config apply, raw /v1 calls |        |          | ✓     | ✓         | ✓          |
-| add, edit and remove the org's servers; members, per-server roles and invite links; the org's audit trail              |        |          |       | ✓         | ✓          |
-| create and delete organisations; every account on the panel; the whole audit trail                                     |        |          |       |           | ✓          |
+|                                                                                                                                                          | viewer | operator | admin | org owner | site owner |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----- | --------- | ---------- |
+| status, players, rotation, bans, reserved, config (read), server log, analytics, player dossiers, triggers (read)                                        | ✓      | ✓        | ✓     | ✓         | ✓          |
+| broadcast, whisper, kick, kill, change team, end/restart match, change map, next map, live rotation edits, player notes and watchlist                    |        | ✓        | ✓     | ✓         | ✓          |
+| ban/unban, reserved slots, score tick, rotation mode/enable, save rotation, sponsor image, config apply, raw /v1 calls, triggers (create, edit, dry run) |        |          | ✓     | ✓         | ✓          |
+| add, edit and remove the org's servers; members, per-server roles and invite links; Discord webhooks; the org's audit trail                              |        |          |       | ✓         | ✓          |
+| create and delete organisations; every account on the panel; the whole audit trail                                                                       |        |          |       |           | ✓          |
 
 Members see the audit trail for their own actions plus everything on servers where they are admin.
 
@@ -176,6 +191,49 @@ lets anyone create an organisation of their own and become its owner, up to thre
 **Continue with Discord** on the sign-in page creates an account for a Discord user who has none
 and sends them to `/sign-up`; the site owner still sees and can rename or delete every org. Leave
 it off for a single-clan install.
+
+### Player dossiers, risk and the watchlist
+
+Every player name in the panel links to a dossier: sessions, playtime, kills and deaths on each
+of the organisation's servers, the names they have used, the admin actions taken on them (kicks,
+bans, whispers, trigger actions), notes admins have left, and a watchlist flag with a reason.
+Notes and the watchlist are shared by every server in the organisation; operators and up can
+write them, and a note can be deleted by its author or an admin.
+
+With `STEAM_API_KEY` set, the dossier also shows the Steam persona, account age (public profiles
+only), VAC and game bans, refreshed daily and on demand. From all of that the panel derives an
+**advisory risk score** shown in the players table: VAC or game bans, a very new or private
+account, a ban on another server in the organisation, a name that resembles a banned player's, or
+the watchlist. It is a pointer for an admin to look closer, not a verdict: the RCON API exposes no
+aim, position or input data, so nothing here detects cheating itself.
+
+### Automation (triggers)
+
+The **Automation** tab on each server holds rules the poller evaluates on every sample. Admins
+create them; every action they take is in the audit trail under the `trigger` category with the
+rule that fired, and can be mirrored to Discord.
+
+| Trigger                | Does                                                                                                                                                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Welcome whisper        | Whispers a message to each joiner (optionally only on their first visit). Placeholders `{name}` `{server}` `{map}` `{players}` `{max}`.                                                                               |
+| Scheduled broadcast    | Rotates through a list of messages every N minutes while at least M players are on.                                                                                                                                   |
+| Empty-server map reset | After the server has been empty for N minutes on a different map or mode, sets the chosen map as next and ends the match (or requests it directly when there is no rotation).                                         |
+| Kick on connect risk   | Kicks joiners who match rules: VAC ban, game ban, Steam account younger than N days (optionally private profiles too), banned on another server in the org, or on the watchlist. Reserved-slot players can be spared. |
+
+**Dry run** replays the last 24 hours of the server's own history (joins, player counts, empty
+stretches, cached Steam data) against a rule and lists what it would have done, so you can tune a
+rule before enabling it. Joins are detected one poll apart, so a welcome arrives `POLL_SECONDS`
+after someone connects; the first poll after a restart or an outage never fires join rules, since
+everyone present looks like a joiner then.
+
+### Discord webhooks
+
+On the organisation page an owner can add Discord channel webhooks (in Discord: channel settings →
+Integrations → Webhooks → copy URL) and choose what to mirror: bans, other game commands, trigger
+actions, player notes and watchlist changes, management changes, sign-ins; for every server or a
+subset. Events are batched into one message per burst, IP addresses are never sent, and the URL
+(which lets anyone post to the channel) is stored encrypted with `ENCRYPTION_KEY` and never shown
+again. **Test** posts a message right away; delivery failures show on the org page.
 
 ### Accounts and personal data
 
@@ -194,8 +252,10 @@ hand over first, so nothing is left without an owner. The site owner can delete 
 Users page under the same rules.
 
 Analytics store the Steam id and in-game name of every player seen on a server, for a year (see
-[Notes and limits](#notes-and-limits)). If you host the panel for other people, publish a privacy
-notice that says so, along with the audit retention you choose.
+[Notes and limits](#notes-and-limits)). With `STEAM_API_KEY` set the panel also caches what the
+Steam Web API says about each player it sees (persona, avatar, account creation date, ban
+counts), and admins can leave notes and watchlist flags on players. If you host the panel for
+other people, publish a privacy notice that says so, along with the audit retention you choose.
 
 ### Site owner controls
 
@@ -288,13 +348,18 @@ src/lib/server/actions.ts      every panel action -> role level + /v1 call(s)
 src/lib/server/rcon-run.ts     /api/servers/:id/rcon/:action dispatcher with audit rows
 src/lib/server/rcon.ts         WardogsClient (Bearer auth, JSON/text calls, demo routing)
 src/lib/server/transport.ts    fetch to the game server
-src/lib/server/poller.ts       background sampler (leader-elected via advisory lock): samples, sessions, matches
+src/lib/server/poller.ts       background sampler (leader-elected via advisory lock): samples, sessions, matches, ban snapshots, triggers
+src/lib/server/players.ts      dossiers, notes, watchlist, per-player marks (risk) for the players table
+src/lib/server/steam.ts        Steam Web API lookups cached in steam_profiles
+src/lib/server/risk.ts         advisory risk score and name resemblance (pure)
+src/lib/server/trigger-rules.ts / triggers.ts   trigger settings and verdicts (pure) / the per-tick engine and dry runs
+src/lib/server/webhooks.ts     Discord webhook records; webhook-delivery.ts batches audit rows to Discord
 src/lib/server/analytics.ts    analytics queries per server and range
 src/lib/server/audit.ts        audit writer/query with secret redaction
 src/lib/server/mockgame.ts     in-process imitation of the WDRCON API for demo/testing
 src/lib/components/            Modal, MapPicker, PopulationChart, Toasts, badges…
 src/routes/(auth)/             /sign-in, /setup, /join/[token] (form actions)     src/routes/sign-out
-src/routes/(app)/              dashboard, /server/[id]/{,players,rotation,config,analytics,log}, /audit, /orgs, /orgs/[id], /users, /servers, /account
+src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],rotation,config,automation,analytics,log}, /audit, /orgs, /orgs/[id], /users, /servers, /account
 src/routes/api/                JSON API (below)
 docs/wardogs-api.md            the reverse-engineered game-server API
 ```
@@ -315,6 +380,11 @@ GET/POST /api/servers {orgId,...}  PATCH/DELETE /api/servers/:id  POST /api/serv
 GET/PUT /api/servers/:id/grants {grants:[{userId,role}]}   GET /api/servers/:id/summary
 GET|POST /api/servers/:id/rcon/:action   (GET for reads with query params, POST JSON for mutations)
 GET  /api/servers/:id/analytics?range=24h|7d|30d
+GET  /api/servers/:id/players/marks?ids=a,b&names=…     watchlist / first-visit / risk per connected player
+GET  /api/servers/:id/players/:steamId                  dossier   POST .../steam (refresh Steam data)
+POST /api/servers/:id/players/:steamId/notes {body}     DELETE .../notes/:noteId   PUT .../watch {watched,reason}
+GET/POST /api/servers/:id/triggers {kind,name,enabled,config}   PATCH/DELETE .../:triggerId   POST .../dry-run {kind,config}
+GET/POST /api/orgs/:id/webhooks {label,url,events,serverIds,enabled}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
 GET  /api/actions                     lists actions with their role level
 GET  /api/audit?server=&actor=&action=&outcome=&q=&from=&to=&before=&limit=
 GET  /api/audit/export?format=csv|json GET /api/audit/meta
@@ -346,7 +416,11 @@ configApply raw` (admin).
 - Upgrading an existing install: the migration creates one organisation named "Default" holding
   every server, with existing owners as its owners and everyone else as members. Rename it on the
   Orgs page.
-- The demo server's state lives in process memory and resets on restart.
+- The demo server's state lives in process memory and resets on restart. Its players' SteamIDs are
+  arbitrary, so with a Steam key some resolve to unrelated real accounts and others to "Not found".
+- The risk score and the kick-on-connect trigger see only what this page describes. They cannot
+  see aim, position, input or IP addresses; anything claiming to detect aimbots from the RCON API
+  is guessing.
 - Audit rows are never deleted by the panel. Prune them with SQL if you need to. Deleting an
   account pseudonymises its rows rather than removing them (see
   [Accounts and personal data](#accounts-and-personal-data)).
