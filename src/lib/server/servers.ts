@@ -5,6 +5,7 @@ import { isDemoServer } from './env';
 import { ApiError, int, newId, publicMessage, str } from './http';
 import { encryptSecret } from './crypto';
 import { writeAudit } from './audit';
+import { assertReachableTarget, normaliseHost } from './hostpolicy';
 import {
 	SERVER_ROLES,
 	type OrgRow,
@@ -24,23 +25,33 @@ export interface TargetFields {
 	scheme?: 'http' | 'https';
 	notes?: string;
 	sortOrder?: number;
+	/** Recomputed whenever the target (host, port, scheme) changes; see hostpolicy.ts. */
+	allowPrivate?: boolean;
 }
 
-export function validateTarget(
+/** May this user register a private (same-box, LAN) target? Only the site owner. */
+export const mayUsePrivateHosts = (actor: SessionUser): boolean => actor.role === 'owner';
+
+/**
+ * Checks and normalises the fields of a server target. Whenever the target changes, the host is
+ * resolved and refused unless the actor may reach it; `current` supplies the unchanged parts of a
+ * partial update so a port change on an existing private target is checked too.
+ */
+export async function validateTarget(
 	env: Env,
+	actor: SessionUser,
 	body: Record<string, unknown>,
-	partial = false
-): TargetFields {
+	current: Pick<ServerRow, 'host' | 'port' | 'scheme'> | null = null
+): Promise<TargetFields> {
+	const partial = current !== null;
 	const out: TargetFields = {};
 	if (!partial || body.name !== undefined) {
 		out.name = str(body.name, 80);
 		if (!out.name) throw new ApiError(400, 'name is required.');
 	}
 	if (!partial || body.host !== undefined) {
-		out.host = str(body.host, 253).toLowerCase();
-		if (!out.host) throw new ApiError(400, 'host is required.');
-		if (!isDemoServer(env, { host: out.host }) && !/^[a-z0-9.\-:[\]]+$/.test(out.host))
-			throw new ApiError(400, 'host must be a hostname or IP address.');
+		const host = str(body.host, 253).toLowerCase();
+		out.host = isDemoServer(env, { host }) ? host : normaliseHost(host);
 	}
 	if (!partial || body.port !== undefined) {
 		out.port = int(body.port, 0, 1, 65535);
@@ -50,7 +61,45 @@ export function validateTarget(
 		out.scheme = body.scheme === 'https' ? 'https' : 'http';
 	if (body.notes !== undefined) out.notes = str(body.notes, 2000);
 	if (body.sortOrder !== undefined) out.sortOrder = int(body.sortOrder, 0, -1000, 1000);
+
+	const targetChanged =
+		!current ||
+		(out.host !== undefined && out.host !== current.host) ||
+		(out.port !== undefined && out.port !== current.port) ||
+		(out.scheme !== undefined && out.scheme !== current.scheme);
+	if (targetChanged) {
+		const host = out.host ?? current!.host;
+		const allowPrivate = mayUsePrivateHosts(actor);
+		if (!isDemoServer(env, { host })) await assertReachableTarget(host, allowPrivate);
+		out.allowPrivate = allowPrivate;
+	}
 	return out;
+}
+
+/** Records a refused target so probing shows up on the audit page, then rethrows. */
+async function auditRefusedTarget(
+	env: Env,
+	req: Request,
+	actor: SessionUser,
+	action: 'server.create' | 'server.update',
+	server: { id: string; name: string } | null,
+	orgId: string,
+	target: string,
+	err: unknown
+): Promise<never> {
+	if (err instanceof ApiError && (err.code === 'blocked_host' || err.code === 'unresolvable'))
+		await writeAudit(env, req, {
+			actor,
+			server,
+			orgId,
+			category: 'server',
+			action,
+			outcome: 'denied',
+			status: err.status,
+			message: err.message,
+			target
+		});
+	throw err;
 }
 
 export async function createServer(
@@ -60,11 +109,22 @@ export async function createServer(
 	org: OrgRow,
 	body: Record<string, unknown>
 ): Promise<string> {
-	const t = validateTarget(env, body);
 	const password = typeof body.password === 'string' ? body.password : '';
 	if (!password) throw new ApiError(400, "password (the server's RCON password) is required.");
 	await assertCanAddServer(env, org, actor);
 	const orgId = org.id;
+	const t = await validateTarget(env, actor, body).catch((err) =>
+		auditRefusedTarget(
+			env,
+			req,
+			actor,
+			'server.create',
+			null,
+			orgId,
+			`${str(body.host, 253)}:${str(body.port, 5)}`,
+			err
+		)
+	);
 	const id = newId();
 	await env.db.insert(servers).values({
 		id,
@@ -73,6 +133,7 @@ export async function createServer(
 		host: t.host!,
 		port: t.port!,
 		scheme: t.scheme!,
+		allowPrivate: t.allowPrivate ?? false,
 		passwordEnc: encryptSecret(env, password),
 		notes: t.notes || '',
 		sortOrder: t.sortOrder || 0,
@@ -81,11 +142,12 @@ export async function createServer(
 	await writeAudit(env, req, {
 		actor,
 		server: { id, name: t.name! },
+		orgId,
 		category: 'server',
 		action: 'server.create',
 		outcome: 'ok',
 		target: `${t.host}:${t.port}`,
-		detail: { scheme: t.scheme, orgId }
+		detail: { scheme: t.scheme, orgId, allowPrivate: t.allowPrivate }
 	});
 	return id;
 }
@@ -97,7 +159,18 @@ export async function updateServer(
 	server: ServerRow,
 	body: Record<string, unknown>
 ): Promise<void> {
-	const t = validateTarget(env, body, true);
+	const t = await validateTarget(env, actor, body, server).catch((err) =>
+		auditRefusedTarget(
+			env,
+			req,
+			actor,
+			'server.update',
+			{ id: server.id, name: server.name },
+			server.orgId,
+			`${str(body.host, 253) || server.host}:${str(body.port, 5) || server.port}`,
+			err
+		)
+	);
 	const set: Partial<typeof servers.$inferInsert> = { ...t };
 	if (typeof body.password === 'string' && body.password)
 		set.passwordEnc = encryptSecret(env, body.password);
@@ -107,6 +180,7 @@ export async function updateServer(
 	await writeAudit(env, req, {
 		actor,
 		server: { id: server.id, name: t.name || server.name },
+		orgId: server.orgId,
 		category: 'server',
 		action: 'server.update',
 		outcome: 'ok',

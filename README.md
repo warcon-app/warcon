@@ -238,6 +238,13 @@ anywhere that can reach `Port` (default 7776) on each game host. Enable the list
   `extra_hosts` line in `docker-compose.yml` and use host `host.docker.internal`, or run the
   container with `network_mode: host`.
 
+Only the site owner can register a private target (loopback, `host.docker.internal`, RFC 1918,
+a VPN address). Servers added by org owners must resolve to a public address, and every server is
+re-checked before each request, so a hostname that later points somewhere internal is refused
+rather than fetched. Link-local addresses (`169.254.0.0/16`, `fe80::/10`) are refused for everyone.
+Refused targets are recorded on the audit page. The raw action is limited to `/v1/` paths on the
+server's own port, and the connectivity test and raw action are rate limited per user.
+
 The ini comments say a non-loopback `BindAddress` expects TLS and `PasswordHash=`; the official web
 console connects over plain `http` regardless, and so can Warcon.
 

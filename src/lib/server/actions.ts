@@ -2,6 +2,7 @@
 // minimum per-server role it needs. Routes call `runAction` and audit the result.
 import type { ServerRole } from './access';
 import { ApiError, int, str } from './http';
+import { gamePath } from './hostpolicy';
 import { GameError, WardogsClient } from './rcon';
 
 export interface ActionDef {
@@ -528,13 +529,11 @@ export const ACTIONS: Record<string, ActionDef> = {
 		target: (p) => `${str(p.method, 10).toUpperCase()} ${str(p.path, 300)}`,
 		run: async (c, p) => {
 			const method = str(p.method, 10).toUpperCase();
-			const path = str(p.path, 500);
 			if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
 				throw new ApiError(400, 'Unsupported method.');
 			}
-			if (!path.startsWith('/v1/') || path.includes('..')) {
-				throw new ApiError(400, 'path must start with /v1/.');
-			}
+			// Parsed and re-serialised first: "%2e%2e" is a dot segment to a URL parser.
+			const path = gamePath(str(p.path, 500));
 			const isText = typeof p.body === 'string';
 			const res = await c.raw(
 				method,

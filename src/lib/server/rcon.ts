@@ -5,6 +5,7 @@ import { gameRequest, TransportError, type GameResponse, type GameTarget } from 
 import { mockHandle } from './mockgame';
 import { decryptSecret } from './crypto';
 import { ApiError } from './http';
+import { assertReachableTarget } from './hostpolicy';
 import type { ServerRow } from './access';
 
 /** A non-2xx answer (or no answer) from the game server. Its message is meant for the operator. */
@@ -34,8 +35,10 @@ export class WardogsClient {
 	}
 
 	static async forServer(env: Env, server: ServerRow): Promise<WardogsClient> {
+		const demo = isDemoServer(env, server);
+		if (!demo) await assertTargetStillAllowed(server);
 		const key = decryptSecret(env, server.passwordEnc);
-		return new WardogsClient(env, server, key, isDemoServer(env, server) ? server.id : null);
+		return new WardogsClient(env, server, key, demo ? server.id : null);
 	}
 
 	async raw(
@@ -104,6 +107,38 @@ export class WardogsClient {
 		const res = await this.raw(method, path, text, headers);
 		return { status: res.status, body: parseJson(res.text) ?? {} };
 	}
+}
+
+/** How long one verdict on a host is reused before it is resolved again. */
+const TARGET_CHECK_TTL_MS = 60_000;
+const targetChecks = new Map<string, { until: number; error: GameError | null }>();
+
+/**
+ * Re-runs the hostpolicy check right before Warcon talks to a server, so a hostname that was
+ * public when it was saved but now points somewhere internal is refused (rebinding). Servers the
+ * site owner saved keep their private-address allowance. Cached briefly per host+allowance so the
+ * poller does not resolve every server on every tick.
+ */
+async function assertTargetStillAllowed(
+	server: Pick<ServerRow, 'host' | 'allowPrivate'>
+): Promise<void> {
+	const key = `${server.allowPrivate ? 'p' : 'o'}:${server.host}`;
+	const now = Date.now();
+	let hit = targetChecks.get(key);
+	if (!hit || hit.until <= now) {
+		let error: GameError | null = null;
+		try {
+			await assertReachableTarget(server.host, server.allowPrivate);
+		} catch (err) {
+			if (!(err instanceof ApiError)) throw err;
+			error = new GameError(err.status, err.message, err.code || 'blocked_host');
+		}
+		hit = { until: now + TARGET_CHECK_TTL_MS, error };
+		targetChecks.set(key, hit);
+		if (targetChecks.size > 1000)
+			for (const [k, v] of targetChecks) if (v.until <= now) targetChecks.delete(k);
+	}
+	if (hit.error) throw hit.error;
 }
 
 export function parseJson(text: string): any {

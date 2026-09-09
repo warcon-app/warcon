@@ -1,0 +1,1 @@
+ALTER TABLE "servers" ADD COLUMN "allow_private" boolean DEFAULT false NOT NULL;

@@ -172,6 +172,8 @@ export const servers = pgTable('servers', {
 	passwordEnc: text('password_enc').notNull(),
 	notes: text('notes').notNull().default(''),
 	sortOrder: integer('sort_order').notNull().default(0),
+	/** Set when the site owner saved the target: private addresses (same box, LAN) are permitted. */
+	allowPrivate: boolean('allow_private').notNull().default(false),
 	createdBy: text('created_by'),
 	createdAt: ts('created_at').notNull().defaultNow(),
 	updatedAt: ts('updated_at').notNull().defaultNow()

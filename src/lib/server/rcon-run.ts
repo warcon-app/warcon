@@ -6,6 +6,7 @@ import { writeAudit } from './audit';
 import { getServer, requireUser, roleAtLeast, serverRoleFor } from './access';
 import { ACTIONS, ACTION_NAMES } from './actions';
 import { GameError, WardogsClient } from './rcon';
+import { assertRate } from './ratelimit';
 
 function safe(fn: () => string): string {
 	try {
@@ -79,6 +80,8 @@ export async function runAction(
 			'forbidden'
 		);
 	}
+
+	if (name === 'raw') assertRate(`raw:${user.id}`, 30, 60_000);
 
 	const started = Date.now();
 	try {
