@@ -193,21 +193,34 @@ export function auditFilters(params: URLSearchParams) {
 	};
 }
 
-/** Distinct actions and actors for the filter dropdowns, limited to the rows the caller may see. */
+/**
+ * Distinct actions and actors for the filter dropdowns, limited to the rows the caller may see.
+ * One row per action and per actor id: an actor's name can differ between rows (a rename, or
+ * display-cased vs lower-cased usernames), and the dropdowns are keyed by id, so the latest row's
+ * name wins.
+ */
 export async function auditMeta(env: Env, visibleTo: AuditVisibility) {
 	const visible = visibleWhere(visibleTo);
-	const actions = await env.db
-		.selectDistinct({ category: auditLog.category, action: auditLog.action })
+	const actionRows = await env.db
+		.selectDistinctOn([auditLog.action], { category: auditLog.category, action: auditLog.action })
 		.from(auditLog)
 		.where(visible)
-		.orderBy(auditLog.category, auditLog.action);
-	const actors = await env.db
-		.selectDistinct({ actorId: auditLog.actorId, actorName: auditLog.actorName })
+		.orderBy(auditLog.action, desc(auditLog.id));
+	const actorRows = await env.db
+		.selectDistinctOn([auditLog.actorId], {
+			actorId: auditLog.actorId,
+			actorName: auditLog.actorName
+		})
 		.from(auditLog)
 		.where(visible ? and(isNotNull(auditLog.actorId), visible) : isNotNull(auditLog.actorId))
-		.orderBy(auditLog.actorName);
+		.orderBy(auditLog.actorId, desc(auditLog.id));
+	const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
 	return {
-		actions,
-		actors: actors.filter((a): a is { actorId: string; actorName: string } => !!a.actorId)
+		actions: actionRows.sort(
+			(a, b) => a.category.localeCompare(b.category) || a.action.localeCompare(b.action)
+		),
+		actors: actorRows
+			.filter((a): a is { actorId: string; actorName: string } => !!a.actorId)
+			.sort((a, b) => byName(a.actorName, b.actorName))
 	};
 }
