@@ -18,11 +18,7 @@ import { getProfiles, isSteamId, steamEnabled, type SteamProfileRow } from './st
 import { accountAgeDays, assessRisk, namesResemble, type Risk } from './risk';
 import type { DossierView, PlayerMark, PlayerNoteView, SteamView } from '$lib/types';
 
-export function requireSteamId(v: unknown): string {
-	const id = str(v, 32);
-	if (!isSteamId(id)) throw new ApiError(400, 'steamId must be a 17-digit SteamID64.');
-	return id;
-}
+export { requireSteamId } from './steam';
 
 const iso = (v: Date | null | undefined): string | null => (v ? v.toISOString() : null);
 const num = (v: unknown): number => (v === null || v === undefined ? 0 : Number(v));

@@ -176,6 +176,7 @@ from first-run setup, plus anyone it promotes on the Users page) runs the whole 
 | status, players, rotation, bans, reserved, config (read), server log, analytics, player dossiers, triggers (read)                                        | ✓      | ✓        | ✓     | ✓         | ✓          |
 | broadcast, whisper, kick, kill, change team, end/restart match, change map, next map, live rotation edits, player notes and watchlist                    |        | ✓        | ✓     | ✓         | ✓          |
 | ban/unban, reserved slots, score tick, rotation mode/enable, save rotation, sponsor image, config apply, raw /v1 calls, triggers (create, edit, dry run) |        |          | ✓     | ✓         | ✓          |
+| the organisation's ban list and reserved-slot list (add and remove entries, pushed to every server)                                                      |        |          | ✓     | ✓         | ✓          |
 | add, edit and remove the org's servers; members, per-server roles and invite links; Discord webhooks; the org's audit trail                              |        |          |       | ✓         | ✓          |
 | create and delete organisations; every account on the panel; the whole audit trail                                                                       |        |          |       |           | ✓          |
 
@@ -207,6 +208,21 @@ account, a ban on another server in the organisation, a name that resembles a ba
 the watchlist. It is a pointer for an admin to look closer, not a verdict: the RCON API exposes no
 aim, position or input data, so nothing here detects cheating itself.
 
+### Organisation ban and reserved lists
+
+Each organisation keeps a **ban list** and a **reserved-slot list** in the panel, under the
+**Ban list** and **Reserved slots** tabs of the organisation page, and pushes them to every one of
+its servers. Ban a player from the players page or a dossier and choose _every server in the
+organisation_ (the default, when you may edit the org list) or _this server only_. Org owners and
+anyone who is admin on one of the org's servers can edit the lists; a ban can carry a reason and
+an expiry, a reserved slot a priority for when a server's `MaxReservedSlots` is full.
+
+Each entry shows where it stands on every server: **applied** by the panel, **pending** the next
+sync, **failed** (hover for the server's answer), or **local**. Local means the player was already
+banned (or reserved) on that server by someone working outside the panel. The panel never removes
+what it did not add, so removing an org entry lifts it only where the panel applied it, and a
+local ban stays until an owner imports it into the org list or unbans it on that server.
+
 ### Automation (triggers)
 
 The **Automation** tab on each server holds rules the poller evaluates on every sample. Admins
@@ -228,8 +244,8 @@ everyone present looks like a joiner then.
 
 ### Discord webhooks
 
-On the organisation page an owner can add Discord channel webhooks (in Discord: channel settings →
-Integrations → Webhooks → copy URL) and choose what to mirror: bans, other game commands, trigger
+On the organisation's overview an owner can add Discord channel webhooks (in Discord: channel settings →
+Integrations → Webhooks → copy URL) and choose what to mirror: bans (including org list changes), other game commands, trigger
 actions, player notes and watchlist changes, management changes, sign-ins; for every server or a
 subset. Events are batched into one message per burst, IP addresses are never sent, and the URL
 (which lets anyone post to the channel) is stored encrypted with `ENCRYPTION_KEY` and never shown
@@ -344,6 +360,7 @@ src/lib/server/access.ts       global/per-server roles, accessible servers, logi
 src/lib/server/users.ts        account management on top of Better Auth (create, disable, reset, grants)
 src/lib/server/orgs.ts         organisations: members, per-server roles, invite links, joining
 src/lib/server/servers.ts      server records, reachability test, per-server grants
+src/lib/server/lists.ts        organisation ban and reserved-slot lists: entries, per-server standing, views
 src/lib/server/actions.ts      every panel action -> role level + /v1 call(s)
 src/lib/server/rcon-run.ts     /api/servers/:id/rcon/:action dispatcher with audit rows
 src/lib/server/rcon.ts         WardogsClient (Bearer auth, JSON/text calls, demo routing)
@@ -359,7 +376,7 @@ src/lib/server/audit.ts        audit writer/query with secret redaction
 src/lib/server/mockgame.ts     in-process imitation of the WDRCON API for demo/testing
 src/lib/components/            Modal, MapPicker, PopulationChart, Toasts, badges…
 src/routes/(auth)/             /sign-in, /setup, /join/[token] (form actions)     src/routes/sign-out
-src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],rotation,config,automation,analytics,log}, /audit, /orgs, /orgs/[id], /users, /servers, /account
+src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],rotation,config,automation,analytics,log}, /audit, /orgs, /orgs/[id]/{,bans,reserved}, /users, /servers, /account
 src/routes/api/                JSON API (below)
 docs/wardogs-api.md            the reverse-engineered game-server API
 ```
@@ -385,6 +402,8 @@ GET  /api/servers/:id/players/:steamId                  dossier   POST .../steam
 POST /api/servers/:id/players/:steamId/notes {body}     DELETE .../notes/:noteId   PUT .../watch {watched,reason}
 GET/POST /api/servers/:id/triggers {kind,name,enabled,config}   PATCH/DELETE .../:triggerId   POST .../dry-run {kind,config}
 GET/POST /api/orgs/:id/webhooks {label,url,events,serverIds,enabled}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
+GET  /api/orgs/:id/lists                                 the org's ban and reserved-slot lists, and the caller's role on them
+GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt,priority}   DELETE .../entries/:steamId   (kind = ban | reserve; ?includeRemoved=1)
 GET  /api/actions                     lists actions with their role level
 GET  /api/audit?server=&actor=&action=&outcome=&q=&from=&to=&before=&limit=
 GET  /api/audit/export?format=csv|json GET /api/audit/meta

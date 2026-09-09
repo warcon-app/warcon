@@ -15,6 +15,7 @@ import {
 import { orgInvites, orgMembers, organizations, serverGrants, servers, user } from './db/schema';
 import type { OrgInviteRow } from './db/schema';
 import type { Db } from './db';
+import { ensureOrgLists } from './lists';
 import type { InviteStatus, InviteView, OrgMemberView, OrgView } from '$lib/types';
 
 /** A Drizzle transaction handle (what `db.transaction(async (tx) => ...)` passes). */
@@ -191,6 +192,7 @@ export async function createOrg(
 	await env.db.transaction(async (tx) => {
 		await tx.insert(organizations).values({ id, name, slug, createdBy: actor.id });
 		await tx.insert(orgMembers).values({ orgId: id, userId: actor.id, role: 'owner' });
+		await ensureOrgLists(tx, id, actor.id);
 	});
 	await writeAudit(env, req, {
 		actor,

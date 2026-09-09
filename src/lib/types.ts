@@ -320,3 +320,93 @@ export interface WebhookView {
 	lastError: string;
 	createdAt: string | null;
 }
+
+// ---- organisation lists (bans and reserved slots pushed to every server) ------------------------
+
+export type ListKind = 'ban' | 'reserve';
+
+export interface ListView {
+	id: string;
+	kind: ListKind;
+	name: string;
+	entryCount: number;
+}
+
+/**
+ * How one entry stands on one server: applied by Warcon, failed to apply, still pending, or
+ * present on the server but added outside the panel (local).
+ */
+export type ListEntryState = 'applied' | 'failed' | 'pending' | 'local';
+
+export interface ListServerStateView {
+	serverId: string;
+	serverName: string;
+	state: ListEntryState;
+	error: string;
+}
+
+export interface ListEntryView {
+	id: string;
+	kind: ListKind;
+	steamId: string;
+	/** last name seen on the org's servers, else the Steam persona, else null */
+	name: string | null;
+	reason: string;
+	expiresAt: string | null;
+	/** true once expiresAt has passed and the poller has not yet lifted it */
+	expired: boolean;
+	priority: number;
+	addedByName: string;
+	addedAt: string;
+	removedAt: string | null;
+	removedByName: string;
+	removal: 'manual' | 'expired' | null;
+	/** derived from org membership (members-reserved), not an entry someone added */
+	member: boolean;
+	servers: ListServerStateView[];
+}
+
+export interface ListSyncServer {
+	serverId: string;
+	serverName: string;
+	/** the server was reached and the plan ran */
+	ok: boolean;
+	added: number;
+	removed: number;
+	failed: number;
+	/** still running in the background when the request returned */
+	pending: boolean;
+	error: string;
+}
+
+export interface ListSyncSummary {
+	servers: ListSyncServer[];
+}
+
+export interface OrgListsView {
+	role: 'owner' | 'editor';
+	membersReserved: boolean;
+	servers: { id: string; name: string }[];
+	lists: ListView[];
+}
+
+export interface ImportCandidate {
+	kind: ListKind;
+	steamId: string;
+	name: string | null;
+	servers: { serverId: string; serverName: string; reason: string; bannedBy: string }[];
+}
+
+/** Per-server view of which bans and reserved slots the org lists manage; for the players page. */
+export interface ServerListsState {
+	canEditOrg: boolean;
+	orgId: string;
+	bans: Record<string, { state: ListEntryState; managed: boolean }>;
+	reserved: Record<string, { state: ListEntryState; managed: boolean }>;
+	sync: {
+		syncedAt: string | null;
+		reservedCap: number | null;
+		reservedUsed: number;
+		lastError: string;
+	} | null;
+}

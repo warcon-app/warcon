@@ -179,6 +179,36 @@ check webhook-update '"enabled":false' "$(req $J1 PATCH /api/orgs/$ORG/webhooks/
 check webhook-test-fails '"ok":false' "$(req $J1 POST /api/orgs/$ORG/webhooks/$WID/test)"
 check webhook-delete '"ok":true' "$(req $J1 DELETE /api/orgs/$ORG/webhooks/$WID)"
 
+echo "== org lists"
+L1=76561198100000501
+check lists-get '"kind":"ban"' "$(req $J1 GET /api/orgs/$ORG/lists)"
+check lists-badkind 'No such list' "$(req $J1 GET /api/orgs/$ORG/lists/nope/entries)"
+LB="{\"steamId\":\"$L1\",\"reason\":\"smoke\"}"
+check list-add "\"steamId\":\"$L1\"" "$(req $J1 POST /api/orgs/$ORG/lists/ban/entries "$LB")"
+check list-dup 'already on' "$(req $J1 POST /api/orgs/$ORG/lists/ban/entries "$LB")"
+check list-badid '17-digit' "$(req $J1 POST /api/orgs/$ORG/lists/ban/entries '{"steamId":"x"}')"
+check list-expiry-past 'future' "$(req $J1 POST /api/orgs/$ORG/lists/ban/entries '{"steamId":"76561198100000502","expiresAt":"2020-01-01T00:00:00Z"}')"
+check list-entries "\"steamId\":\"$L1\"" "$(req $J1 GET /api/orgs/$ORG/lists/ban/entries)"
+check list-count '"entryCount":1' "$(req $J1 GET /api/orgs/$ORG/lists)"
+check reserve-add '"priority":5' "$(req $J1 POST /api/orgs/$ORG/lists/reserve/entries '{"steamId":"76561198100000601","priority":5}')"
+check list-remove '"ok":true' "$(req $J1 DELETE /api/orgs/$ORG/lists/ban/entries/$L1)"
+check list-remove-gone 'not on the' "$(req $J1 DELETE /api/orgs/$ORG/lists/ban/entries/$L1)"
+check list-readd "\"steamId\":\"$L1\"" "$(req $J1 POST /api/orgs/$ORG/lists/ban/entries "$LB")"
+check list-history '"removal":"manual"' "$(req $J1 GET "/api/orgs/$ORG/lists/ban/entries?includeRemoved=1")"
+check audit-list-add '"action":"list.add"' "$(req $J1 GET '/api/audit?action=list.add')"
+# carol: outsider -> viewer (still no lists) -> server admin (editor, but not the org overview)
+R=$(req $J1 POST /api/users '{"username":"carol","password":"carols-long-password","displayName":"Carol","role":"member","mustChangePassword":false}'); UID_CAROL=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+J5=$(mktemp); form $J5 '/sign-in?/password' 'username=carol&password=carols-long-password' >/dev/null
+check lists-outsider 'not found' "$(req $J5 GET /api/orgs/$ORG/lists)"
+req $J1 PUT /api/users/$UID_CAROL/grants "{\"grants\":[{\"serverId\":\"$SID\",\"role\":\"viewer\"}]}" >/dev/null
+check lists-viewer-denied 'not found' "$(req $J5 GET /api/orgs/$ORG/lists)"
+req $J1 PUT /api/users/$UID_CAROL/grants "{\"grants\":[{\"serverId\":\"$SID\",\"role\":\"admin\"}]}" >/dev/null
+check lists-editor '"role":"editor"' "$(req $J5 GET /api/orgs/$ORG/lists)"
+check lists-editor-add '"steamId":"76561198100000503"' "$(req $J5 POST /api/orgs/$ORG/lists/ban/entries '{"steamId":"76561198100000503"}')"
+check lists-editor-orgs-link "/orgs/$ORG/bans" "$(curl -s -b $J5 $B/orgs)"
+check page-editor-bans '200' "$(pagecode $J5 "/orgs/$ORG/bans")"
+check page-editor-overview '403' "$(pagecode $J5 "/orgs/$ORG")"
+
 echo "== analytics"
 sleep 12
 check analytics '"population"' "$(req $J1 GET "/api/servers/$SID/analytics?range=24h")"
@@ -192,7 +222,7 @@ check trigger-firecount '"fireCount":' "$(req $J1 GET /api/servers/$SID/triggers
 req $J1 DELETE /api/servers/$SID/triggers/$TID2 >/dev/null; req $J1 DELETE /api/servers/$SID/triggers/$TID3 >/dev/null
 
 echo "== pages (owner)"
-for p in / /audit /users /servers /orgs "/orgs/$ORG" /account "/server/$SID" "/server/$SID/players" "/server/$SID/players/$P1" "/server/$SID/automation" "/server/$SID/rotation" "/server/$SID/config" "/server/$SID/log" "/audit?outcome=denied&q=kick"; do check "page $p" '200' "$(pagecode $J1 "$p")"; done
+for p in / /audit /users /servers /orgs "/orgs/$ORG" "/orgs/$ORG/bans" "/orgs/$ORG/reserved" /account "/server/$SID" "/server/$SID/players" "/server/$SID/players/$P1" "/server/$SID/automation" "/server/$SID/rotation" "/server/$SID/config" "/server/$SID/log" "/audit?outcome=denied&q=kick"; do check "page $p" '200' "$(pagecode $J1 "$p")"; done
 check page-unknown-server '404' "$(pagecode $J1 /server/nope)"
 check server-delete '"ok":true' "$(req $J1 DELETE /api/servers/$SID2)"
 check page-sessions 'this session' "$(curl -s -b $J1 $B/account)"

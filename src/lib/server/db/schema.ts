@@ -35,7 +35,9 @@ export const user = pgTable('user', {
 	banReason: text('ban_reason'),
 	banExpires: ts('ban_expires'),
 	// warcon
-	mustChangePassword: boolean('must_change_password').notNull().default(false)
+	mustChangePassword: boolean('must_change_password').notNull().default(false),
+	/** the member's own SteamID64, so an org can hand its members a reserved slot */
+	steamId: text('steam_id').unique()
 });
 
 export const session = pgTable(
@@ -108,6 +110,8 @@ export const organizations = pgTable('organizations', {
 	/** set by the site owner: members lose access, nothing can be added or joined until cleared */
 	suspendedAt: ts('suspended_at'),
 	suspendedReason: text('suspended_reason').notNull().default(''),
+	/** members who set a SteamID on their account get a reserved slot on every org server */
+	membersReserved: boolean('members_reserved').notNull().default(false),
 	createdAt: ts('created_at').notNull().defaultNow(),
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });
@@ -437,6 +441,125 @@ export const webhooks = pgTable(
 	(t) => [index('webhooks_org_idx').on(t.orgId)]
 );
 
+// ---- Organisation lists: bans and reserved slots kept in the panel and pushed to every server --
+
+/** A ban list or reserved-slot list an org owns. Servers subscribe through server_lists. */
+export const lists = pgTable(
+	'lists',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		kind: text('kind', { enum: ['ban', 'reserve'] }).notNull(),
+		name: text('name').notNull().default('Default'),
+		/** reserved for sharing between orgs; unused for now */
+		shareToken: text('share_token').unique(),
+		createdBy: text('created_by'),
+		createdAt: ts('created_at').notNull().defaultNow(),
+		updatedAt: ts('updated_at').notNull().defaultNow()
+	},
+	(t) => [uniqueIndex('lists_org_kind_name_uidx').on(t.orgId, t.kind, t.name)]
+);
+
+/** One player on a list. Removal is soft so history and audit stay intact; re-adding inserts a new row. */
+export const listEntries = pgTable(
+	'list_entries',
+	{
+		id: text('id').primaryKey(),
+		listId: text('list_id')
+			.notNull()
+			.references(() => lists.id, { onDelete: 'cascade' }),
+		steamId: text('steam_id').notNull(),
+		reason: text('reason').notNull().default(''),
+		/** bans only: lifted automatically after this */
+		expiresAt: ts('expires_at'),
+		/** reserved slots only: higher wins when a server's MaxReservedSlots is hit */
+		priority: integer('priority').notNull().default(0),
+		addedBy: text('added_by'),
+		addedByName: text('added_by_name').notNull().default(''),
+		addedAt: ts('added_at').notNull().defaultNow(),
+		removedAt: ts('removed_at'),
+		removedBy: text('removed_by'),
+		removedByName: text('removed_by_name').notNull().default(''),
+		removal: text('removal', { enum: ['manual', 'expired'] })
+	},
+	(t) => [
+		uniqueIndex('list_entries_active_uidx')
+			.on(t.listId, t.steamId)
+			.where(sql`${t.removedAt} is null`),
+		index('list_entries_list_idx').on(t.listId, t.removedAt),
+		index('list_entries_steam_idx').on(t.steamId)
+	]
+);
+
+/** Which lists apply to which server (every org list to every org server, today). */
+export const serverLists = pgTable(
+	'server_lists',
+	{
+		serverId: text('server_id')
+			.notNull()
+			.references(() => servers.id, { onDelete: 'cascade' }),
+		listId: text('list_id')
+			.notNull()
+			.references(() => lists.id, { onDelete: 'cascade' })
+	},
+	(t) => [
+		primaryKey({ columns: [t.serverId, t.listId] }),
+		index('server_lists_list_idx').on(t.listId)
+	]
+);
+
+/** The poller's copy of each game server's reserved slots; sibling of server_bans. */
+export const serverReserved = pgTable(
+	'server_reserved',
+	{
+		serverId: text('server_id')
+			.notNull()
+			.references(() => servers.id, { onDelete: 'cascade' }),
+		steamId: text('steam_id').notNull(),
+		seenAt: ts('seen_at').notNull().defaultNow()
+	},
+	(t) => [primaryKey({ columns: [t.serverId, t.steamId] })]
+);
+
+/**
+ * What Warcon itself put on a server, and from which list. Entries on the server with no row here
+ * are "local" (added outside the panel) and are never removed by the sync.
+ */
+export const serverListState = pgTable(
+	'server_list_state',
+	{
+		serverId: text('server_id')
+			.notNull()
+			.references(() => servers.id, { onDelete: 'cascade' }),
+		kind: text('kind', { enum: ['ban', 'reserve'] }).notNull(),
+		steamId: text('steam_id').notNull(),
+		sourceListId: text('source_list_id').references(() => lists.id, { onDelete: 'set null' }),
+		state: text('state', { enum: ['applied', 'failed'] }).notNull(),
+		error: text('error').notNull().default(''),
+		attemptedAt: ts('attempted_at'),
+		updatedAt: ts('updated_at').notNull().defaultNow()
+	},
+	(t) => [
+		primaryKey({ columns: [t.serverId, t.kind, t.steamId] }),
+		index('server_list_state_source_idx').on(t.sourceListId)
+	]
+);
+
+/** Per-server sync bookkeeping: last run, the reserved-slot cap the server reported, last error. */
+export const serverListSync = pgTable('server_list_sync', {
+	serverId: text('server_id')
+		.primaryKey()
+		.references(() => servers.id, { onDelete: 'cascade' }),
+	syncedAt: ts('synced_at'),
+	reservedCap: integer('reserved_cap'),
+	reservedUsed: integer('reserved_used').notNull().default(0),
+	capCheckedAt: ts('cap_checked_at'),
+	lastError: text('last_error').notNull().default(''),
+	updatedAt: ts('updated_at').notNull().defaultNow()
+});
+
 export type ServerRow = typeof servers.$inferSelect;
 export type OrgRow = typeof organizations.$inferSelect;
 export type OrgInviteRow = typeof orgInvites.$inferSelect;
@@ -447,3 +570,7 @@ export type TriggerRow = typeof triggers.$inferSelect;
 export type WebhookRow = typeof webhooks.$inferSelect;
 export type PlayerNoteRow = typeof playerNotes.$inferSelect;
 export type PlayerMarkRow = typeof playerMarks.$inferSelect;
+export type ListRow = typeof lists.$inferSelect;
+export type ListEntryRow = typeof listEntries.$inferSelect;
+export type ServerListStateRow = typeof serverListState.$inferSelect;
+export type ServerListSyncRow = typeof serverListSync.$inferSelect;
