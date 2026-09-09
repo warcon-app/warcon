@@ -114,6 +114,11 @@
 								href="/orgs/{encodeURIComponent(o.id)}"
 								class="font-medium text-accent hover:underline">{o.name}</a
 							>
+						{:else if o.lists}
+							<a
+								href="/orgs/{encodeURIComponent(o.id)}/bans"
+								class="font-medium text-accent hover:underline">{o.name}</a
+							>
 						{:else}
 							<span class="font-medium">{o.name}</span>
 						{/if}
@@ -154,6 +159,12 @@
 						<span class="inline-flex gap-1.5">
 							{#if o.role === 'owner' && (!o.suspended || siteOwner)}
 								<a class="btn btn-sm" href="/orgs/{encodeURIComponent(o.id)}">Manage</a>
+							{/if}
+							{#if o.lists}
+								<a class="btn btn-sm" href="/orgs/{encodeURIComponent(o.id)}/bans">Ban list</a>
+								<a class="btn btn-sm" href="/orgs/{encodeURIComponent(o.id)}/reserved"
+									>Reserved slots</a
+								>
 							{/if}
 							{#if siteOwner}
 								{#if o.suspended}

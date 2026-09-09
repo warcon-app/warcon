@@ -18,6 +18,7 @@
 		if (form?.set) toast(`Password set. You can now also sign in as @${data.user.username}.`, 'ok');
 		if (form?.revoked) toast('Session revoked.', 'ok');
 		if (form?.unlinked) toast('Discord unlinked.', 'ok');
+		if (form?.steam) toast(form.steamId ? 'SteamID linked.' : 'SteamID removed.', 'ok');
 		if (form?.error) toast(form.error, 'err');
 	});
 </script>
@@ -93,6 +94,26 @@
 				>{data.hasPassword ? 'Change password' : 'Set password'}</button
 			>
 		</form>
+
+		<div class="mt-6 border-t border-white/8 pt-4">
+			<span class="label-sm">Steam</span>
+			<form method="post" action="?/steam" use:enhance class="join w-full">
+				<input
+					class="input font-mono"
+					type="text"
+					name="steamId"
+					inputmode="numeric"
+					maxlength="17"
+					placeholder="SteamID64, e.g. 7656119…"
+					value={data.steamId}
+				/>
+				<button class="btn" type="submit">Save</button>
+			</form>
+			<p class="note">
+				Your own SteamID64 (find it on your Steam profile page or at steamid.io). Organisations that
+				hand their members a reserved slot use it; leave it blank to opt out.
+			</p>
+		</div>
 
 		{#if data.discord}
 			<div class="mt-6 border-t border-white/8 pt-4">

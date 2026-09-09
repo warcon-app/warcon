@@ -6,6 +6,7 @@
 // Route shapes mirror what rcon.wardogs.com's js/api.js expects from a real server.
 
 import type { GameResponse } from './transport';
+import { parseMaxReservedSlots } from './lists-plan';
 
 export const MOCK_PASSWORD = 'demo';
 
@@ -767,6 +768,11 @@ export function mockHandle(
 			return fail(400, 'steamId must be a 17-digit SteamID64.');
 		}
 		if (!s.reserved.includes(b.steamId)) {
+			// MaxReservedSlots from the config document is honoured, like the real server.
+			const cap = parseMaxReservedSlots(s.configText) ?? 20;
+			if (s.reserved.length >= cap) {
+				return fail(409, `Reserved slots are full (${cap}/${cap}).`, 'reserved_full');
+			}
 			s.reserved.push(b.steamId);
 		}
 		log(s, 'COMMAND', `reserved add ${b.steamId}`);

@@ -33,6 +33,10 @@ on a container host, with the database wherever you like.
 - **Automation**: per-server triggers run by the poller, each dry-runnable against the last 24
   hours before it is switched on: welcome whisper on join, scheduled broadcasts, empty-server map
   reset, and kick-on-connect for VAC bans, brand-new accounts or bans elsewhere in the org.
+- **Organisation ban and reserved lists**: ban a player across every server in the organisation
+  at once, with a reason and an optional expiry; hand out reserved slots the same way. The poller
+  keeps every server in line and shows where each entry stands; bans added outside the panel are
+  left alone.
 - **Discord mirror**: an org owner points a channel webhook at the audit trail and picks what to
   mirror (bans, commands, trigger actions, sign-ins…), per server if wanted.
 - **Everything the official console does**: status, scoreboard, kick/ban/kill/whisper/change-team,
@@ -52,7 +56,7 @@ Taken against the built-in demo server, so the numbers are synthetic.
 
 ![Server overview: scores, match control and scoreboard](docs/screenshots/server-overview.png)
 
-| Analytics                                                                     | Players, reserved slots and bans             |
+| Analytics                                                                     | Players                                      |
 | ----------------------------------------------------------------------------- | -------------------------------------------- |
 | ![Analytics: players online, uptime, matches](docs/screenshots/analytics.png) | ![Players tab](docs/screenshots/players.png) |
 
@@ -153,7 +157,7 @@ rejected as cross-site against the https `ORIGIN`.
 | `ORIGIN`                                                     | required           | The exact URL people open (scheme, host, port).                                                                                                                                   |
 | `ADDRESS_HEADER` / `XFF_DEPTH`                               | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                                                                                                    |
 | `PORT` / `HOST`                                              | `3000` / `0.0.0.0` | Listen address.                                                                                                                                                                   |
-| `POLL_SECONDS`                                               | `20`               | Analytics sampling interval per server; `0` disables the poller.                                                                                                                  |
+| `POLL_SECONDS`                                               | `20`               | Analytics sampling interval per server; `0` disables the poller (and with it triggers and the org list sync, which then only runs when a list is edited or synced by hand).       |
 | `APP_NAME`                                                   | `Warcon`           | Name shown in the UI.                                                                                                                                                             |
 | `AUDIT_LOG_READS`                                            | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                                            |
 | `ALLOW_ORG_SIGNUP`                                           | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                                                      |
@@ -176,6 +180,7 @@ from first-run setup, plus anyone it promotes on the Users page) runs the whole 
 | status, players, rotation, bans, reserved, config (read), server log, analytics, player dossiers, triggers (read)                                        | ✓      | ✓        | ✓     | ✓         | ✓          |
 | broadcast, whisper, kick, kill, change team, end/restart match, change map, next map, live rotation edits, player notes and watchlist                    |        | ✓        | ✓     | ✓         | ✓          |
 | ban/unban, reserved slots, score tick, rotation mode/enable, save rotation, sponsor image, config apply, raw /v1 calls, triggers (create, edit, dry run) |        |          | ✓     | ✓         | ✓          |
+| the organisation's ban list and reserved-slot list (add and remove entries, pushed to every server)                                                      |        |          | ✓     | ✓         | ✓          |
 | add, edit and remove the org's servers; members, per-server roles and invite links; Discord webhooks; the org's audit trail                              |        |          |       | ✓         | ✓          |
 | create and delete organisations; every account on the panel; the whole audit trail                                                                       |        |          |       |           | ✓          |
 
@@ -207,6 +212,45 @@ account, a ban on another server in the organisation, a name that resembles a ba
 the watchlist. It is a pointer for an admin to look closer, not a verdict: the RCON API exposes no
 aim, position or input data, so nothing here detects cheating itself.
 
+### Organisation ban and reserved lists
+
+Each organisation keeps a **ban list** and a **reserved-slot list** in the panel, under the
+**Ban list** and **Reserved slots** tabs of the organisation page, and pushes them to every one of
+its servers. Each server's own **Bans & slots** tab shows what that server holds, marks the
+entries the organisation put there, and links to the organisation lists. Ban a player from the
+Players tab or a dossier and choose _every server in the organisation_ (the default, when you may
+edit the org list) or _this server only_. Org owners and
+anyone who is admin on one of the org's servers can edit the lists; a ban can carry a reason and
+an expiry, a reserved slot a priority for when a server's `MaxReservedSlots` is full.
+
+Each entry shows where it stands on every server: **applied** by the panel, **pending** the next
+sync, **failed** (hover for the server's answer), or **local**. Local means the player was already
+banned (or reserved) on that server by someone working outside the panel. The panel never removes
+what it did not add, so removing an org entry lifts it only where the panel applied it, and a
+local ban stays until an owner imports it into the org list or unbans it on that server.
+
+Bans and reserved slots that your servers already hold show up on the list pages as candidates to
+**import**: an owner reviews them, and importing puts them on the org list, marks them as managed
+on the servers that have them, and applies them to the rest. On a server's Bans & slots tab a local ban can be
+promoted the same way (owners), or added to the org list while this server's own copy stays local
+(server admins). Every dossier shows the player's standing on the org lists and lets an editor ban
+or unban org-wide, or hand out and withdraw a reserved slot, without leaving the page.
+
+A ban with an **expiry** is lifted by the panel when the time comes: the entry moves to the list's
+history as expired and the next sync removes it from every server the panel applied it to. With
+**Members get a reserved slot** on (an owner's switch on the Reserved slots tab), every member of
+the organisation who linked a SteamID on their Account page is reserved a slot on all its servers,
+ranked below the explicit entries when a server is full and skipped while the org has them banned.
+
+Sync happens twice over: right away when a list is edited (the toast says on how many servers the
+change landed, and which are unreachable and will be retried), and on every poll, where the
+poller re-applies anything missing, so an org ban that someone lifts on the server directly comes
+back at the next poll; use the org list to lift it everywhere. Reserved slots respect each
+server's `MaxReservedSlots`: when a server is full, the org's entries are applied in priority
+order and the rest show as failed until room is made. Every run that changes something, or fails,
+is in the audit trail under `system` as `lists.sync`, and reaches Discord webhooks that mirror
+bans. **Sync now** on a list page pushes everything on demand.
+
 ### Automation (triggers)
 
 The **Automation** tab on each server holds rules the poller evaluates on every sample. Admins
@@ -228,8 +272,8 @@ everyone present looks like a joiner then.
 
 ### Discord webhooks
 
-On the organisation page an owner can add Discord channel webhooks (in Discord: channel settings →
-Integrations → Webhooks → copy URL) and choose what to mirror: bans, other game commands, trigger
+On the organisation's overview an owner can add Discord channel webhooks (in Discord: channel settings →
+Integrations → Webhooks → copy URL) and choose what to mirror: bans (including org list changes), other game commands, trigger
 actions, player notes and watchlist changes, management changes, sign-ins; for every server or a
 subset. Events are batched into one message per burst, IP addresses are never sent, and the URL
 (which lets anyone post to the channel) is stored encrypted with `ENCRYPTION_KEY` and never shown
@@ -238,7 +282,8 @@ again. **Test** posts a message right away; delivery failures show on the org pa
 ### Accounts and personal data
 
 An account holds a username, display name, password hash, sessions (with IP address and
-browser), and the Discord id and avatar URL when Discord is linked. Every sign-in and action is
+browser), the Discord id and avatar URL when Discord is linked, and a SteamID64 if the person
+links one on the Account page (so an organisation can hand them a reserved slot). Every sign-in and action is
 written to the audit trail with the actor's name, IP address and browser. Nothing else is
 collected, and nothing leaves the panel.
 
@@ -344,6 +389,8 @@ src/lib/server/access.ts       global/per-server roles, accessible servers, logi
 src/lib/server/users.ts        account management on top of Better Auth (create, disable, reset, grants)
 src/lib/server/orgs.ts         organisations: members, per-server roles, invite links, joining
 src/lib/server/servers.ts      server records, reachability test, per-server grants
+src/lib/server/lists.ts        organisation ban and reserved-slot lists: entries, per-server standing, views
+src/lib/server/lists-plan.ts / lists-sync.ts   what to add or remove on a server (pure) / the per-server sync run and API fan-out
 src/lib/server/actions.ts      every panel action -> role level + /v1 call(s)
 src/lib/server/rcon-run.ts     /api/servers/:id/rcon/:action dispatcher with audit rows
 src/lib/server/rcon.ts         WardogsClient (Bearer auth, JSON/text calls, demo routing)
@@ -359,7 +406,7 @@ src/lib/server/audit.ts        audit writer/query with secret redaction
 src/lib/server/mockgame.ts     in-process imitation of the WDRCON API for demo/testing
 src/lib/components/            Modal, MapPicker, PopulationChart, Toasts, badges…
 src/routes/(auth)/             /sign-in, /setup, /join/[token] (form actions)     src/routes/sign-out
-src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],rotation,config,automation,analytics,log}, /audit, /orgs, /orgs/[id], /users, /servers, /account
+src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],bans,rotation,config,automation,analytics,log}, /audit, /orgs, /orgs/[id]/{,bans,reserved}, /users, /servers, /account
 src/routes/api/                JSON API (below)
 docs/wardogs-api.md            the reverse-engineered game-server API
 ```
@@ -372,7 +419,7 @@ which call Better Auth server-side behind the login lockout and the audit trail.
 own `/api/auth/*` routes only the OAuth callback is reachable over HTTP; everything else answers 404.
 
 ```
-GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id
+GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id   PATCH {name} | {membersReserved} | site owner: {serverLimit, suspended, reason}
 GET  /api/orgs/:id/members  PATCH/DELETE /api/orgs/:id/members/:userId {role}  PUT .../:userId/grants {grants:[{serverId,role}]}
 GET/POST /api/orgs/:id/invites {label,orgRole,serverRole,expiresDays,maxUses}  DELETE /api/orgs/:id/invites/:inviteId
 GET/POST /api/users  PATCH/DELETE /api/users/:id  PUT /api/users/:id/grants {grants:[{serverId,role}]}
@@ -385,6 +432,11 @@ GET  /api/servers/:id/players/:steamId                  dossier   POST .../steam
 POST /api/servers/:id/players/:steamId/notes {body}     DELETE .../notes/:noteId   PUT .../watch {watched,reason}
 GET/POST /api/servers/:id/triggers {kind,name,enabled,config}   PATCH/DELETE .../:triggerId   POST .../dry-run {kind,config}
 GET/POST /api/orgs/:id/webhooks {label,url,events,serverIds,enabled}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
+GET  /api/orgs/:id/lists                                 the org's ban and reserved-slot lists, and the caller's role on them
+GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt,priority}   DELETE .../entries/:steamId   (kind = ban | reserve; ?includeRemoved=1)
+POST /api/orgs/:id/lists/sync                            push the lists to every org server now
+GET  /api/orgs/:id/lists/import                          server entries not on the org list   POST {entries:[{kind,steamId,reason}]} adopts them (owner)
+GET  /api/servers/:id/lists/state                        which bans / reserved slots here come from the org lists   POST .../lists/sync
 GET  /api/actions                     lists actions with their role level
 GET  /api/audit?server=&actor=&action=&outcome=&q=&from=&to=&before=&limit=
 GET  /api/audit/export?format=csv|json GET /api/audit/meta

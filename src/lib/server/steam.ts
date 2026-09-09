@@ -2,7 +2,7 @@
 // steam_profiles table. One key for the whole panel (STEAM_API_KEY); nothing is fetched without it.
 import { inArray, sql } from 'drizzle-orm';
 import type { Env } from './env';
-import { ApiError } from './http';
+import { ApiError, str } from './http';
 import { steamProfiles, type SteamProfileRow } from './db/schema';
 
 export type { SteamProfileRow };
@@ -14,6 +14,13 @@ const BACKOFF_MS = 60_000;
 
 export const steamEnabled = (env: Pick<Env, 'STEAM_API_KEY'>): boolean => !!env.STEAM_API_KEY;
 export const isSteamId = (v: unknown): v is string => typeof v === 'string' && /^\d{17}$/.test(v);
+
+/** A request value that must be a SteamID64, trimmed; 400 otherwise. */
+export function requireSteamId(v: unknown): string {
+	const id = str(v, 32);
+	if (!isSteamId(id)) throw new ApiError(400, 'steamId must be a 17-digit SteamID64.');
+	return id;
+}
 
 /** After Steam answers 429 or 5xx, nothing is asked again until this passes. */
 let backoffUntil = 0;

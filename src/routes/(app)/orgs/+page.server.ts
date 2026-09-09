@@ -12,8 +12,13 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
 		env,
 		orgs.map((o) => o.id)
 	);
-	const roleOf = new Map(orgs.map((o) => [o.id, o.role]));
+	const summary = new Map(orgs.map((o) => [o.id, o]));
 	return {
-		orgViews: views.map((o) => ({ ...o, role: roleOf.get(o.id)! }))
+		orgViews: views.map((o) => ({
+			...o,
+			role: summary.get(o.id)!.role,
+			/** may open the org's ban and reserved lists (owner, or admin on one of its servers) */
+			lists: summary.get(o.id)!.lists
+		}))
 	};
 };

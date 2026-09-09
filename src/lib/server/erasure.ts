@@ -6,7 +6,7 @@ import { and, count, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { APIError } from 'better-auth/api';
 import type { Env } from './env';
 import { writeAudit } from './audit';
-import { auditLog, user } from './db/schema';
+import { auditLog, listEntries, user } from './db/schema';
 import { soleOwnerOf } from './orgs';
 
 /** What a deleted account's name becomes in the audit trail. */
@@ -62,6 +62,15 @@ export async function eraseUserTraces(env: Env, u: DeletingUser): Promise<void> 
 						sql`lower(${auditLog.target}) = ${username}`
 					)
 				);
+		// Org list entries keep their opaque ids too; only the names go.
+		await tx
+			.update(listEntries)
+			.set({ addedByName: DELETED_ACTOR })
+			.where(eq(listEntries.addedBy, u.id));
+		await tx
+			.update(listEntries)
+			.set({ removedByName: DELETED_ACTOR })
+			.where(eq(listEntries.removedBy, u.id));
 	});
 }
 

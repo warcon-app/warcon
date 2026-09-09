@@ -6,26 +6,25 @@
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import type { Ban, Player, PlayerMark, Status } from '$lib/types';
+	import BanDialog from '$lib/components/BanDialog.svelte';
+	import type { Player, PlayerMark, ServerListsState, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let operator = $derived(can(data.server.role, 'operator'));
 	let admin = $derived(can(data.server.role, 'admin'));
+	/** may the user write to the organisation's lists? Decides the ban dialog's default scope. */
+	let listState = $state<ServerListsState | null>(null);
+	let banning = $state<Player | null>(null);
 
 	let all = $state<Player[]>([]);
 	let status = $state<Status | null>(null);
-	let bans = $state<Ban[]>([]);
-	let reserved = $state<string[]>([]);
 	let search = $state('');
-	let banSearch = $state('');
 	let selected = $state<string | null>(null);
-	let selectedBan = $state<string | null>(null);
 	let reason = $state('');
 	let whisper = $state('');
 	let team = $state('');
-	let reservedId = $state('');
 	/** watchlist, first-visit and risk marks by SteamID; refreshed when the roster changes */
 	let marks = $state<Record<string, PlayerMark>>({});
 	let marksKey = '';
@@ -37,16 +36,6 @@
 		return all.filter((p) => !q || p.name.toLowerCase().includes(q) || p.steamId.includes(q));
 	});
 	let player = $derived(all.find((p) => p.steamId === selected) ?? null);
-	let banRows = $derived.by(() => {
-		const q = banSearch.trim().toLowerCase();
-		return bans.filter(
-			(b) =>
-				!q ||
-				b.steamId.includes(q) ||
-				(b.bannedBy || '').toLowerCase().includes(q) ||
-				(b.reason || '').toLowerCase().includes(q)
-		);
-	});
 
 	async function act(
 		action: string,
@@ -101,16 +90,19 @@
 			console.warn('marks', err);
 		}
 	}
-	async function refreshReserved() {
-		reserved = (await rconGet<{ reserved: string[] }>(id, 'reserved')).reserved;
+	async function refreshListState() {
+		try {
+			listState = await api<ServerListsState>(
+				'GET',
+				`/api/servers/${encodeURIComponent(id)}/lists/state`
+			);
+		} catch (err) {
+			console.warn('list state', err);
+		}
 	}
-	async function refreshBans() {
-		bans = (await rconGet<{ bans: Ban[] }>(id, 'bans')).bans;
-	}
-	const refreshAll = () => Promise.all([refreshPlayers(), refreshReserved(), refreshBans()]);
-
 	$effect(() => {
-		Promise.all([refreshReserved(), refreshBans()]).catch((err) => toast(errorMessage(err), 'err'));
+		void id;
+		void refreshListState();
 		return poll(refreshPlayers, 3000);
 	});
 
@@ -232,17 +224,7 @@
 						<button
 							class="btn btn-danger"
 							disabled={!admin}
-							onclick={withPlayer((p) =>
-								act(
-									'ban',
-									{ steamId: p.steamId, reason: reason.trim() },
-									{
-										confirm: `Ban ${p.name} (${p.steamId})? This persists in the server's config.`,
-										danger: true,
-										after: refreshAll
-									}
-								)
-							)}>Ban</button
+							onclick={withPlayer((p) => (banning = p))}>Ban</button
 						>
 					</div>
 				</div>
@@ -293,116 +275,24 @@
 		</div>
 	{/if}
 	{#if !operator}<p class="note">You have view-only access; player actions are disabled.</p>{/if}
+	<p class="note">
+		This server's ban list and reserved slots are under
+		<a href="/server/{encodeURIComponent(id)}/bans" class="text-accent hover:underline"
+			>Bans &amp; slots</a
+		>.
+	</p>
 </div>
 
-<div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-	<div class="panel">
-		<span class="label-sm">Reserved slots</span>
-		<div class="mb-3 flex flex-wrap gap-1.5">
-			{#each reserved as r (r)}
-				<button
-					type="button"
-					class="chip cursor-pointer hover:bg-white/12"
-					onclick={() => (reservedId = r)}>{r}</button
-				>
-			{:else}
-				<span class="text-mist-600">None.</span>
-			{/each}
-		</div>
-		<div class="join join-wrap w-full">
-			<input
-				class="input font-mono"
-				type="text"
-				placeholder="SteamID64…"
-				maxlength="17"
-				bind:value={reservedId}
-			/>
-			<button
-				class="btn"
-				disabled={!admin}
-				onclick={() =>
-					act(
-						'reservedAdd',
-						{ steamId: reservedId.trim() },
-						{
-							after: async () => {
-								reservedId = '';
-								await refreshReserved();
-							}
-						}
-					)}>Add</button
-			>
-			<button
-				class="btn btn-danger"
-				disabled={!admin}
-				onclick={() =>
-					act(
-						'reservedRemove',
-						{ steamId: reservedId.trim() },
-						{
-							after: async () => {
-								reservedId = '';
-								await refreshReserved();
-							}
-						}
-					)}>Remove</button
-			>
-		</div>
-		<p class="note">
-			Click a slot to fill the field. Reserved slots are written to the server's ServerSettings.ini.
-		</p>
-	</div>
-	<div class="panel lg:col-span-2">
-		<span class="label-sm">Bans</span>
-		<div class="mb-3 flex flex-wrap items-center gap-2">
-			<div class="join w-full sm:w-auto sm:min-w-[320px]">
-				<input
-					class="input"
-					type="search"
-					placeholder="Filter bans by SteamID, admin, reason…"
-					bind:value={banSearch}
-				/>
-				<button class="btn" onclick={refreshBans}>Refresh</button>
-			</div>
-			<button
-				class="btn btn-danger sm:ml-auto"
-				disabled={!admin || !selectedBan}
-				onclick={() =>
-					selectedBan &&
-					act(
-						'unban',
-						{ steamId: selectedBan },
-						{
-							confirm: `Unban ${selectedBan}?`,
-							after: async () => {
-								selectedBan = null;
-								await refreshBans();
-							}
-						}
-					)}>Unban selected</button
-			>
-		</div>
-		<div class="table-wrap">
-			<table>
-				<thead><tr><th>SteamID64</th><th>Banned at (UTC)</th><th>By</th><th>Reason</th></tr></thead>
-				<tbody>
-					{#each banRows as b (b.steamId)}
-						<tr
-							class="clickable {selectedBan === b.steamId ? 'selected' : ''}"
-							onclick={() => (selectedBan = selectedBan === b.steamId ? null : b.steamId)}
-						>
-							<td class="font-mono">{b.steamId}</td>
-							<td class="font-mono text-[12px] text-mist-400">{b.bannedAtUtc || '—'}</td>
-							<td>{b.bannedBy}</td>
-							<td
-								>{#if b.reason}{b.reason}{:else}<span class="text-mist-600">—</span>{/if}</td
-							>
-						</tr>
-					{:else}
-						<tr><td colspan="4" class="py-6 text-center text-mist-600">No bans.</td></tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-	</div>
-</div>
+{#if banning}
+	{@const p = banning}
+	<BanDialog
+		orgId={data.server.orgId}
+		orgName={data.server.orgName}
+		steamId={p.steamId}
+		name={p.name}
+		server={{ id, name: data.server.name }}
+		canOrg={listState?.canEditOrg ?? false}
+		onclose={() => (banning = null)}
+		ondone={refreshPlayers}
+	/>
+{/if}

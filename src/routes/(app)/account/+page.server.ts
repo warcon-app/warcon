@@ -6,31 +6,61 @@ import { writeAudit } from '$lib/server/audit';
 import { requireUser } from '$lib/server/access';
 import { auditSelfDelete } from '$lib/server/erasure';
 import {
+	getUser,
 	linkedProviders,
 	listSessions,
 	revokeSession,
 	setMustChangePassword,
+	setSteamId,
 	unlinkDiscord,
 	validatePassword
 } from '$lib/server/users';
+import { requireSteamId } from '$lib/server/steam';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const env = getEnv();
 	const user = requireUser(locals);
-	const [sessions, providers] = await Promise.all([
+	const [sessions, providers, row] = await Promise.all([
 		listSessions(env, user.id, locals.session?.id ?? null),
-		linkedProviders(env, user.id)
+		linkedProviders(env, user.id),
+		getUser(env, user.id)
 	]);
 	return {
 		sessions,
 		discord: discordEnabled(env),
 		providers,
 		/** false for accounts created through Discord: they set a password rather than change one */
-		hasPassword: providers.includes('credential')
+		hasPassword: providers.includes('credential'),
+		steamId: row?.steamId ?? ''
 	};
 };
 
 export const actions: Actions = {
+	/** Link (or clear) the SteamID64 an organisation may hand a reserved slot to. */
+	steam: async ({ request, locals }) => {
+		const env = getEnv();
+		const user = requireUser(locals);
+		const raw = str((await request.formData()).get('steamId'), 32);
+		let steamId: string | null = null;
+		try {
+			steamId = raw ? requireSteamId(raw) : null;
+			await setSteamId(env, user.id, steamId);
+		} catch (err) {
+			const known = normalizeError(err);
+			if (!known) throw err;
+			return fail(known.status, { error: known.message });
+		}
+		await writeAudit(env, request, {
+			actor: user,
+			category: 'user',
+			action: 'account.steam',
+			outcome: 'ok',
+			target: steamId ?? '',
+			message: steamId ? `Linked SteamID ${steamId}` : 'Unlinked SteamID'
+		});
+		return { steam: true, steamId };
+	},
+
 	/** Change the password, or set a first one for an account that signed up through Discord. */
 	password: async ({ request, locals, url }) => {
 		const env = getEnv();

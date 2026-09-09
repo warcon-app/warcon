@@ -1,0 +1,501 @@
+<script lang="ts">
+	// One org list (bans or reserved slots): its entries, where each stands on every server, and
+	// the add / remove controls. Shared by the /bans and /reserved pages.
+	import { invalidateAll } from '$app/navigation';
+	import { api, errorMessage } from '$lib/api';
+	import { fmtTime } from '$lib/format';
+	import { toast } from '$lib/toast.svelte';
+	import { confirmDialog } from '$lib/confirm.svelte';
+	import { describeSync, KIND_TITLE, STATE_TEXT, STATE_TONE } from '$lib/lists';
+	import Badge from '$lib/components/Badge.svelte';
+	import BanDialog from '$lib/components/BanDialog.svelte';
+	import Modal from '$lib/components/Modal.svelte';
+	import type {
+		ImportCandidate,
+		ListEntryView,
+		ListKind,
+		ListSyncSummary,
+		OrgListsView
+	} from '$lib/types';
+
+	let {
+		kind,
+		entries,
+		lists,
+		org
+	}: {
+		kind: ListKind;
+		entries: ListEntryView[];
+		lists: OrgListsView;
+		org: { id: string; name: string };
+	} = $props();
+
+	let path = $derived(`/api/orgs/${encodeURIComponent(org.id)}/lists/${kind}/entries`);
+	let search = $state('');
+	let busy = $state(false);
+	let banning = $state(false);
+	// import: entries the servers hold that the org list does not
+	let candidates = $state<ImportCandidate[] | null>(null);
+	let importing = $state(false);
+	let picked = $state<Record<string, boolean>>({});
+	let owner = $derived(lists.role === 'owner');
+	let mine = $derived((candidates ?? []).filter((c) => c.kind === kind));
+
+	$effect(() => {
+		void org.id;
+		void kind;
+		api<{ candidates: ImportCandidate[] }>(
+			'GET',
+			`/api/orgs/${encodeURIComponent(org.id)}/lists/import`
+		)
+			.then((r) => (candidates = r.candidates))
+			.catch((err) => console.warn('import candidates', err));
+	});
+
+	function openImport() {
+		const next: Record<string, boolean> = {};
+		for (const c of mine) next[c.steamId] = true;
+		picked = next;
+		importing = true;
+	}
+	async function runImport() {
+		const entries = mine
+			.filter((c) => picked[c.steamId])
+			.map((c) => ({ kind: c.kind, steamId: c.steamId }));
+		if (!entries.length) {
+			importing = false;
+			return;
+		}
+		busy = true;
+		try {
+			const res = await api<{ imported: number; sync: ListSyncSummary }>(
+				'POST',
+				`/api/orgs/${encodeURIComponent(org.id)}/lists/import`,
+				{ entries }
+			);
+			toast(describeSync(res.sync, `Imported ${res.imported}.`), 'ok', 8000);
+			importing = false;
+			candidates = null;
+			await invalidateAll();
+			const r = await api<{ candidates: ImportCandidate[] }>(
+				'GET',
+				`/api/orgs/${encodeURIComponent(org.id)}/lists/import`
+			);
+			candidates = r.candidates;
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
+	// reserved-slot add form
+	let newId = $state('');
+	let newReason = $state('');
+	let newPriority = $state(0);
+
+	let rows = $derived.by(() => {
+		const q = search.trim().toLowerCase();
+		return entries.filter(
+			(e) =>
+				!q ||
+				e.steamId.includes(q) ||
+				(e.name || '').toLowerCase().includes(q) ||
+				e.reason.toLowerCase().includes(q) ||
+				e.addedByName.toLowerCase().includes(q)
+		);
+	});
+	let dossierBase = $derived(
+		lists.servers.length ? `/server/${encodeURIComponent(lists.servers[0].id)}/players` : null
+	);
+	let noun = $derived(kind === 'ban' ? 'ban' : 'reserved slot');
+
+	async function addReserved() {
+		const steamId = newId.trim();
+		if (!/^\d{17}$/.test(steamId)) {
+			toast('Enter a 17-digit SteamID64.', 'err');
+			return;
+		}
+		busy = true;
+		try {
+			const res = await api<{ sync: ListSyncSummary }>('POST', path, {
+				steamId,
+				reason: newReason.trim(),
+				priority: newPriority
+			});
+			toast(describeSync(res.sync, `Reserved a slot for ${steamId}.`), 'ok', 8000);
+			newId = '';
+			newReason = '';
+			newPriority = 0;
+			await invalidateAll();
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function setMembersReserved(on: boolean) {
+		busy = true;
+		try {
+			const res = await api<{ sync: ListSyncSummary }>(
+				'PATCH',
+				`/api/orgs/${encodeURIComponent(org.id)}`,
+				{ membersReserved: on }
+			);
+			toast(
+				describeSync(res.sync, on ? 'Members now get a reserved slot.' : 'Member slots withdrawn.'),
+				'ok',
+				8000
+			);
+			await invalidateAll();
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function syncNow() {
+		busy = true;
+		try {
+			const res = await api<{ sync: ListSyncSummary }>(
+				'POST',
+				`/api/orgs/${encodeURIComponent(org.id)}/lists/sync`
+			);
+			toast(describeSync(res.sync, 'Sync ran.'), 'ok', 8000);
+			await invalidateAll();
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function remove(e: ListEntryView) {
+		const label = e.name ? `${e.name} (${e.steamId})` : e.steamId;
+		if (
+			!(await confirmDialog(
+				kind === 'ban'
+					? `Unban ${label} across ${org.name}? The panel lifts the ban on every server it applied it to.`
+					: `Withdraw the reserved slot for ${label} across ${org.name}?`,
+				{ okLabel: kind === 'ban' ? 'Unban' : 'Withdraw', danger: true }
+			))
+		)
+			return;
+		busy = true;
+		try {
+			const res = await api<{ sync: ListSyncSummary }>(
+				'DELETE',
+				`${path}/${encodeURIComponent(e.steamId)}`
+			);
+			toast(
+				describeSync(
+					res.sync,
+					kind === 'ban' ? `Unbanned ${e.steamId}.` : `Withdrew the slot for ${e.steamId}.`
+				),
+				'ok',
+				8000
+			);
+			await invalidateAll();
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
+</script>
+
+<div class="mb-4 flex flex-wrap items-center gap-3">
+	<div>
+		<h2 class="text-lg font-semibold tracking-tight">{KIND_TITLE[kind]}</h2>
+		<p class="text-[13px] text-mist-400">
+			{#if kind === 'ban'}
+				Bans kept by the organisation and pushed to every one of its servers. Bans added on a server
+				directly stay local to it.
+			{:else}
+				Reserved slots the organisation hands out on every one of its servers. Each server also has
+				its own cap (MaxReservedSlots).
+			{/if}
+		</p>
+	</div>
+	<span class="ml-auto inline-flex gap-1.5">
+		<button class="btn" disabled={busy || !lists.servers.length} onclick={syncNow}>Sync now</button>
+		{#if kind === 'ban'}
+			<button class="btn btn-primary" onclick={() => (banning = true)}>Add ban</button>
+		{/if}
+	</span>
+</div>
+
+{#if lists.servers.length}
+	<div class="mb-4 flex flex-wrap gap-2">
+		{#each lists.servers as s (s.id)}
+			<div
+				class="rounded-ctl border border-black bg-ink-950 px-3 py-2 text-[12.5px] {s.lastError
+					? 'border-l-2 border-l-danger'
+					: ''}"
+			>
+				<div class="font-medium">{s.name}</div>
+				<div class="text-mist-400">
+					{#if s.syncedAt}synced {fmtTime(s.syncedAt)}{:else}never synced{/if}
+					{#if kind === 'reserve' && s.reservedCap !== null}
+						· slots {s.reservedUsed} / {s.reservedCap}
+					{/if}
+				</div>
+				{#if s.lastError}<div class="text-danger">{s.lastError}</div>{/if}
+			</div>
+		{/each}
+	</div>
+{/if}
+
+{#if kind === 'reserve'}
+	<div class="mb-4 panel">
+		<span class="label-sm">Reserve a slot</span>
+		<form
+			class="flex flex-wrap items-end gap-3"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void addReserved();
+			}}
+		>
+			<label class="block"
+				><span class="field-label">SteamID64</span><input
+					class="input font-mono sm:w-52"
+					type="text"
+					inputmode="numeric"
+					maxlength="17"
+					placeholder="7656119…"
+					bind:value={newId}
+					required
+				/></label
+			>
+			<label class="block sm:flex-1"
+				><span class="field-label">Note</span><input
+					class="input"
+					type="text"
+					maxlength="200"
+					placeholder="Optional, e.g. donor, clan member"
+					bind:value={newReason}
+				/></label
+			>
+			<label class="block sm:w-28"
+				><span class="field-label">Priority</span><input
+					class="input"
+					type="number"
+					min="-1000"
+					max="1000"
+					bind:value={newPriority}
+				/></label
+			>
+			<button type="submit" class="btn btn-primary" disabled={busy}>Reserve</button>
+		</form>
+		<p class="note">Higher priority wins when a server's reserved slots are full.</p>
+		{#if owner}
+			<label class="mt-3 flex items-start gap-2 border-t border-white/8 pt-3 text-[13px]">
+				<input
+					type="checkbox"
+					class="mt-0.5"
+					checked={lists.membersReserved}
+					disabled={busy}
+					onchange={(e) => setMembersReserved((e.currentTarget as HTMLInputElement).checked)}
+				/>
+				<span
+					><b>Members get a reserved slot.</b>
+					<span class="block text-mist-400"
+						>Every member of {org.name} who linked a SteamID on their Account page is reserved a slot
+						on all its servers, below the entries above when a server is full. Banned members are skipped.</span
+					></span
+				>
+			</label>
+		{/if}
+	</div>
+{/if}
+
+{#if mine.length}
+	<div class="callout mb-4 flex flex-wrap items-center gap-3">
+		<span
+			><b>{mine.length} {noun}{mine.length === 1 ? '' : 's'}</b> found on your servers that
+			{mine.length === 1 ? 'is' : 'are'} not on the organisation list.
+			{#if owner}Import {mine.length === 1 ? 'it' : 'them'} to manage
+				{mine.length === 1 ? 'it' : 'them'} from here and apply
+				{mine.length === 1 ? 'it' : 'them'} everywhere.{:else}An owner of {org.name} can import them.{/if}</span
+		>
+		{#if owner}
+			<button class="ml-auto btn btn-sm" onclick={openImport}>Review and import</button>
+		{/if}
+	</div>
+{/if}
+
+{#if !lists.servers.length}
+	<div class="callout mb-4">
+		{org.name} has no servers yet, so there is nothing to push the list to. Entries are kept and applied
+		when a server is added.
+	</div>
+{/if}
+
+<div class="mb-3 flex flex-wrap items-center gap-2">
+	<input
+		class="input w-full sm:w-80"
+		type="search"
+		placeholder="Filter by name, SteamID, reason, admin…"
+		bind:value={search}
+	/>
+	<span class="text-[12.5px] text-mist-600"
+		>{entries.length} {noun}{entries.length === 1 ? '' : 's'}</span
+	>
+</div>
+
+<div class="table-wrap">
+	<table>
+		<thead>
+			<tr>
+				<th>Player</th>
+				<th>{kind === 'ban' ? 'Reason' : 'Note'}</th>
+				<th>By</th>
+				<th>Added</th>
+				{#if kind === 'ban'}<th>Expires</th>{:else}<th class="num">Priority</th>{/if}
+				<th>Servers</th>
+				<th></th>
+			</tr>
+		</thead>
+		<tbody>
+			{#each rows as e (e.id)}
+				<tr class={e.expired ? 'text-mist-400' : ''}>
+					<td>
+						{#if dossierBase}
+							<a href="{dossierBase}/{e.steamId}" class="font-medium text-accent hover:underline"
+								>{e.name || e.steamId}</a
+							>
+						{:else}
+							<span class="font-medium">{e.name || e.steamId}</span>
+						{/if}
+						{#if e.name}<div class="font-mono text-[12px] text-mist-600">{e.steamId}</div>{/if}
+						{#if e.member}<Badge tone="info" class="mt-1">member</Badge>{/if}
+					</td>
+					<td class="max-w-[280px]">
+						{#if e.reason}{e.reason}{:else}<span class="text-mist-600">—</span>{/if}
+					</td>
+					<td>{e.addedByName || '—'}</td>
+					<td class="text-[12.5px] whitespace-nowrap text-mist-400">{fmtTime(e.addedAt)}</td>
+					{#if kind === 'ban'}
+						<td class="text-[12.5px] whitespace-nowrap">
+							{#if !e.expiresAt}
+								<span class="text-mist-600">never</span>
+							{:else if e.expired}
+								<Badge tone="warn">expired, lifting</Badge>
+							{:else}
+								{fmtTime(e.expiresAt)}
+							{/if}
+						</td>
+					{:else}
+						<td class="num">{e.priority}</td>
+					{/if}
+					<td>
+						<span class="inline-flex flex-wrap gap-1">
+							{#each e.servers as s (s.serverId)}
+								<span title="{s.serverName}: {STATE_TEXT[s.state]}{s.error ? ` — ${s.error}` : ''}">
+									<Badge tone={STATE_TONE[s.state]}>{s.serverName}</Badge>
+								</span>
+							{/each}
+						</span>
+					</td>
+					<td class="text-right whitespace-nowrap">
+						{#if !e.member}
+							<button class="btn btn-sm btn-danger" disabled={busy} onclick={() => remove(e)}
+								>{kind === 'ban' ? 'Unban' : 'Withdraw'}</button
+							>
+						{/if}
+					</td>
+				</tr>
+			{:else}
+				<tr
+					><td colspan="7" class="py-6 text-center text-mist-600"
+						>{entries.length ? 'Nothing matches the filter.' : `No ${noun}s yet.`}</td
+					></tr
+				>
+			{/each}
+		</tbody>
+	</table>
+</div>
+
+<p class="note">
+	Server badges: <Badge tone="ok">applied</Badge> by the panel, <Badge tone="warn">pending</Badge> the
+	next sync, <Badge tone="err">failed</Badge> (hover for why), <Badge>local</Badge> already on that server
+	but added outside the panel, so the panel never removes it.
+</p>
+
+{#if banning}
+	<BanDialog
+		orgId={org.id}
+		orgName={org.name}
+		canOrg
+		onclose={() => (banning = false)}
+		ondone={() => invalidateAll()}
+	/>
+{/if}
+
+{#if importing}
+	<Modal title="Import {noun}s from your servers" wide onclose={() => (importing = false)}>
+		<p class="mb-3 text-[13px] text-mist-400">
+			These {noun}s exist on the servers below but not on the organisation list. Importing puts them
+			on the list, marks them as managed where they already exist, and applies them to every other
+			server in {org.name}. Removing an imported entry later lifts it everywhere the panel manages
+			it.
+		</p>
+		<div class="max-h-[50vh] table-wrap overflow-y-auto">
+			<table>
+				<thead>
+					<tr>
+						<th></th>
+						<th>Player</th>
+						<th>On</th>
+						{#if kind === 'ban'}<th>Reason</th>{/if}
+					</tr>
+				</thead>
+				<tbody>
+					{#each mine as c (c.steamId)}
+						<tr>
+							<td><input type="checkbox" bind:checked={picked[c.steamId]} /></td>
+							<td>
+								<span class="font-medium">{c.name || c.steamId}</span>
+								{#if c.name}<div class="font-mono text-[12px] text-mist-600">{c.steamId}</div>{/if}
+							</td>
+							<td>
+								<span class="inline-flex flex-wrap gap-1">
+									{#each c.servers as s (s.serverId)}<Badge>{s.serverName}</Badge>{/each}
+								</span>
+							</td>
+							{#if kind === 'ban'}
+								<td class="max-w-[280px] text-[12.5px]">
+									{#each c.servers.filter((s) => s.reason || s.bannedBy) as s (s.serverId)}
+										<div>
+											{s.reason || '—'}{#if s.bannedBy}
+												<span class="text-mist-600">by {s.bannedBy}</span>{/if}
+										</div>
+									{/each}
+								</td>
+							{/if}
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+		<div class="mt-4 flex flex-wrap justify-end gap-2">
+			<button
+				type="button"
+				class="mr-auto btn"
+				onclick={() => {
+					const all = mine.every((c) => picked[c.steamId]);
+					const next: Record<string, boolean> = {};
+					for (const c of mine) next[c.steamId] = !all;
+					picked = next;
+				}}>{mine.every((c) => picked[c.steamId]) ? 'Select none' : 'Select all'}</button
+			>
+			<button type="button" class="btn" data-close onclick={() => (importing = false)}
+				>Cancel</button
+			>
+			<button type="button" class="btn btn-primary" disabled={busy} onclick={runImport}
+				>Import {mine.filter((c) => picked[c.steamId]).length}</button
+			>
+		</div>
+	</Modal>
+{/if}

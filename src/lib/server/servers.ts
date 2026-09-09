@@ -17,6 +17,7 @@ import { ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { serverGrants, servers, user } from './db/schema';
 import { assertCanAddServer, ensureMemberships } from './orgs';
+import { ensureServerLists } from './lists';
 
 export interface TargetFields {
 	name?: string;
@@ -131,18 +132,22 @@ export async function createServer(
 		)
 	);
 	const id = newId();
-	await env.db.insert(servers).values({
-		id,
-		orgId,
-		name: t.name!,
-		host: t.host!,
-		port: t.port!,
-		scheme: t.scheme!,
-		allowPrivate: t.allowPrivate ?? false,
-		passwordEnc: encryptSecret(env, password),
-		notes: t.notes || '',
-		sortOrder: t.sortOrder || 0,
-		createdBy: actor.id
+	// One transaction: a server must never exist without its subscription to the org's lists.
+	await env.db.transaction(async (tx) => {
+		await tx.insert(servers).values({
+			id,
+			orgId,
+			name: t.name!,
+			host: t.host!,
+			port: t.port!,
+			scheme: t.scheme!,
+			allowPrivate: t.allowPrivate ?? false,
+			passwordEnc: encryptSecret(env, password),
+			notes: t.notes || '',
+			sortOrder: t.sortOrder || 0,
+			createdBy: actor.id
+		});
+		await ensureServerLists(tx, id, orgId);
 	});
 	await writeAudit(env, req, {
 		actor,

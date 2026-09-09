@@ -387,4 +387,21 @@ export async function unlinkDiscord(env: Env, userId: string): Promise<void> {
 		.where(and(eq(account.userId, userId), eq(account.providerId, 'discord')));
 }
 
+/**
+ * Links a SteamID64 to the account (or clears it). One SteamID per account: an org that hands its
+ * members reserved slots must know whose slot it is.
+ */
+export async function setSteamId(env: Env, userId: string, steamId: string | null): Promise<void> {
+	if (steamId) {
+		const [taken] = await env.db
+			.select({ id: user.id })
+			.from(user)
+			.where(and(eq(user.steamId, steamId), ne(user.id, userId)))
+			.limit(1);
+		if (taken)
+			throw new ApiError(409, 'That SteamID is already linked to another account.', 'steam_taken');
+	}
+	await env.db.update(user).set({ steamId, updatedAt: new Date() }).where(eq(user.id, userId));
+}
+
 export const dbNow = sql`now()`;

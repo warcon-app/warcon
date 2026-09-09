@@ -123,28 +123,90 @@ export interface OrgSummary {
 	role: OrgRole;
 	/** frozen by the site owner: members cannot open its servers, owners cannot add or invite */
 	suspended: boolean;
+	/** may open the org's ban and reserved lists: owners, and admins of any of its servers */
+	lists: boolean;
+}
+
+/** Orgs where the user holds an admin grant on at least one server. */
+async function adminGrantOrgIds(env: Env, user: SessionUser): Promise<Set<string>> {
+	const rows = await env.db
+		.selectDistinct({ orgId: servers.orgId })
+		.from(serverGrants)
+		.innerJoin(servers, eq(servers.id, serverGrants.serverId))
+		.where(and(eq(serverGrants.userId, user.id), eq(serverGrants.role, 'admin')));
+	return new Set(rows.map((r) => r.orgId));
 }
 
 /** Orgs the user belongs to, with their role; the site owner sees every org as owner. */
 export async function userOrgs(env: Env, user: SessionUser): Promise<OrgSummary[]> {
-	const shape = (o: OrgRow, role: OrgRole): OrgSummary => ({
+	const shape = (o: OrgRow, role: OrgRole, lists: boolean): OrgSummary => ({
 		id: o.id,
 		name: o.name,
 		slug: o.slug,
 		role,
-		suspended: !!o.suspendedAt
+		suspended: !!o.suspendedAt,
+		lists
 	});
 	if (user.role === 'owner') {
 		const all = await env.db.select().from(organizations).orderBy(asc(organizations.name));
-		return all.map((o) => shape(o, 'owner'));
+		return all.map((o) => shape(o, 'owner', true));
 	}
-	const mine = await env.db
-		.select({ org: organizations, role: orgMembers.role })
-		.from(orgMembers)
-		.innerJoin(organizations, eq(organizations.id, orgMembers.orgId))
-		.where(eq(orgMembers.userId, user.id))
-		.orderBy(asc(organizations.name));
-	return mine.map((r) => shape(r.org, r.role));
+	const [mine, adminOrgs] = await Promise.all([
+		env.db
+			.select({ org: organizations, role: orgMembers.role })
+			.from(orgMembers)
+			.innerJoin(organizations, eq(organizations.id, orgMembers.orgId))
+			.where(eq(orgMembers.userId, user.id))
+			.orderBy(asc(organizations.name)),
+		adminGrantOrgIds(env, user)
+	]);
+	return mine.map((r) =>
+		shape(r.org, r.role, !r.org.suspendedAt && (r.role === 'owner' || adminOrgs.has(r.org.id)))
+	);
+}
+
+// --- org lists (bans and reserved slots) ---
+
+/** owner: the org's owners; editor: admin on at least one of its servers. Both may add and remove entries. */
+export type ListsRole = 'owner' | 'editor';
+
+export async function listsRoleFor(
+	env: Env,
+	user: SessionUser,
+	orgId: string
+): Promise<ListsRole | null> {
+	if ((await orgRoleFor(env, user, orgId)) === 'owner') return 'owner';
+	const [row] = await env.db
+		.select({ serverId: serverGrants.serverId })
+		.from(serverGrants)
+		.innerJoin(servers, eq(servers.id, serverGrants.serverId))
+		.where(
+			and(
+				eq(serverGrants.userId, user.id),
+				eq(serverGrants.role, 'admin'),
+				eq(servers.orgId, orgId)
+			)
+		)
+		.limit(1);
+	return row ? 'editor' : null;
+}
+
+/** Like requireOrgRole, for the ban and reserved lists: server admins count as editors. */
+export async function requireListsRole(
+	env: Env,
+	locals: App.Locals,
+	orgId: string,
+	need: ListsRole = 'editor'
+): Promise<{ org: OrgRow; role: ListsRole; user: SessionUser }> {
+	const user = requireUser(locals);
+	const org = await getOrg(env, orgId);
+	const role = org ? await listsRoleFor(env, user, orgId) : null;
+	if (!org || !role) throw new ApiError(404, 'Organisation not found.', 'not_found');
+	if (org.suspendedAt && user.role !== 'owner')
+		throw new ApiError(403, `${org.name} is suspended. Contact the site owner.`, 'suspended');
+	if (need === 'owner' && role !== 'owner')
+		throw new ApiError(403, `Only an owner of ${org.name} can do that.`, 'forbidden');
+	return { org, role, user };
 }
 
 /** May the user add servers, manage members or mint invite links anywhere? Drives navigation. */

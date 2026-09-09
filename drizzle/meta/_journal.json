@@ -43,6 +43,13 @@
       "when": 1788982266509,
       "tag": "0005_player_intel_triggers_webhooks",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788986584534,
+      "tag": "0006_org_lists",
+      "breakpoints": true
     }
   ]
 }

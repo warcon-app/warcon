@@ -34,10 +34,12 @@ export function classify(row: Pick<AuditRow, 'category' | 'action'>): WebhookEve
 			return 'triggers';
 		case 'player':
 			return 'players';
-		case 'server':
 		case 'org':
-		case 'user':
 		case 'system':
+			// org ban / reserved list changes and their sync belong with bans
+			return row.action.startsWith('list') ? 'bans' : 'management';
+		case 'server':
+		case 'user':
 			return 'management';
 		case 'auth':
 			return 'auth';
@@ -117,6 +119,11 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.risk_kick': 'Trigger · risk kick',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
+	'list.add': 'Org list · added',
+	'list.remove': 'Org list · removed',
+	'list.import': 'Org list · imported from a server',
+	'list.expire': 'Org list · ban expired',
+	'lists.sync': 'Org list · sync',
 	login: 'Sign-in',
 	'login.failed': 'Sign-in failed'
 };
