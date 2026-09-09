@@ -23,6 +23,13 @@ export interface PopulationPoint {
 	ok: number;
 	total: number;
 }
+/** Cash in play at one moment or bucket: the total and each faction's share ('' = unassigned). */
+export interface CashPoint {
+	ts: string;
+	/** null when no reachable sample carried cash in this bucket (a gap, not zero) */
+	total: number | null;
+	factions: Record<string, number>;
+}
 export interface MapShare {
 	map: string;
 	minutes: number;
@@ -65,6 +72,7 @@ export interface Analytics {
 		matches: number;
 	};
 	population: PopulationPoint[];
+	cash: CashPoint[];
 	maps: MapShare[];
 	players: TopPlayer[];
 	matches: MatchRow[];
@@ -107,6 +115,8 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 		ok: num(r.ok),
 		total: num(r.total)
 	}));
+
+	const cash = await bucketedCash(env, serverId, from, bucket);
 
 	const [totals] = await db.execute<{
 		n: string;
@@ -203,6 +213,7 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 			matches: num(matchCount?.n)
 		},
 		population,
+		cash,
 		maps,
 		players,
 		matches: matchRows.map((r) => ({
@@ -218,4 +229,61 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 		})),
 		hourly
 	};
+}
+
+/**
+ * Cash per faction averaged into `bucket`-second buckets. Samples store cash as a JSON array, so
+ * the rows are unnested in SQL and pivoted back here; buckets with no reachable sample are
+ * omitted (the population series carries the outage bands).
+ */
+async function bucketedCash(
+	env: Env,
+	serverId: string,
+	from: Date,
+	bucket: number
+): Promise<CashPoint[]> {
+	const rows = await env.db.execute<{ b: Date; name: string; avg: string }>(sql`
+			SELECT to_timestamp(floor(extract(epoch FROM s.ts) / ${bucket}) * ${bucket}) AS b,
+			       e->>'name' AS name, AVG((e->>'cash')::numeric) AS avg
+			  FROM samples s CROSS JOIN LATERAL jsonb_array_elements(s.cash) e
+			 WHERE s.server_id = ${serverId} AND s.ts >= ${from} AND s.ok AND s.cash IS NOT NULL
+			 GROUP BY b, name ORDER BY b`);
+	return pivotCash(rows.map((r) => ({ ts: isoOf(r.b), name: r.name ?? '', cash: num(r.avg) })));
+}
+
+/** Every reachable sample's cash since `since`, newest last, for a live chart to start from. */
+export async function loadCashSince(
+	env: Env,
+	serverId: string,
+	since: Date,
+	limit = 3000
+): Promise<CashPoint[]> {
+	const rows = await env.db.execute<{ ts: Date; cash: { name: string; cash: number }[] }>(sql`
+			SELECT ts, cash FROM samples
+			 WHERE server_id = ${serverId} AND ts >= ${since} AND ok AND cash IS NOT NULL
+			 ORDER BY ts DESC LIMIT ${limit}`);
+	return rows.reverse().map((r) => {
+		const point: CashPoint = { ts: isoOf(r.ts), total: 0, factions: {} };
+		for (const c of Array.isArray(r.cash) ? r.cash : []) addCash(point, c.name ?? '', num(c.cash));
+		return point;
+	});
+}
+
+function pivotCash(rows: { ts: string; name: string; cash: number }[]): CashPoint[] {
+	const points: CashPoint[] = [];
+	let cur: CashPoint | null = null;
+	for (const r of rows) {
+		if (!cur || cur.ts !== r.ts) {
+			cur = { ts: r.ts, total: 0, factions: {} };
+			points.push(cur);
+		}
+		addCash(cur, r.name, r.cash);
+	}
+	return points;
+}
+
+function addCash(point: CashPoint, name: string, cash: number): void {
+	const v = Math.round(cash);
+	point.factions[name] = (point.factions[name] || 0) + v;
+	point.total = (point.total || 0) + v;
 }

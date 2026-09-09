@@ -1,7 +1,14 @@
 // Process configuration plus the database. Initialised once at startup (hooks.server.ts).
 import { resolve } from 'node:path';
 import { env as processEnv } from '$env/dynamic/private';
-import { connect, hasTimescale, runMigrations, type Db, type SqlClient } from './db';
+import {
+	connect,
+	hasTimescale,
+	repairLegacyJsonb,
+	runMigrations,
+	type Db,
+	type SqlClient
+} from './db';
 import { authSecretProblem } from './crypto';
 
 export interface Env {
@@ -129,6 +136,8 @@ export async function initEnv(): Promise<Env> {
 	if (secretProblem) throw new Error(secretProblem);
 	const { client, db } = connect(databaseTarget());
 	await runMigrations(db, resolve(process.cwd(), 'drizzle'));
+	const repaired = await repairLegacyJsonb(db);
+	if (repaired) console.log(`[warcon] rewrote ${repaired} double-encoded jsonb rows`);
 	const timescale = await hasTimescale(db);
 	console.log(`[warcon] database ready (timescaledb ${timescale ? 'on' : 'off'})`);
 	cached = {

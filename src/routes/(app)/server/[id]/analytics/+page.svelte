@@ -5,6 +5,8 @@
 	import { toast } from '$lib/toast.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import PopulationChart from '$lib/components/PopulationChart.svelte';
+	import CashChart from '$lib/components/CashChart.svelte';
+	import { factionColor } from '$lib/format';
 	import type { Analytics, Range } from '$lib/server/analytics';
 	import type { PageProps } from './$types';
 
@@ -14,6 +16,7 @@
 	let a = $state<Analytics | null>(null);
 	let loading = $state(false);
 	let view = $state<'chart' | 'table'>('chart');
+	let cashView = $state<'chart' | 'table'>('chart');
 
 	async function load() {
 		loading = true;
@@ -113,6 +116,32 @@
 				</table>
 			</div>
 		{/if}
+	</div>
+
+	<div class="mb-4 panel">
+		<div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+			<span class="label-sm mb-0">Cash in play</span>
+			<span class="text-[12px] text-mist-600"
+				>held by connected players · average per {a.bucketSeconds / 60} min bucket</span
+			>
+			<span class="join ml-auto">
+				<button
+					class="btn btn-sm {cashView === 'chart' ? 'btn-primary' : ''}"
+					onclick={() => (cashView = 'chart')}>Chart</button
+				>
+				<button
+					class="btn btn-sm {cashView === 'table' ? 'btn-primary' : ''}"
+					onclick={() => (cashView = 'table')}>Table</button
+				>
+			</span>
+		</div>
+		<CashChart
+			points={a.cash}
+			view={cashView}
+			{range}
+			color={(name) => factionColor(name, null)}
+			emptyText="No cash samples in this range yet. The poller records cash per faction with every sample."
+		/>
 	</div>
 
 	<div class="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-2">

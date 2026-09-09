@@ -50,6 +50,20 @@
       "when": 1788986584534,
       "tag": "0006_org_lists",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788996010094,
+      "tag": "0007_sample_cash",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788996826671,
+      "tag": "0008_jsonb_repair",
+      "breakpoints": true
     }
   ]
 }

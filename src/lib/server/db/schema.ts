@@ -4,9 +4,9 @@ import { sql } from 'drizzle-orm';
 import {
 	bigserial,
 	boolean,
+	customType,
 	index,
 	integer,
-	jsonb,
 	pgTable,
 	primaryKey,
 	text,
@@ -15,6 +15,25 @@ import {
 } from 'drizzle-orm/pg-core';
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' });
+
+/**
+ * jsonb that hands the value to Bun's SQL driver as is. Drizzle's own jsonb() stringifies first
+ * and Bun then JSON-encodes that string again, so arrays and objects landed in Postgres as JSON
+ * *strings* (jsonb_typeof = 'string'): fine to read back through Drizzle, unusable inside SQL.
+ * Migration 0008 repairs rows written that way. Reads still accept the old shape.
+ */
+const jsonb = customType<{ data: unknown; driverData: unknown }>({
+	dataType: () => 'jsonb',
+	toDriver: (value) => value,
+	fromDriver: (value) => {
+		if (typeof value !== 'string') return value;
+		try {
+			return JSON.parse(value);
+		} catch {
+			return value;
+		}
+	}
+});
 
 // ---- Better Auth (core + username + admin plugins, plus Warcon's mustChangePassword) -------------
 
@@ -263,6 +282,8 @@ export const samples = pgTable(
 		matchSeconds: integer('match_seconds'),
 		/** [{ name, score }] */
 		scores: jsonb('scores'),
+		/** [{ name, cash }]: cash held per faction ('' = unassigned), summed over connected players */
+		cash: jsonb('cash'),
 		latencyMs: integer('latency_ms'),
 		error: text('error')
 	},

@@ -19,6 +19,7 @@ import {
 	type Observed
 } from './lists-sync';
 import type { Player, Status } from '$lib/types';
+import { cashByFaction } from '$lib/cash';
 
 export { pollSeconds };
 
@@ -166,6 +167,7 @@ export async function pollServer(env: Env, server: ServerRow, org: OrgRow): Prom
 			lighting: status.lighting,
 			matchSeconds: status.matchSeconds,
 			scores,
+			cash: cashByFaction(status, players),
 			latencyMs: Date.now() - started
 		});
 		const { joined, firstVisit } = await reconcileSessions(env, server.id, ts, players);

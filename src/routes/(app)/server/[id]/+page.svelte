@@ -15,6 +15,11 @@
 	import { setHealth } from '$lib/health.svelte';
 	import MapPicker from '$lib/components/MapPicker.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
+	import CashChart from '$lib/components/CashChart.svelte';
+	import { cashByFaction } from '$lib/cash';
+	import { api } from '$lib/api';
+	import { factionColor } from '$lib/format';
+	import type { CashPoint } from '$lib/server/analytics';
 	import type { Player, Rotation, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
@@ -32,6 +37,52 @@
 	let broadcast = $state('');
 	let picker = $state<MapPicker>();
 	let seeded = false;
+
+	// Cash in play for the current match: one point per players poll, seeded from the poller's
+	// samples since the match started so a page load does not begin with an empty chart. Cleared
+	// when the map changes or the match clock jumps back (a restart).
+	const CASH_POINTS_MAX = 1500;
+	let cash = $state<CashPoint[]>([]);
+	let cashView = $state<'chart' | 'table'>('chart');
+	let cashSeeded = false;
+	let prevMap: string | null = null;
+	let prevMatchSeconds = Infinity;
+
+	async function seedCash(matchSeconds: number) {
+		cashSeeded = true;
+		try {
+			const since = new Date(Date.now() - matchSeconds * 1000).toISOString();
+			const r = await api<{ points: CashPoint[] }>(
+				'GET',
+				`/api/servers/${encodeURIComponent(id)}/cash?since=${encodeURIComponent(since)}`
+			);
+			const firstLive = cash.length ? Date.parse(cash[0].ts) : Infinity;
+			cash = [...r.points.filter((p) => Date.parse(p.ts) < firstLive), ...cash];
+		} catch {
+			/* the chart fills in from live polls */
+		}
+	}
+	function noteCashStatus(s: Status) {
+		const restarted =
+			prevMap !== null && (s.map !== prevMap || (s.matchSeconds ?? 0) < prevMatchSeconds - 5);
+		prevMap = s.map;
+		prevMatchSeconds = s.matchSeconds ?? 0;
+		if (restarted) {
+			cash = [];
+			cashSeeded = false;
+		}
+		if (!cashSeeded && s.matchSeconds !== null) void seedCash(s.matchSeconds);
+	}
+	function noteCashSample(list: Player[]) {
+		const factions: Record<string, number> = {};
+		let total = 0;
+		for (const f of cashByFaction(status, list)) {
+			factions[f.name] = f.cash;
+			total += f.cash;
+		}
+		const next = [...cash, { ts: new Date().toISOString(), total, factions }];
+		cash = next.length > CASH_POINTS_MAX ? next.slice(next.length - CASH_POINTS_MAX) : next;
+	}
 
 	async function act(
 		action: string,
@@ -64,6 +115,7 @@
 			statusAt = Date.now();
 			rotation = r;
 			setHealth(id, true);
+			noteCashStatus(s);
 			if (!seeded && picker) {
 				seeded = true;
 				void picker.setFrom({
@@ -80,6 +132,7 @@
 	}
 	async function refreshPlayers() {
 		players = (await rconGet<{ players: Player[] }>(id, 'players')).players;
+		noteCashSample(players);
 	}
 
 	$effect(() => {
@@ -277,6 +330,31 @@
 			</div>
 		</form>
 	</div>
+</div>
+
+<div class="mt-4 panel">
+	<div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+		<span class="label-sm mb-0">Cash in play</span>
+		<span class="text-[12px] text-mist-600"
+			>held by connected players this match · sampled every 3 s</span
+		>
+		<span class="join ml-auto">
+			<button
+				class="btn btn-sm {cashView === 'chart' ? 'btn-primary' : ''}"
+				onclick={() => (cashView = 'chart')}>Chart</button
+			>
+			<button
+				class="btn btn-sm {cashView === 'table' ? 'btn-primary' : ''}"
+				onclick={() => (cashView = 'table')}>Table</button
+			>
+		</span>
+	</div>
+	<CashChart
+		points={cash}
+		view={cashView}
+		color={(name) => factionColor(name, status?.scores)}
+		emptyText="No cash samples yet. Points appear as the scoreboard refreshes."
+	/>
 </div>
 
 <div class="mt-4 panel" hidden={!showPicker}>

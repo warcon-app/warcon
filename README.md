@@ -22,8 +22,8 @@ on a container host, with the database wherever you like.
   actor, server, target, outcome, upstream status, IP and duration. Filterable and exportable
   (CSV/JSON). The game server's own listener log is shown alongside it.
 - **Analytics**: a background poller samples every server and keeps what the game does not:
-  players online over time, uptime, time per map, busiest hours, player playtime and sessions,
-  match history with results.
+  players online over time, cash in play per faction, uptime, time per map, busiest hours, player
+  playtime and sessions, match history with results.
 - **Player dossiers**: click any player for their history across the organisation's servers
   (sessions, playtime, names used, K/D), the admin actions taken on them, shared notes and a
   watchlist, and, with a Steam key, their Steam persona, account age and VAC / game-ban record.
@@ -41,8 +41,9 @@ on a container host, with the database wherever you like.
   mirror (bans, commands, trigger actions, sign-ins…), per server if wanted.
 - **Everything the official console does**: status, scoreboard, kick/ban/kill/whisper/change-team,
   broadcasts, map override, next map, end/restart match, map rotation editing and saving, reserved
-  slots, bans, score tick, sponsor image, and the full `ServerSettings.ini` config document with
-  validate/apply and revision conflict handling.
+  slots, bans, score tick, sponsor image, a live cash-in-play chart for the current match, and the
+  full `ServerSettings.ini` config document as a typed form (or the raw file) with validate/apply,
+  revision conflict handling and copy/download.
 - **Demo mode**: a built-in mock game server so you can try everything before pointing it at a real one.
 
 The protocol was reverse-engineered from `rcon.wardogs.com`; see [docs/wardogs-api.md](docs/wardogs-api.md).
@@ -404,7 +405,8 @@ src/lib/server/webhooks.ts     Discord webhook records; webhook-delivery.ts batc
 src/lib/server/analytics.ts    analytics queries per server and range
 src/lib/server/audit.ts        audit writer/query with secret redaction
 src/lib/server/mockgame.ts     in-process imitation of the WDRCON API for demo/testing
-src/lib/components/            Modal, MapPicker, PopulationChart, Toasts, badges…
+src/lib/config-doc.ts / config-fields.ts   ServerSettings.ini parser and line-level setter (pure, tested) / the keys the config form manages
+src/lib/components/            Modal, MapPicker, PopulationChart, CashChart, ConfigForm, Toasts, badges…
 src/routes/(auth)/             /sign-in, /setup, /join/[token] (form actions)     src/routes/sign-out
 src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],bans,rotation,config,automation,analytics,log}, /audit, /orgs, /orgs/[id]/{,bans,reserved}, /users, /servers, /account
 src/routes/api/                JSON API (below)
@@ -427,6 +429,7 @@ GET/POST /api/servers {orgId,...}  PATCH/DELETE /api/servers/:id  POST /api/serv
 GET/PUT /api/servers/:id/grants {grants:[{userId,role}]}   GET /api/servers/:id/summary
 GET|POST /api/servers/:id/rcon/:action   (GET for reads with query params, POST JSON for mutations)
 GET  /api/servers/:id/analytics?range=24h|7d|30d
+GET  /api/servers/:id/cash?since=<iso>                  cash-in-play samples since a moment (24 h at most), seeds the dashboard chart
 GET  /api/servers/:id/players/marks?ids=a,b&names=…     watchlist / first-visit / risk per connected player
 GET  /api/servers/:id/players/:steamId                  dossier   POST .../steam (refresh Steam data)
 POST /api/servers/:id/players/:steamId/notes {body}     DELETE .../notes/:noteId   PUT .../watch {watched,reason}

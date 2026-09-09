@@ -39,3 +39,37 @@ export async function hasTimescale(db: Db): Promise<boolean> {
 	);
 	return (row?.n ?? 0) > 0;
 }
+
+/** Every jsonb column the app writes; kept in step with schema.ts. */
+const JSONB_COLUMNS: [table: string, column: string][] = [
+	['audit_log', 'detail'],
+	['samples', 'scores'],
+	['samples', 'cash'],
+	['matches', 'final_scores'],
+	['triggers', 'config'],
+	['triggers', 'state'],
+	['webhooks', 'events'],
+	['webhooks', 'server_ids']
+];
+
+/**
+ * Unwraps jsonb values that an older build stored double-encoded (a JSON array or object inside
+ * a JSON string; see the jsonb type in schema.ts). Migration 0008 did this once, but a process
+ * still running the old code keeps writing the old shape until it restarts (a rolling deploy,
+ * or a dev server left open), so every start checks again. Cheap when there is nothing to fix.
+ * Returns how many rows were rewritten.
+ */
+export async function repairLegacyJsonb(db: Db): Promise<number> {
+	let fixed = 0;
+	for (const [table, column] of JSONB_COLUMNS) {
+		const t = sql.identifier(table);
+		const c = sql.identifier(column);
+		const res = await db.execute(sql`
+			UPDATE ${t} SET ${c} = (${c} #>> '{}')::jsonb
+			 WHERE jsonb_typeof(${c}) = 'string' AND left(${c} #>> '{}', 1) IN ('[', '{')`);
+		// Bun's SQL result reports the UPDATE's row count as `count`.
+		const r = res as { count?: number | null; affectedRows?: number | null };
+		fixed += Number(r.count ?? r.affectedRows ?? 0);
+	}
+	return fixed;
+}

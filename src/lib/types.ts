@@ -91,11 +91,18 @@ export interface Ban {
 	bannedBy: string;
 	reason: string;
 }
+/** How the server says one config section (or one key in it) takes effect when applied. */
+export interface ConfigSection {
+	section: string;
+	appliesWhen: string;
+	description?: string;
+	keyOverrides?: { key: string; appliesWhen: string; description?: string }[];
+}
 export interface ConfigDoc {
 	revision: string;
 	writable: boolean;
 	text: string;
-	sections: unknown[];
+	sections: ConfigSection[];
 	warnings: unknown[];
 }
 export interface ConfigResult {

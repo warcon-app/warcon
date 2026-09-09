@@ -2,6 +2,8 @@
 	import { rconGet, rconPost, errorMessage, ApiError } from '$lib/api';
 	import { can } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
+	import { confirmDialog } from '$lib/confirm.svelte';
+	import ConfigForm from '$lib/components/ConfigForm.svelte';
 	import type { ConfigDoc, ConfigResult, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
@@ -23,13 +25,17 @@
 	let failure = $state('');
 	let lineErrors = $state<{ line?: number; message?: string }[]>([]);
 	let busy = $state(false);
+	let mode = $state<'form' | 'raw'>('form');
 
 	let readOnly = $derived(!admin || !doc || !doc.writable);
+	let dirty = $derived(!!doc && text !== doc.text);
 
-	async function loadDoc() {
-		result = null;
-		failure = '';
-		lineErrors = [];
+	async function loadDoc(opts: { keepResult?: boolean } = {}) {
+		if (!opts.keepResult) {
+			result = null;
+			failure = '';
+			lineErrors = [];
+		}
 		try {
 			doc = await rconGet<ConfigDoc>(id, 'config');
 			text = doc.text;
@@ -39,6 +45,33 @@
 			text = '';
 			docError = errorMessage(err);
 		}
+	}
+	async function reload() {
+		if (dirty && !(await confirmDialog('Reload from the server and drop your unapplied edits?')))
+			return;
+		await loadDoc();
+	}
+	function discard() {
+		if (doc) text = doc.text;
+		failure = '';
+		lineErrors = [];
+	}
+	async function copyText() {
+		try {
+			await navigator.clipboard.writeText(text);
+			toast('Config copied to the clipboard.', 'ok');
+		} catch {
+			toast('Could not copy; select the raw file and copy it by hand.', 'err');
+		}
+	}
+	function download() {
+		const blob = new Blob([text], { type: 'text/plain' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `ServerSettings-${data.server.name.replace(/[^\w.-]+/g, '_')}.ini`;
+		a.click();
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
 	}
 	async function loadSponsor() {
 		try {
@@ -105,13 +138,15 @@
 				lineErrors = r.errors || [];
 				return;
 			}
+			result = r;
 			if (action === 'configApply' && doc) {
 				doc.revision = r.revision;
 				toast(`Config applied (revision ${r.revision}).`, 'ok');
+				// Re-read so the change marks and revision reflect what the server actually kept.
+				await loadDoc({ keepResult: true });
 			} else {
 				toast('Config is valid.', 'ok');
 			}
-			result = r;
 		} catch (err) {
 			failure = errorMessage(err);
 			const body =
@@ -188,13 +223,27 @@
 </div>
 
 <div class="mt-4 panel">
-	<span class="label-sm">Config document (ServerSettings.ini)</span>
-	<div class="mb-3 flex flex-wrap items-center gap-2">
+	<div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+		<span class="label-sm mb-0">Config document (ServerSettings.ini)</span>
 		<span class="text-[12.5px] text-mist-400"
-			>Revision <span class="font-mono">{doc?.revision || (doc ? '(none)' : '—')}</span></span
+			>Revision <span class="font-mono">{doc?.revision || (doc ? '(none)' : '—')}</span>{#if dirty}
+				· <span class="text-accent">unapplied edits</span>{/if}</span
 		>
+		<span class="join ml-auto">
+			<button
+				class="btn btn-sm {mode === 'form' ? 'btn-primary' : ''}"
+				onclick={() => (mode = 'form')}>Form</button
+			>
+			<button
+				class="btn btn-sm {mode === 'raw' ? 'btn-primary' : ''}"
+				onclick={() => (mode = 'raw')}>Raw file</button
+			>
+		</span>
+	</div>
+	<div class="mb-4 flex flex-wrap items-center gap-2">
 		<div class="join">
-			<button class="btn btn-sm" onclick={loadDoc}>Reload</button>
+			<button class="btn btn-sm" onclick={reload}>Reload</button>
+			<button class="btn btn-sm" disabled={!dirty} onclick={discard}>Discard edits</button>
 			<button
 				class="btn btn-sm"
 				disabled={!admin || !doc || busy}
@@ -206,16 +255,36 @@
 				onclick={() => runConfig('configApply')}>Apply to server</button
 			>
 		</div>
+		<div class="join">
+			<button class="btn btn-sm" disabled={!doc} onclick={copyText}>Copy</button>
+			<button class="btn btn-sm" disabled={!doc} onclick={download}>Download .ini</button>
+		</div>
 		<label class="inline-flex items-center gap-2 text-[12.5px]"
 			><input type="checkbox" bind:checked={force} /> Force (ignore revision conflict)</label
 		>
 	</div>
-	<textarea
-		class="min-h-[420px] input font-mono text-[12.5px] leading-relaxed pointer-coarse:text-[16px]"
-		rows="26"
-		spellcheck="false"
-		bind:value={text}
-		readonly={readOnly}></textarea>
+	{#if mode === 'form' && doc}
+		<ConfigForm
+			bind:text
+			serverText={doc.text}
+			sections={doc.sections}
+			shadowed={result?.shadowed ?? []}
+			disabled={readOnly}
+			tickRange={tickKnown ? { min: tickMin, max: tickMax } : null}
+		/>
+		<p class="note mt-4">
+			Fields edit the file one line at a time, so keys the form does not know (rotation entries, ban
+			and reserved lists, the RCON block) and any comments stay exactly as they are. Switch to Raw
+			file to see or edit the whole document.
+		</p>
+	{:else}
+		<textarea
+			class="min-h-[420px] input font-mono text-[12.5px] leading-relaxed pointer-coarse:text-[16px]"
+			rows="26"
+			spellcheck="false"
+			bind:value={text}
+			readonly={readOnly}></textarea>
+	{/if}
 
 	{#if docError}
 		<div class="mt-3 callout mb-0">
