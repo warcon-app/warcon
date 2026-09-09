@@ -11,7 +11,13 @@ import { WardogsClient } from './rcon';
 import { matches, organizations, playerSessions, samples, servers } from './db/schema';
 import { getProfiles, steamEnabled } from './steam';
 import { runTriggers } from './triggers';
-import { liveObserved, reconcileServer, writeSnapshot, type Observed } from './lists-sync';
+import {
+	expireEntries,
+	liveObserved,
+	reconcileServer,
+	writeSnapshot,
+	type Observed
+} from './lists-sync';
 import type { Player, Status } from '$lib/types';
 
 export { pollSeconds };
@@ -93,6 +99,7 @@ export function startPoller(env: Env): void {
 	let ticks = 0;
 	const tick = async () => {
 		if (!(await ensureLeader(env))) return;
+		await expireEntries(env).catch((err) => console.error('[warcon] list expiry', err));
 		await pollAll(env).catch((err) => console.error('[warcon] poll', err));
 		if (ticks++ % Math.max(1, Math.floor(3600 / seconds)) === 0)
 			await prune(env).catch((err) => console.error('[warcon] prune', err));

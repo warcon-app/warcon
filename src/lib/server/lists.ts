@@ -10,7 +10,7 @@ import { and, asc, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { ApiError, int, newId, str } from './http';
 import { writeAudit } from './audit';
-import { listsRoleFor, type OrgRow, type ServerRow, type SessionUser } from './access';
+import { getOrg, listsRoleFor, type OrgRow, type ServerRow, type SessionUser } from './access';
 import type { Db } from './db';
 import {
 	listEntries,
@@ -26,7 +26,7 @@ import {
 	type ListRow
 } from './db/schema';
 import { requireSteamId } from './steam';
-import { desiredFor, fanOut } from './lists-sync';
+import { desiredFor, fanOut, MEMBER_PRIORITY, memberSlots } from './lists-sync';
 import type {
 	ImportCandidate,
 	ListEntryState,
@@ -309,33 +309,55 @@ export async function entriesView(
 		)
 		.orderBy(desc(listEntries.addedAt))
 		.limit(2000);
+	// Members-reserved: slots the org hands its members are shown like entries, but come from
+	// the membership rather than a row someone added.
+	const members =
+		kind === 'reserve' && org.membersReserved && !opts.includeRemoved
+			? (await memberSlots(env, org.id)).filter(
+					(m) => !rows.some((r) => !r.removedAt && r.steamId === m.steamId)
+				)
+			: [];
 	const srv = await orgServerRefs(env, org.id);
-	const ids = [...new Set(rows.filter((r) => !r.removedAt).map((r) => r.steamId))];
+	const ids = [
+		...new Set([
+			...rows.filter((r) => !r.removedAt).map((r) => r.steamId),
+			...members.map((m) => m.steamId)
+		])
+	];
 	const serverIds = srv.map((s) => s.id);
 	const [names, byServer] = await Promise.all([
-		namesFor(
-			env,
-			serverIds,
-			rows.map((r) => r.steamId)
-		),
+		namesFor(env, serverIds, [...rows.map((r) => r.steamId), ...members.map((m) => m.steamId)]),
 		standings(env, kind, serverIds, ids)
 	]);
 	const now = new Date();
-	return rows.map((r) =>
-		shapeEntry(
-			r,
-			kind,
-			names.get(r.steamId) ?? null,
-			r.removedAt
-				? []
-				: srv.map((s) => ({
-						serverId: s.id,
-						serverName: s.name,
-						...standingOf(byServer.get(s.id), r.steamId)
-					})),
-			now
-		)
+	const perServer = (steamId: string) =>
+		srv.map((s) => ({
+			serverId: s.id,
+			serverName: s.name,
+			...standingOf(byServer.get(s.id), steamId)
+		}));
+	const out = rows.map((r) =>
+		shapeEntry(r, kind, names.get(r.steamId) ?? null, r.removedAt ? [] : perServer(r.steamId), now)
 	);
+	for (const m of members)
+		out.push({
+			id: `member:${m.userId}`,
+			kind,
+			steamId: m.steamId,
+			name: names.get(m.steamId) ?? (m.username ? `@${m.username}` : null),
+			reason: m.username ? `member @${m.username}` : 'member',
+			expiresAt: null,
+			expired: false,
+			priority: MEMBER_PRIORITY,
+			addedByName: '',
+			addedAt: m.since.toISOString(),
+			removedAt: null,
+			removedByName: '',
+			removal: null,
+			member: true,
+			servers: perServer(m.steamId)
+		});
+	return out;
 }
 
 // ---- mutations ---------------------------------------------------------------------------------
@@ -666,7 +688,7 @@ export async function serverListsState(
 		bucket[s.steamId] = { state: s.state, managed: true };
 	}
 	// wanted but not yet on the server
-	const org = { membersReserved: false };
+	const org = (await getOrg(env, server.orgId)) ?? { membersReserved: false };
 	const desired = await desiredFor(env, server, org);
 	for (const d of desired.bans) out.bans[d.steamId] ??= { state: 'pending', managed: true };
 	for (const d of desired.reserved) out.reserved[d.steamId] ??= { state: 'pending', managed: true };

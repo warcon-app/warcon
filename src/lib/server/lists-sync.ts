@@ -8,7 +8,7 @@
 // banned" is a success, "not banned" on delete is a success), so two replicas working the same
 // server at once do no harm; the in-process lock below only keeps the poller and an API call in
 // one process from interleaving.
-import { and, eq, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { publicMessage } from './http';
 import { writeAudit } from './audit';
@@ -18,12 +18,14 @@ import {
 	listEntries,
 	lists,
 	organizations,
+	orgMembers,
 	serverBans,
 	serverListState,
 	serverListSync,
 	serverLists,
 	serverReserved,
 	servers,
+	user,
 	type OrgRow,
 	type ServerRow
 } from './db/schema';
@@ -110,20 +112,115 @@ export async function desiredFor(
 		rows.map((r) => ({ ...r.e, kind: r.kind })),
 		now
 	);
-	void org; // members-reserved joins the desired set in a later step
-	return {
-		bans: active
-			.filter((r) => r.kind === 'ban')
-			.map((r) => ({ steamId: r.steamId, reason: r.reason, listId: r.listId })),
-		reserved: active
-			.filter((r) => r.kind === 'reserve')
-			.map((r) => ({
-				steamId: r.steamId,
-				listId: r.listId,
-				priority: r.priority,
-				addedAt: r.addedAt
-			}))
-	};
+	const bans = active
+		.filter((r) => r.kind === 'ban')
+		.map((r) => ({ steamId: r.steamId, reason: r.reason, listId: r.listId }));
+	const reserved = active
+		.filter((r) => r.kind === 'reserve')
+		.map((r) => ({
+			steamId: r.steamId,
+			listId: r.listId,
+			priority: r.priority,
+			addedAt: r.addedAt
+		}));
+	if (org.membersReserved) {
+		// Members who set a SteamID get a slot from the org's reserve list, below every explicit
+		// entry when a server is full, unless the org has banned them.
+		const [reserveList] = await env.db
+			.select({ id: lists.id })
+			.from(serverLists)
+			.innerJoin(lists, eq(lists.id, serverLists.listId))
+			.where(and(eq(serverLists.serverId, server.id), eq(lists.kind, 'reserve')))
+			.limit(1);
+		if (reserveList) {
+			const banned = new Set(bans.map((b) => b.steamId));
+			const have = new Set(reserved.map((r) => r.steamId));
+			for (const m of await memberSlots(env, server.orgId))
+				if (!banned.has(m.steamId) && !have.has(m.steamId))
+					reserved.push({
+						steamId: m.steamId,
+						listId: reserveList.id,
+						priority: MEMBER_PRIORITY,
+						addedAt: m.since
+					});
+		}
+	}
+	return { bans, reserved };
+}
+
+/** Explicit entries always outrank member-derived slots when a server's cap bites. */
+export const MEMBER_PRIORITY = -1_000_000;
+
+/** Members of the org who linked a SteamID on their account and are not disabled. */
+export async function memberSlots(
+	env: Env,
+	orgId: string
+): Promise<{ steamId: string; userId: string; username: string; since: Date }[]> {
+	const rows = await env.db
+		.select({
+			steamId: user.steamId,
+			userId: user.id,
+			username: user.username,
+			since: orgMembers.createdAt
+		})
+		.from(orgMembers)
+		.innerJoin(user, eq(user.id, orgMembers.userId))
+		.where(
+			and(
+				eq(orgMembers.orgId, orgId),
+				isNotNull(user.steamId),
+				or(isNull(user.banned), eq(user.banned, false))
+			)
+		)
+		.orderBy(orgMembers.createdAt);
+	return rows.map((r) => ({
+		steamId: r.steamId!,
+		userId: r.userId,
+		username: r.username || '',
+		since: r.since
+	}));
+}
+
+/**
+ * Lifts bans whose expiry has passed: the row is marked removed (so history keeps it) and the
+ * next reconcile takes it off every server the panel applied it to. The poller runs this every
+ * tick and fanOut before pushing, so an install without a poller still catches up on edit.
+ */
+export async function expireEntries(env: Env): Promise<number> {
+	const now = new Date();
+	const rows = await env.db
+		.update(listEntries)
+		.set({ removedAt: now, removedByName: 'expiry', removal: 'expired' })
+		.where(
+			and(
+				isNull(listEntries.removedAt),
+				isNotNull(listEntries.expiresAt),
+				lte(listEntries.expiresAt, now)
+			)
+		)
+		.returning({ listId: listEntries.listId, steamId: listEntries.steamId });
+	if (!rows.length) return 0;
+	const listIds = [...new Set(rows.map((r) => r.listId))];
+	const owners = await env.db
+		.select({ listId: lists.id, orgId: lists.orgId, orgName: organizations.name })
+		.from(lists)
+		.innerJoin(organizations, eq(organizations.id, lists.orgId))
+		.where(inArray(lists.id, listIds));
+	await env.db.update(lists).set({ updatedAt: now }).where(inArray(lists.id, listIds));
+	for (const o of owners) {
+		const ids = rows.filter((r) => r.listId === o.listId).map((r) => r.steamId);
+		await writeAudit(env, null, {
+			actorName: 'list sync',
+			orgId: o.orgId,
+			category: 'system',
+			action: 'list.expire',
+			target: ids.join(', '),
+			outcome: 'ok',
+			message: `${ids.length} ban${ids.length === 1 ? '' : 's'} expired in ${o.orgName}`,
+			detail: { orgId: o.orgId, org: o.orgName, steamIds: ids }
+		}).catch((err) => console.error('[warcon] list.expire audit', err));
+	}
+	return rows.length;
 }
 
 async function snapshotObserved(env: Env, serverId: string): Promise<Observed> {
@@ -571,6 +668,7 @@ async function record(
  * reported as still syncing.
  */
 export async function fanOut(env: Env, org: OrgRow): Promise<ListSyncSummary> {
+	await expireEntries(env).catch((err) => console.error('[warcon] list expiry', err));
 	const rows = await env.db
 		.select({ server: servers })
 		.from(servers)

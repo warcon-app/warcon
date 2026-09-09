@@ -134,6 +134,27 @@
 		}
 	}
 
+	async function setMembersReserved(on: boolean) {
+		busy = true;
+		try {
+			const res = await api<{ sync: ListSyncSummary }>(
+				'PATCH',
+				`/api/orgs/${encodeURIComponent(org.id)}`,
+				{ membersReserved: on }
+			);
+			toast(
+				describeSync(res.sync, on ? 'Members now get a reserved slot.' : 'Member slots withdrawn.'),
+				'ok',
+				8000
+			);
+			await invalidateAll();
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function syncNow() {
 		busy = true;
 		try {
@@ -268,6 +289,24 @@
 			<button type="submit" class="btn btn-primary" disabled={busy}>Reserve</button>
 		</form>
 		<p class="note">Higher priority wins when a server's reserved slots are full.</p>
+		{#if owner}
+			<label class="mt-3 flex items-start gap-2 border-t border-white/8 pt-3 text-[13px]">
+				<input
+					type="checkbox"
+					class="mt-0.5"
+					checked={lists.membersReserved}
+					disabled={busy}
+					onchange={(e) => setMembersReserved((e.currentTarget as HTMLInputElement).checked)}
+				/>
+				<span
+					><b>Members get a reserved slot.</b>
+					<span class="block text-mist-400"
+						>Every member of {org.name} who linked a SteamID on their Account page is reserved a slot
+						on all its servers, below the entries above when a server is full. Banned members are skipped.</span
+					></span
+				>
+			</label>
+		{/if}
 	</div>
 {/if}
 

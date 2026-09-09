@@ -234,6 +234,28 @@ check import-managed '"76561198100000301":{"state":"applied","managed":true}' "$
 check import-reason '"reason":"Cheating - aimbot"' "$(req $J1 GET /api/orgs/$ORG/lists/ban/entries)"
 check import-gone '0' "$(req $J1 GET /api/orgs/$ORG/lists/import | grep -c 76561198100000301)"
 check dossier-orglists '"orgLists":{"ban":{' "$(req $J1 GET /api/servers/$SID/players/76561198100000301)"
+# expiry: a ban that lifts itself ten seconds from now; members-reserved: james links a SteamID and gets a slot
+EXP=$(date -u -v+12S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+12 seconds' +%Y-%m-%dT%H:%M:%SZ)
+EB="{\"steamId\":\"76561198100000701\",\"expiresAt\":\"$EXP\"}"
+check expiry-add '"expiresAt"' "$(req $J1 POST /api/orgs/$ORG/lists/ban/entries "$EB")"
+check expiry-applied '76561198100000701' "$(req $J1 GET /api/servers/$SID/rcon/bans)"
+check steam-badid '400' "$(form $J1 '/account?/steam' 'steamId=abc')"
+check steam-set '200' "$(form $J1 '/account?/steam' 'steamId=76561198100000801')"
+check steam-dup-carol '409' "$(form $J5 '/account?/steam' 'steamId=76561198100000801')"
+check steam-shown '76561198100000801' "$(curl -s -b $J1 $B/account)"
+# raise the cap again so the member slot fits (2 seeded + 999 + 601 + 602 now + james = 6)
+CFG=$(req $J1 GET /api/servers/$SID/rcon/config); REV=$(echo "$CFG" | sed -E 's/.*"revision":"([^"]+)".*/\1/')
+BODY="{\"text\":\"[/Script/WDGame.WDGameSession]\\r\\nServerName=Renamed\\r\\nMaxReservedSlots=20\\r\\n\",\"revision\":\"$REV\"}"
+req $J1 POST /api/servers/$SID/rcon/configApply "$BODY" >/dev/null
+check members-reserved '"sync"' "$(req $J1 PATCH /api/orgs/$ORG '{"membersReserved":true}')"
+check member-slot '76561198100000801' "$(req $J1 GET /api/servers/$SID/rcon/reserved)"
+check member-entry '"member":true' "$(req $J1 GET /api/orgs/$ORG/lists/reserve/entries)"
+check member-off '"sync"' "$(req $J1 PATCH /api/orgs/$ORG '{"membersReserved":false}')"
+check member-slot-gone '0' "$(req $J1 GET /api/servers/$SID/rcon/reserved | grep -c 76561198100000801)"
+for i in $(seq 1 12); do R=$(req $J1 GET /api/servers/$SID/rcon/bans); [[ "$R" != *76561198100000701* ]] && break; sleep 3; done
+check expiry-lifted '0' "$(echo "$R" | grep -c 76561198100000701)"
+check expiry-row '"removal":"expired"' "$(req $J1 GET "/api/orgs/$ORG/lists/ban/entries?includeRemoved=1")"
+check audit-expire '"action":"list.expire"' "$(req $J1 GET '/api/audit?action=list.expire')"
 
 echo "== analytics"
 sleep 12

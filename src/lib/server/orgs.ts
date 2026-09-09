@@ -16,7 +16,8 @@ import { orgInvites, orgMembers, organizations, serverGrants, servers, user } fr
 import type { OrgInviteRow } from './db/schema';
 import type { Db } from './db';
 import { ensureOrgLists } from './lists';
-import type { InviteStatus, InviteView, OrgMemberView, OrgView } from '$lib/types';
+import { fanOut } from './lists-sync';
+import type { InviteStatus, InviteView, ListSyncSummary, OrgMemberView, OrgView } from '$lib/types';
 
 /** A Drizzle transaction handle (what `db.transaction(async (tx) => ...)` passes). */
 export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -177,6 +178,34 @@ export async function setOrgControls(
 		target: org.name,
 		detail: { orgId: org.id, ...changes }
 	});
+}
+
+/** Owners: hand every member with a SteamID a reserved slot on all org servers (or stop doing so). */
+export async function setMembersReserved(
+	env: Env,
+	req: Request,
+	actor: SessionUser,
+	org: OrgRow,
+	on: boolean
+): Promise<ListSyncSummary> {
+	if (org.membersReserved !== on)
+		await env.db
+			.update(organizations)
+			.set({ membersReserved: on, updatedAt: new Date() })
+			.where(eq(organizations.id, org.id));
+	await writeAudit(env, req, {
+		actor,
+		orgId: org.id,
+		category: 'org',
+		action: 'list.members',
+		outcome: 'ok',
+		target: org.name,
+		message: on
+			? 'Members with a SteamID now get a reserved slot on every server'
+			: 'Members no longer get a reserved slot',
+		detail: { orgId: org.id, membersReserved: on }
+	});
+	return fanOut(env, { ...org, membersReserved: on });
 }
 
 /** Creates an org with the actor as its first owner. */
