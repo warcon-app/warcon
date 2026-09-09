@@ -56,7 +56,7 @@ Taken against the built-in demo server, so the numbers are synthetic.
 
 ![Server overview: scores, match control and scoreboard](docs/screenshots/server-overview.png)
 
-| Analytics                                                                     | Players, reserved slots and bans             |
+| Analytics                                                                     | Players                                      |
 | ----------------------------------------------------------------------------- | -------------------------------------------- |
 | ![Analytics: players online, uptime, matches](docs/screenshots/analytics.png) | ![Players tab](docs/screenshots/players.png) |
 
@@ -216,8 +216,10 @@ aim, position or input data, so nothing here detects cheating itself.
 
 Each organisation keeps a **ban list** and a **reserved-slot list** in the panel, under the
 **Ban list** and **Reserved slots** tabs of the organisation page, and pushes them to every one of
-its servers. Ban a player from the players page or a dossier and choose _every server in the
-organisation_ (the default, when you may edit the org list) or _this server only_. Org owners and
+its servers. Each server's own **Bans & slots** tab shows what that server holds, marks the
+entries the organisation put there, and links to the organisation lists. Ban a player from the
+Players tab or a dossier and choose _every server in the organisation_ (the default, when you may
+edit the org list) or _this server only_. Org owners and
 anyone who is admin on one of the org's servers can edit the lists; a ban can carry a reason and
 an expiry, a reserved slot a priority for when a server's `MaxReservedSlots` is full.
 
@@ -229,7 +231,7 @@ local ban stays until an owner imports it into the org list or unbans it on that
 
 Bans and reserved slots that your servers already hold show up on the list pages as candidates to
 **import**: an owner reviews them, and importing puts them on the org list, marks them as managed
-on the servers that have them, and applies them to the rest. On the players page a local ban can be
+on the servers that have them, and applies them to the rest. On a server's Bans & slots tab a local ban can be
 promoted the same way (owners), or added to the org list while this server's own copy stays local
 (server admins). Every dossier shows the player's standing on the org lists and lets an editor ban
 or unban org-wide, or hand out and withdraw a reserved slot, without leaving the page.
@@ -404,7 +406,7 @@ src/lib/server/audit.ts        audit writer/query with secret redaction
 src/lib/server/mockgame.ts     in-process imitation of the WDRCON API for demo/testing
 src/lib/components/            Modal, MapPicker, PopulationChart, Toasts, badges…
 src/routes/(auth)/             /sign-in, /setup, /join/[token] (form actions)     src/routes/sign-out
-src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],rotation,config,automation,analytics,log}, /audit, /orgs, /orgs/[id]/{,bans,reserved}, /users, /servers, /account
+src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],bans,rotation,config,automation,analytics,log}, /audit, /orgs, /orgs/[id]/{,bans,reserved}, /users, /servers, /account
 src/routes/api/                JSON API (below)
 docs/wardogs-api.md            the reverse-engineered game-server API
 ```

@@ -332,7 +332,7 @@
 				{#if d.orgLists.canEdit}
 					<a
 						href="/orgs/{encodeURIComponent(data.server.orgId)}/bans"
-						class="ml-auto text-[12px] text-accent hover:underline">Open →</a
+						class="ml-auto text-[12px] text-accent hover:underline">Open the lists →</a
 					>
 				{/if}
 			</div>

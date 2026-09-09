@@ -483,6 +483,32 @@
 		</div>
 
 		<div class="panel">
+			<span class="label-sm">Ban list and reserved slots</span>
+			<div class="space-y-1.5">
+				{#each data.lists.lists as l (l.id)}
+					<div class="kv items-center">
+						<a
+							href="/orgs/{encodeURIComponent(data.org.id)}/{l.kind === 'ban'
+								? 'bans'
+								: 'reserved'}"
+							class="text-accent hover:underline"
+							>{l.kind === 'ban' ? 'Ban list' : 'Reserved slots'}</a
+						>
+						<span class="text-mist-400"
+							>{l.entryCount} entr{l.entryCount === 1
+								? 'y'
+								: 'ies'}{#if l.kind === 'reserve' && data.lists.membersReserved}
+								· members get a slot{/if}</span
+						>
+					</div>
+				{/each}
+			</div>
+			<p class="note">
+				Pushed to every server in {data.org.name}. Server admins can add and remove entries too.
+			</p>
+		</div>
+
+		<div class="panel">
 			<div class="mb-3 flex items-center gap-3">
 				<span class="label-sm mb-0!"
 					>Servers <span class="text-mist-600"

@@ -7,38 +7,24 @@
 	import FactionChip from '$lib/components/FactionChip.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
-	import { describeSync, STATE_TONE } from '$lib/lists';
-	import type {
-		Ban,
-		ListSyncSummary,
-		Player,
-		PlayerMark,
-		ServerListsState,
-		Status
-	} from '$lib/types';
+	import type { Player, PlayerMark, ServerListsState, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let operator = $derived(can(data.server.role, 'operator'));
 	let admin = $derived(can(data.server.role, 'admin'));
-	/** which bans and reserved slots here come from the org lists */
+	/** may the user write to the organisation's lists? Decides the ban dialog's default scope. */
 	let listState = $state<ServerListsState | null>(null);
 	let banning = $state<Player | null>(null);
-	let orgListPath = $derived(`/orgs/${encodeURIComponent(data.server.orgId)}`);
 
 	let all = $state<Player[]>([]);
 	let status = $state<Status | null>(null);
-	let bans = $state<Ban[]>([]);
-	let reserved = $state<string[]>([]);
 	let search = $state('');
-	let banSearch = $state('');
 	let selected = $state<string | null>(null);
-	let selectedBan = $state<string | null>(null);
 	let reason = $state('');
 	let whisper = $state('');
 	let team = $state('');
-	let reservedId = $state('');
 	/** watchlist, first-visit and risk marks by SteamID; refreshed when the roster changes */
 	let marks = $state<Record<string, PlayerMark>>({});
 	let marksKey = '';
@@ -50,16 +36,6 @@
 		return all.filter((p) => !q || p.name.toLowerCase().includes(q) || p.steamId.includes(q));
 	});
 	let player = $derived(all.find((p) => p.steamId === selected) ?? null);
-	let banRows = $derived.by(() => {
-		const q = banSearch.trim().toLowerCase();
-		return bans.filter(
-			(b) =>
-				!q ||
-				b.steamId.includes(q) ||
-				(b.bannedBy || '').toLowerCase().includes(q) ||
-				(b.reason || '').toLowerCase().includes(q)
-		);
-	});
 
 	async function act(
 		action: string,
@@ -124,70 +100,11 @@
 			console.warn('list state', err);
 		}
 	}
-	async function refreshReserved() {
-		reserved = (await rconGet<{ reserved: string[] }>(id, 'reserved')).reserved;
-		void refreshListState();
-	}
-	async function refreshBans() {
-		bans = (await rconGet<{ bans: Ban[] }>(id, 'bans')).bans;
-		void refreshListState();
-	}
-	const refreshAll = () => Promise.all([refreshPlayers(), refreshReserved(), refreshBans()]);
-
 	$effect(() => {
-		Promise.all([refreshReserved(), refreshBans()]).catch((err) => toast(errorMessage(err), 'err'));
+		void id;
+		void refreshListState();
 		return poll(refreshPlayers, 3000);
 	});
-
-	const banSource = (steamId: string) => listState?.bans[steamId] ?? null;
-	let busy = $state(false);
-	/**
-	 * Put a local ban on the org list. Owners import it (the panel then manages it here too);
-	 * editors add it to the list, and this server's copy stays local.
-	 */
-	async function promoteSelected() {
-		if (!selectedBan || !listState) return;
-		const steamId = selectedBan;
-		const ban = bans.find((b) => b.steamId === steamId);
-		const orgPath = `/api/orgs/${encodeURIComponent(listState.orgId)}/lists`;
-		busy = true;
-		try {
-			const res = listState.orgOwner
-				? await api<{ sync: ListSyncSummary }>('POST', `${orgPath}/import`, {
-						entries: [{ kind: 'ban', steamId, reason: ban?.reason ?? '' }]
-					})
-				: await api<{ sync: ListSyncSummary }>('POST', `${orgPath}/ban/entries`, {
-						steamId,
-						reason: ban?.reason ?? ''
-					});
-			toast(describeSync(res.sync, `${steamId} is on the org ban list.`), 'ok', 8000);
-			await refreshBans();
-		} catch (err) {
-			toast(errorMessage(err), 'err');
-		} finally {
-			busy = false;
-		}
-	}
-	const slotSource = (steamId: string) => listState?.reserved[steamId] ?? null;
-	async function unbanSelected() {
-		if (!selectedBan) return;
-		const src = banSource(selectedBan);
-		const confirm = src?.managed
-			? `${selectedBan} is banned by the organisation's ban list, so the panel will ban them again at the next sync. Unban here anyway? To lift it everywhere, remove it from the org ban list instead.`
-			: `Unban ${selectedBan}?`;
-		await act(
-			'unban',
-			{ steamId: selectedBan },
-			{
-				confirm,
-				danger: !!src?.managed,
-				after: async () => {
-					selectedBan = null;
-					await refreshBans();
-				}
-			}
-		);
-	}
 
 	const withPlayer = (fn: (p: Player) => unknown) => () => {
 		if (!player) {
@@ -358,146 +275,12 @@
 		</div>
 	{/if}
 	{#if !operator}<p class="note">You have view-only access; player actions are disabled.</p>{/if}
-</div>
-
-<div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-	<div class="panel">
-		<div class="mb-3 flex items-center gap-2">
-			<span class="label-sm mb-0!">Reserved slots</span>
-			{#if listState?.canEditOrg}
-				<a href="{orgListPath}/reserved" class="ml-auto text-[12px] text-accent hover:underline"
-					>Org list →</a
-				>
-			{/if}
-		</div>
-		<div class="mb-3 flex flex-wrap gap-1.5">
-			{#each reserved as r (r)}
-				{@const src = slotSource(r)}
-				<button
-					type="button"
-					class="chip cursor-pointer hover:bg-white/12 {src?.managed ? 'text-accent' : ''}"
-					title={src?.managed ? 'From the organisation list' : 'Added on this server'}
-					onclick={() => (reservedId = r)}>{r}</button
-				>
-			{:else}
-				<span class="text-mist-600">None.</span>
-			{/each}
-		</div>
-		<div class="join join-wrap w-full">
-			<input
-				class="input font-mono"
-				type="text"
-				placeholder="SteamID64…"
-				maxlength="17"
-				bind:value={reservedId}
-			/>
-			<button
-				class="btn"
-				disabled={!admin}
-				onclick={() =>
-					act(
-						'reservedAdd',
-						{ steamId: reservedId.trim() },
-						{
-							after: async () => {
-								reservedId = '';
-								await refreshReserved();
-							}
-						}
-					)}>Add</button
-			>
-			<button
-				class="btn btn-danger"
-				disabled={!admin}
-				onclick={() =>
-					act(
-						'reservedRemove',
-						{ steamId: reservedId.trim() },
-						{
-							after: async () => {
-								reservedId = '';
-								await refreshReserved();
-							}
-						}
-					)}>Remove</button
-			>
-		</div>
-		<p class="note">
-			Click a slot to fill the field. Reserved slots are written to the server's ServerSettings.ini;
-			<span class="text-accent">highlighted</span> ones come from the organisation list.
-		</p>
-	</div>
-	<div class="panel lg:col-span-2">
-		<div class="mb-3 flex items-center gap-2">
-			<span class="label-sm mb-0!">Bans</span>
-			{#if listState?.canEditOrg}
-				<a href="{orgListPath}/bans" class="ml-auto text-[12px] text-accent hover:underline"
-					>Org ban list →</a
-				>
-			{/if}
-		</div>
-		<div class="mb-3 flex flex-wrap items-center gap-2">
-			<div class="join w-full sm:w-auto sm:min-w-[320px]">
-				<input
-					class="input"
-					type="search"
-					placeholder="Filter bans by SteamID, admin, reason…"
-					bind:value={banSearch}
-				/>
-				<button class="btn" onclick={refreshBans}>Refresh</button>
-			</div>
-			<span class="inline-flex gap-1.5 sm:ml-auto">
-				{#if selectedBan && listState?.canEditOrg && !banSource(selectedBan)?.managed}
-					<button class="btn" disabled={busy} onclick={promoteSelected}
-						>{listState.orgOwner ? 'Promote to org list' : 'Add to org list'}</button
-					>
-				{/if}
-				<button class="btn btn-danger" disabled={!admin || !selectedBan} onclick={unbanSelected}
-					>Unban selected</button
-				>
-			</span>
-		</div>
-		<div class="table-wrap">
-			<table>
-				<thead
-					><tr
-						><th>SteamID64</th><th>Source</th><th>Banned at (UTC)</th><th>By</th><th>Reason</th></tr
-					></thead
-				>
-				<tbody>
-					{#each banRows as b (b.steamId)}
-						{@const src = banSource(b.steamId)}
-						<tr
-							class="clickable {selectedBan === b.steamId ? 'selected' : ''}"
-							onclick={() => (selectedBan = selectedBan === b.steamId ? null : b.steamId)}
-						>
-							<td class="font-mono">{b.steamId}</td>
-							<td>
-								{#if src?.managed}
-									<Badge tone={STATE_TONE[src.state]}
-										>org{src.state === 'failed' ? ' · failed' : ''}</Badge
-									>
-								{:else}
-									<Badge>local</Badge>
-								{/if}
-							</td>
-							<td class="font-mono text-[12px] text-mist-400">{b.bannedAtUtc || '—'}</td>
-							<td>{b.bannedBy}</td>
-							<td
-								>{#if b.reason}{b.reason}{:else}<span class="text-mist-600">—</span>{/if}</td
-							>
-						</tr>
-					{:else}
-						<tr><td colspan="5" class="py-6 text-center text-mist-600">No bans.</td></tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-		<p class="note">
-			<Badge tone="ok">org</Badge> bans come from the organisation's ban list and are re-applied if removed
-			here; <Badge>local</Badge> bans were added on this server and the panel leaves them alone.
-		</p>
-	</div>
+	<p class="note">
+		This server's ban list and reserved slots are under
+		<a href="/server/{encodeURIComponent(id)}/bans" class="text-accent hover:underline"
+			>Bans &amp; slots</a
+		>.
+	</p>
 </div>
 
 {#if banning}
@@ -510,6 +293,6 @@
 		server={{ id, name: data.server.name }}
 		canOrg={listState?.canEditOrg ?? false}
 		onclose={() => (banning = null)}
-		ondone={refreshAll}
+		ondone={refreshPlayers}
 	/>
 {/if}

@@ -161,8 +161,10 @@
 								<a class="btn btn-sm" href="/orgs/{encodeURIComponent(o.id)}">Manage</a>
 							{/if}
 							{#if o.lists}
-								<a class="btn btn-sm" href="/orgs/{encodeURIComponent(o.id)}/bans">Bans</a>
-								<a class="btn btn-sm" href="/orgs/{encodeURIComponent(o.id)}/reserved">Reserved</a>
+								<a class="btn btn-sm" href="/orgs/{encodeURIComponent(o.id)}/bans">Ban list</a>
+								<a class="btn btn-sm" href="/orgs/{encodeURIComponent(o.id)}/reserved"
+									>Reserved slots</a
+								>
 							{/if}
 							{#if siteOwner}
 								{#if o.suspended}
