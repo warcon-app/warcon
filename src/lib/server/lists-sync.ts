@@ -1,0 +1,617 @@
+// The org-list sync: pushes each org's ban and reserved-slot lists to its game servers. The
+// poller runs it on every successful tick (planning against the snapshot it keeps in server_bans
+// and server_reserved, and re-reading the server before it changes anything); the API runs it
+// right after an admin edits a list, so the toast can say where the change landed.
+//
+// Rules of the road: the panel adds what the lists want and removes only what it added itself
+// (server_list_state). Every game call is idempotent in the panel's reading of it ("already
+// banned" is a success, "not banned" on delete is a success), so two replicas working the same
+// server at once do no harm; the in-process lock below only keeps the poller and an API call in
+// one process from interleaving.
+import { and, eq, isNull, notInArray, sql } from 'drizzle-orm';
+import type { Env } from './env';
+import { publicMessage } from './http';
+import { writeAudit } from './audit';
+import { ACTIONS } from './actions';
+import { GameError, WardogsClient } from './rcon';
+import {
+	listEntries,
+	lists,
+	organizations,
+	serverBans,
+	serverListState,
+	serverListSync,
+	serverLists,
+	serverReserved,
+	servers,
+	type OrgRow,
+	type ServerRow
+} from './db/schema';
+import {
+	activeEntries,
+	isAlreadyApplied,
+	isGone,
+	isUnreachable,
+	parseMaxReservedSlots,
+	planHasWork,
+	planSync,
+	RESERVED_FULL,
+	type Kind,
+	type PlanInput,
+	type SyncPlan
+} from './lists-plan';
+import type { Ban, ListSyncServer, ListSyncSummary } from '$lib/types';
+
+/** A failed add or remove is not retried for this long (cap overflows are recomputed every run). */
+const RETRY_AFTER_MS = 5 * 60_000;
+/** How long an API-triggered fan-out waits for each server before reporting it as still syncing. */
+const FANOUT_WAIT_MS = 15_000;
+
+export interface Observed {
+	bans: Ban[];
+	reserved: string[];
+}
+
+export interface SyncResult extends ListSyncServer {
+	/** why nothing ran, when nothing ran */
+	skipped?: 'busy' | 'suspended';
+	/** the server's lists after the run; the poller keeps its in-memory copy from this */
+	observed?: { bans: string[]; reserved: string[] };
+}
+
+// ---- per-server lock ---------------------------------------------------------------------------
+
+const locks = new Map<string, Promise<void>>();
+
+/** Runs fn while holding this process's lock on the server; undefined if it was busy for longer than waitMs. */
+export async function withServerLock<T>(
+	serverId: string,
+	waitMs: number,
+	fn: () => Promise<T>
+): Promise<T | undefined> {
+	const deadline = Date.now() + waitMs;
+	for (;;) {
+		const held = locks.get(serverId);
+		if (!held) break;
+		const left = deadline - Date.now();
+		if (left <= 0) return undefined;
+		const outcome = await Promise.race([
+			held.then(() => 'free' as const),
+			new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), left))
+		]);
+		if (outcome === 'timeout') return undefined;
+	}
+	let release!: () => void;
+	locks.set(serverId, new Promise<void>((r) => (release = r)));
+	try {
+		return await fn();
+	} finally {
+		locks.delete(serverId);
+		release();
+	}
+}
+
+// ---- desired and observed ----------------------------------------------------------------------
+
+/** What the lists this server subscribes to want on it right now. */
+export async function desiredFor(
+	env: Env,
+	server: Pick<ServerRow, 'id' | 'orgId'>,
+	org: Pick<OrgRow, 'membersReserved'>,
+	now = new Date()
+): Promise<PlanInput['desired']> {
+	const rows = await env.db
+		.select({ e: listEntries, kind: lists.kind })
+		.from(serverLists)
+		.innerJoin(lists, eq(lists.id, serverLists.listId))
+		.innerJoin(listEntries, eq(listEntries.listId, lists.id))
+		.where(and(eq(serverLists.serverId, server.id), isNull(listEntries.removedAt)));
+	const active = activeEntries(
+		rows.map((r) => ({ ...r.e, kind: r.kind })),
+		now
+	);
+	void org; // members-reserved joins the desired set in a later step
+	return {
+		bans: active
+			.filter((r) => r.kind === 'ban')
+			.map((r) => ({ steamId: r.steamId, reason: r.reason, listId: r.listId })),
+		reserved: active
+			.filter((r) => r.kind === 'reserve')
+			.map((r) => ({
+				steamId: r.steamId,
+				listId: r.listId,
+				priority: r.priority,
+				addedAt: r.addedAt
+			}))
+	};
+}
+
+async function snapshotObserved(env: Env, serverId: string): Promise<Observed> {
+	const [bans, reserved] = await Promise.all([
+		env.db.select().from(serverBans).where(eq(serverBans.serverId, serverId)),
+		env.db
+			.select({ steamId: serverReserved.steamId })
+			.from(serverReserved)
+			.where(eq(serverReserved.serverId, serverId))
+	]);
+	return {
+		bans: bans.map((b) => ({
+			steamId: b.steamId,
+			reason: b.reason,
+			bannedBy: b.bannedBy,
+			bannedAtUtc: b.bannedAtUtc
+		})),
+		reserved: reserved.map((r) => r.steamId)
+	};
+}
+
+export async function liveObserved(client: WardogsClient): Promise<Observed> {
+	const [bans, reserved] = await Promise.all([
+		ACTIONS.bans.run(client, {}) as Promise<{ bans: Ban[] }>,
+		ACTIONS.reserved.run(client, {}) as Promise<{ reserved: string[] }>
+	]);
+	return {
+		bans: bans.bans.filter((b) => /^\d{17}$/.test(b.steamId)),
+		reserved: reserved.reserved.filter((id) => /^\d{17}$/.test(id))
+	};
+}
+
+/** Rewrites the poller's copies of a server's ban list and reserved slots. */
+export async function writeSnapshot(
+	env: Env,
+	serverId: string,
+	observed: Observed,
+	ts = new Date()
+): Promise<void> {
+	await env.db.transaction(async (tx) => {
+		const banIds = observed.bans.map((b) => b.steamId);
+		await tx
+			.delete(serverBans)
+			.where(
+				banIds.length
+					? and(eq(serverBans.serverId, serverId), notInArray(serverBans.steamId, banIds))
+					: eq(serverBans.serverId, serverId)
+			);
+		if (banIds.length)
+			await tx
+				.insert(serverBans)
+				.values(
+					observed.bans.map((b) => ({
+						serverId,
+						steamId: b.steamId,
+						reason: b.reason || '',
+						bannedBy: b.bannedBy || '',
+						bannedAtUtc: b.bannedAtUtc || '',
+						seenAt: ts
+					}))
+				)
+				.onConflictDoUpdate({
+					target: [serverBans.serverId, serverBans.steamId],
+					set: {
+						reason: sql`excluded.reason`,
+						bannedBy: sql`excluded.banned_by`,
+						bannedAtUtc: sql`excluded.banned_at_utc`,
+						seenAt: ts
+					}
+				});
+		await tx
+			.delete(serverReserved)
+			.where(
+				observed.reserved.length
+					? and(
+							eq(serverReserved.serverId, serverId),
+							notInArray(serverReserved.steamId, observed.reserved)
+						)
+					: eq(serverReserved.serverId, serverId)
+			);
+		if (observed.reserved.length)
+			await tx
+				.insert(serverReserved)
+				.values(observed.reserved.map((steamId) => ({ serverId, steamId, seenAt: ts })))
+				.onConflictDoUpdate({
+					target: [serverReserved.serverId, serverReserved.steamId],
+					set: { seenAt: ts }
+				});
+	});
+}
+
+// ---- the run -----------------------------------------------------------------------------------
+
+export interface ReconcileOptions {
+	reason: 'poll' | 'api';
+	/** how long to wait for this process's lock on the server; 0 = skip if busy */
+	waitMs: number;
+	client?: WardogsClient;
+	/** the server's lists as just read by the caller (the poller's periodic refresh) */
+	observed?: Observed;
+}
+
+const failure = (err: unknown) => {
+	const g = err instanceof GameError ? err : null;
+	return { status: g?.status ?? 500, code: g?.code, message: publicMessage(err, 'Failed.') };
+};
+
+/** Brings one server in line with its lists. Never throws for game-side trouble; records it instead. */
+export async function reconcileServer(
+	env: Env,
+	server: ServerRow,
+	org: OrgRow,
+	opts: ReconcileOptions
+): Promise<SyncResult> {
+	const base: SyncResult = {
+		serverId: server.id,
+		serverName: server.name,
+		ok: false,
+		added: 0,
+		removed: 0,
+		failed: 0,
+		pending: false,
+		error: ''
+	};
+	if (org.suspendedAt) return { ...base, skipped: 'suspended', error: 'Organisation suspended.' };
+	const ran = await withServerLock(server.id, opts.waitMs, () => run(env, server, org, opts, base));
+	return ran ?? { ...base, pending: true, skipped: 'busy', error: 'Sync already running.' };
+}
+
+async function run(
+	env: Env,
+	server: ServerRow,
+	org: OrgRow,
+	opts: ReconcileOptions,
+	base: SyncResult
+): Promise<SyncResult> {
+	const now = new Date();
+	const desired = await desiredFor(env, server, org, now);
+	const state = await env.db
+		.select()
+		.from(serverListState)
+		.where(eq(serverListState.serverId, server.id));
+	const [syncRow] = await env.db
+		.select()
+		.from(serverListSync)
+		.where(eq(serverListSync.serverId, server.id))
+		.limit(1);
+	let cap = syncRow?.reservedCap ?? null;
+	let capCheckedAt = syncRow?.capCheckedAt ?? null;
+
+	const planWith = (observed: Observed) =>
+		planSync({
+			now,
+			cap,
+			retryAfterMs: RETRY_AFTER_MS,
+			desired,
+			observed: { bans: observed.bans.map((b) => b.steamId), reserved: observed.reserved },
+			state
+		});
+
+	// Plan against what we last saw; before touching the server, look again.
+	let observed = opts.observed ?? (await snapshotObserved(env, server.id));
+	let fresh = !!opts.observed;
+	let plan = planWith(observed);
+	let client = opts.client;
+	const wantsReserve = desired.reserved.some((d) => !observed.reserved.includes(d.steamId));
+	if (
+		!planHasWork(plan) &&
+		!plan.overflow.length &&
+		!wantsReserve &&
+		plan.confirms.length === 0 &&
+		plan.deletes.length === 0
+	) {
+		await bookkeep(env, server.id, {
+			syncedAt: now,
+			reservedCap: cap,
+			reservedUsed: plan.reservedUsed,
+			capCheckedAt,
+			lastError: ''
+		});
+		return { ...base, ok: true, observed: flat(observed) };
+	}
+	try {
+		client ??= await WardogsClient.forServer(env, server);
+		if (!fresh) {
+			observed = await liveObserved(client);
+			fresh = true;
+			await writeSnapshot(env, server.id, observed, now);
+		}
+		// The cap matters only when there are reserved slots to hand out; read it each time then,
+		// since an admin may have just changed MaxReservedSlots to make room.
+		if (wantsReserve) {
+			try {
+				const cfg = (await ACTIONS.config.run(client, {})) as { text?: string };
+				cap = parseMaxReservedSlots(cfg.text || '');
+			} catch {
+				cap = null;
+			}
+			capCheckedAt = now;
+		}
+		plan = planWith(observed);
+	} catch (err) {
+		const message = publicMessage(err, 'Could not reach the server.');
+		await bookkeep(env, server.id, {
+			syncedAt: syncRow?.syncedAt ?? null,
+			reservedCap: cap,
+			reservedUsed: syncRow?.reservedUsed ?? 0,
+			capCheckedAt,
+			lastError: message
+		});
+		return { ...base, error: message };
+	}
+
+	const outcome = await execute(client, plan, observed);
+	await record(env, server.id, plan, outcome, now, {
+		syncedAt: now,
+		reservedCap: cap,
+		reservedUsed: plan.reservedUsed - outcome.failedAdds.filter((f) => f.kind === 'reserve').length,
+		capCheckedAt,
+		lastError: outcome.aborted ?? ''
+	});
+
+	const failedNow = [
+		...outcome.failedAdds,
+		...outcome.failedRemoves,
+		...plan.overflow.map((o) => ({ ...o, error: o.error }))
+	];
+	const previous = new Map(state.map((s) => [`${s.kind}:${s.steamId}`, s.error]));
+	const newFailures = failedNow.filter((f) => previous.get(`${f.kind}:${f.steamId}`) !== f.error);
+	if (outcome.added.length || outcome.removed.length || newFailures.length || outcome.aborted) {
+		const parts: string[] = [];
+		if (outcome.added.length) parts.push(`${outcome.added.length} added`);
+		if (outcome.removed.length) parts.push(`${outcome.removed.length} removed`);
+		if (failedNow.length) parts.push(`${failedNow.length} failed`);
+		if (outcome.aborted) parts.push(`stopped: ${outcome.aborted}`);
+		await writeAudit(env, null, {
+			actorName: 'list sync',
+			server: { id: server.id, name: server.name },
+			orgId: server.orgId,
+			category: 'system',
+			action: 'lists.sync',
+			target: org.name,
+			outcome: failedNow.length || outcome.aborted ? 'error' : 'ok',
+			status: failedNow.length || outcome.aborted ? 502 : 200,
+			message: parts.join(', '),
+			detail: {
+				reason: opts.reason,
+				added: outcome.added.map(refOf),
+				removed: outcome.removed.map(refOf),
+				failed: failedNow.map((f) => ({ kind: f.kind, steamId: f.steamId, error: f.error }))
+			}
+		}).catch((err) => console.error('[warcon] lists.sync audit', err));
+	}
+	return {
+		...base,
+		ok: true,
+		added: outcome.added.length,
+		removed: outcome.removed.length,
+		failed: failedNow.length,
+		error: outcome.aborted ?? '',
+		observed: flat(outcome.observed)
+	};
+}
+
+const refOf = (r: { kind: Kind; steamId: string }) => `${r.kind}:${r.steamId}`;
+const flat = (o: Observed) => ({ bans: o.bans.map((b) => b.steamId), reserved: o.reserved });
+
+interface Failed {
+	kind: Kind;
+	steamId: string;
+	listId?: string;
+	error: string;
+}
+
+interface Outcome {
+	added: SyncPlan['adds'];
+	removed: SyncPlan['removes'];
+	failedAdds: (Failed & { listId: string })[];
+	failedRemoves: Failed[];
+	/** the server stopped answering part-way; the rest was not attempted */
+	aborted: string | null;
+	observed: Observed;
+}
+
+/** Removes, then adds, one call at a time; stops at the first sign the server is gone. */
+async function execute(client: WardogsClient, plan: SyncPlan, before: Observed): Promise<Outcome> {
+	const out: Outcome = {
+		added: [],
+		removed: [],
+		failedAdds: [],
+		failedRemoves: [],
+		aborted: null,
+		observed: { bans: [...before.bans], reserved: [...before.reserved] }
+	};
+	const dropObserved = (kind: Kind, steamId: string) => {
+		if (kind === 'ban') out.observed.bans = out.observed.bans.filter((b) => b.steamId !== steamId);
+		else out.observed.reserved = out.observed.reserved.filter((id) => id !== steamId);
+	};
+	const addObserved = (kind: Kind, steamId: string, reason: string) => {
+		if (kind === 'ban') {
+			if (!out.observed.bans.some((b) => b.steamId === steamId))
+				out.observed.bans.push({
+					steamId,
+					reason,
+					bannedBy: 'Warcon',
+					bannedAtUtc: new Date().toISOString()
+				});
+		} else if (!out.observed.reserved.includes(steamId)) out.observed.reserved.push(steamId);
+	};
+	for (const r of plan.removes) {
+		try {
+			await (r.kind === 'ban' ? ACTIONS.unban : ACTIONS.reservedRemove).run(client, {
+				steamId: r.steamId
+			});
+			out.removed.push(r);
+			dropObserved(r.kind, r.steamId);
+		} catch (err) {
+			const f = failure(err);
+			if (isGone(f)) {
+				out.removed.push(r);
+				dropObserved(r.kind, r.steamId);
+			} else if (isUnreachable(f)) {
+				out.aborted = f.message;
+				return out;
+			} else out.failedRemoves.push({ ...r, error: `Could not remove: ${f.message}` });
+		}
+	}
+	for (const a of plan.adds) {
+		try {
+			await (a.kind === 'ban' ? ACTIONS.ban : ACTIONS.reservedAdd).run(client, {
+				steamId: a.steamId,
+				reason: a.reason || undefined
+			});
+			out.added.push(a);
+			addObserved(a.kind, a.steamId, a.reason);
+		} catch (err) {
+			const f = failure(err);
+			if (isAlreadyApplied(f)) {
+				out.added.push(a);
+				addObserved(a.kind, a.steamId, a.reason);
+			} else if (isUnreachable(f)) {
+				out.aborted = f.message;
+				return out;
+			} else
+				out.failedAdds.push({
+					...a,
+					error: f.code === 'reserved_full' ? `${RESERVED_FULL}: ${f.message}` : f.message
+				});
+		}
+	}
+	return out;
+}
+
+interface Bookkeeping {
+	syncedAt: Date | null;
+	reservedCap: number | null;
+	reservedUsed: number;
+	capCheckedAt: Date | null;
+	lastError: string;
+}
+
+async function bookkeep(env: Env, serverId: string, b: Bookkeeping): Promise<void> {
+	await env.db
+		.insert(serverListSync)
+		.values({ serverId, ...b, updatedAt: new Date() })
+		.onConflictDoUpdate({ target: serverListSync.serverId, set: { ...b, updatedAt: new Date() } });
+}
+
+/** One transaction: state rows for what happened, the snapshot as it now stands, the sync row. */
+async function record(
+	env: Env,
+	serverId: string,
+	plan: SyncPlan,
+	o: Outcome,
+	now: Date,
+	b: Bookkeeping
+): Promise<void> {
+	type Upsert = typeof serverListState.$inferInsert;
+	const applied = (r: { kind: Kind; steamId: string; listId: string }): Upsert => ({
+		serverId,
+		kind: r.kind,
+		steamId: r.steamId,
+		sourceListId: r.listId,
+		state: 'applied',
+		error: '',
+		attemptedAt: now,
+		updatedAt: now
+	});
+	const failed = (r: { kind: Kind; steamId: string; listId?: string; error: string }): Upsert => ({
+		serverId,
+		kind: r.kind,
+		steamId: r.steamId,
+		sourceListId: r.listId ?? null,
+		state: 'failed',
+		error: r.error.slice(0, 300),
+		attemptedAt: now,
+		updatedAt: now
+	});
+	const upserts: Upsert[] = [
+		...o.added.map(applied),
+		...plan.confirms.map(applied),
+		...o.failedAdds.map(failed),
+		...plan.overflow.map(failed),
+		...o.failedRemoves.map((f) => failed({ ...f }))
+	];
+	const drops = [...o.removed, ...plan.deletes];
+	await env.db.transaction(async (tx) => {
+		for (const u of upserts)
+			await tx
+				.insert(serverListState)
+				.values(u)
+				.onConflictDoUpdate({
+					target: [serverListState.serverId, serverListState.kind, serverListState.steamId],
+					set: {
+						sourceListId: u.sourceListId,
+						state: u.state,
+						error: u.error,
+						attemptedAt: u.attemptedAt,
+						updatedAt: u.updatedAt
+					}
+				});
+		for (const d of drops)
+			await tx
+				.delete(serverListState)
+				.where(
+					and(
+						eq(serverListState.serverId, serverId),
+						eq(serverListState.kind, d.kind),
+						eq(serverListState.steamId, d.steamId)
+					)
+				);
+		await tx
+			.insert(serverListSync)
+			.values({ serverId, ...b, updatedAt: now })
+			.onConflictDoUpdate({ target: serverListSync.serverId, set: { ...b, updatedAt: now } });
+	});
+	await writeSnapshot(env, serverId, o.observed, now);
+}
+
+// ---- fan-out from the API ----------------------------------------------------------------------
+
+/**
+ * Pushes an org's lists to every one of its servers now. Waits up to FANOUT_WAIT_MS per server so
+ * the caller's toast can be specific; anything slower carries on in the background and is
+ * reported as still syncing.
+ */
+export async function fanOut(env: Env, org: OrgRow): Promise<ListSyncSummary> {
+	const rows = await env.db
+		.select({ server: servers })
+		.from(servers)
+		.innerJoin(organizations, eq(organizations.id, servers.orgId))
+		.where(eq(servers.orgId, org.id));
+	const results = await Promise.all(
+		rows.map(async ({ server }) => {
+			const pending: SyncResult = {
+				serverId: server.id,
+				serverName: server.name,
+				ok: false,
+				added: 0,
+				removed: 0,
+				failed: 0,
+				pending: true,
+				error: ''
+			};
+			const work = reconcileServer(env, server, org, {
+				reason: 'api',
+				waitMs: FANOUT_WAIT_MS
+			}).catch((err): SyncResult => ({
+				...pending,
+				pending: false,
+				error: publicMessage(err, 'Sync failed.')
+			}));
+			const timer = new Promise<SyncResult>((r) => setTimeout(() => r(pending), FANOUT_WAIT_MS));
+			return Promise.race([work, timer]);
+		})
+	);
+	return {
+		servers: results.map(
+			({ serverId, serverName, ok, added, removed, failed, pending, error }) => ({
+				serverId,
+				serverName,
+				ok,
+				added,
+				removed,
+				failed,
+				pending,
+				error
+			})
+		)
+	};
+}

@@ -1,17 +1,18 @@
 // Background sampler: every POLL_SECONDS it asks each game server for status and players, stores
 // a sample, and turns the player list into sessions and match boundaries. Only one process polls:
 // the leader holds a Postgres advisory lock on a reserved connection, so extra replicas stay idle.
-import { and, desc, eq, gt, inArray, isNull, lt, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { pollSeconds } from './env';
 import { publicMessage } from './http';
-import type { ServerRow } from './access';
+import type { OrgRow, ServerRow } from './access';
 import { ACTIONS } from './actions';
 import { WardogsClient } from './rcon';
-import { matches, playerSessions, samples, serverBans, servers } from './db/schema';
+import { matches, organizations, playerSessions, samples, servers } from './db/schema';
 import { getProfiles, steamEnabled } from './steam';
 import { runTriggers } from './triggers';
-import type { Ban, Player, Status } from '$lib/types';
+import { liveObserved, reconcileServer, writeSnapshot, type Observed } from './lists-sync';
+import type { Player, Status } from '$lib/types';
 
 export { pollSeconds };
 
@@ -102,11 +103,14 @@ export function startPoller(env: Env): void {
 }
 
 export async function pollAll(env: Env): Promise<void> {
-	const all = await env.db.select().from(servers);
-	await Promise.all(all.map((s) => pollServer(env, s)));
+	const all = await env.db
+		.select({ server: servers, org: organizations })
+		.from(servers)
+		.innerJoin(organizations, eq(organizations.id, servers.orgId));
+	await Promise.all(all.map(({ server, org }) => pollServer(env, server, org)));
 }
 
-export async function pollServer(env: Env, server: ServerRow): Promise<void> {
+export async function pollServer(env: Env, server: ServerRow, org: OrgRow): Promise<void> {
 	const m = mem(server.id);
 	if (m.inFlight) return;
 	m.inFlight = true;
@@ -159,9 +163,22 @@ export async function pollServer(env: Env, server: ServerRow): Promise<void> {
 		});
 		const { joined, firstVisit } = await reconcileSessions(env, server.id, ts, players);
 		await reconcileMatch(env, server.id, ts, status, m, scores);
-		await refreshLists(env, server, client, m, ts).catch((err) =>
-			console.warn('[warcon] ban list snapshot', publicMessage(err))
-		);
+		const observed = await refreshLists(env, server, client, m, ts).catch((err) => {
+			console.warn('[warcon] ban list snapshot', publicMessage(err));
+			return null;
+		});
+		// Push the org's ban and reserved lists. Plans against the snapshot (fresh or from an
+		// earlier tick) and re-reads the server before changing anything; never throws.
+		const synced = await reconcileServer(env, server, org, {
+			reason: 'poll',
+			waitMs: 0,
+			client,
+			observed: observed ?? undefined
+		}).catch((err) => {
+			console.warn('[warcon] list sync', publicMessage(err));
+			return null;
+		});
+		if (synced?.observed) m.reserved = new Set(synced.observed.reserved);
 		// Warm the Steam cache for newcomers so the players table and dossier have their data.
 		if (joined.length && steamEnabled(env))
 			await getProfiles(
@@ -184,56 +201,24 @@ export async function pollServer(env: Env, server: ServerRow): Promise<void> {
 	}
 }
 
-/** Re-reads the ban list and reserved slots now and then; bans are kept in server_bans for the dossier. */
+/**
+ * Re-reads the ban list and reserved slots now and then, keeping copies in server_bans and
+ * server_reserved for the dossier and the list sync. Returns what it read, or null when the
+ * copies are still fresh.
+ */
 async function refreshLists(
 	env: Env,
 	server: ServerRow,
 	client: WardogsClient,
 	m: Memory,
 	ts: Date
-): Promise<void> {
-	if (ts.getTime() - m.listsAt < LISTS_TTL_MS) return;
+): Promise<Observed | null> {
+	if (ts.getTime() - m.listsAt < LISTS_TTL_MS) return null;
 	m.listsAt = ts.getTime();
-	const [bans, reserved] = await Promise.all([
-		ACTIONS.bans.run(client, {}) as Promise<{ bans: Ban[] }>,
-		(ACTIONS.reserved.run(client, {}) as Promise<{ reserved: string[] }>).catch(() => ({
-			reserved: [...m.reserved]
-		}))
-	]);
-	m.reserved = new Set(reserved.reserved);
-	const rows = bans.bans.filter((b) => /^\d{17}$/.test(b.steamId));
-	await env.db.transaction(async (tx) => {
-		const ids = rows.map((b) => b.steamId);
-		await tx
-			.delete(serverBans)
-			.where(
-				ids.length
-					? and(eq(serverBans.serverId, server.id), notInArray(serverBans.steamId, ids))
-					: eq(serverBans.serverId, server.id)
-			);
-		if (rows.length)
-			await tx
-				.insert(serverBans)
-				.values(
-					rows.map((b) => ({
-						serverId: server.id,
-						steamId: b.steamId,
-						reason: b.reason || '',
-						bannedBy: b.bannedBy || '',
-						bannedAtUtc: b.bannedAtUtc || '',
-						seenAt: ts
-					}))
-				)
-				.onConflictDoUpdate({
-					target: [serverBans.serverId, serverBans.steamId],
-					set: {
-						reason: sql`excluded.reason`,
-						bannedBy: sql`excluded.banned_by`,
-						bannedAtUtc: sql`excluded.banned_at_utc`,
-						seenAt: ts
-					}
-				});
-	});
+	const observed = await liveObserved(client);
+	m.reserved = new Set(observed.reserved);
+	await writeSnapshot(env, server.id, observed, ts);
+	return observed;
 }
 
 /** Returns who joined this tick (no open session before it) and which of those were never seen on this server. */

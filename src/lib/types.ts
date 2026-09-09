@@ -386,7 +386,17 @@ export interface ListSyncSummary {
 export interface OrgListsView {
 	role: 'owner' | 'editor';
 	membersReserved: boolean;
-	servers: { id: string; name: string }[];
+	servers: {
+		id: string;
+		name: string;
+		/** last successful sync run; null = never */
+		syncedAt: string | null;
+		/** MaxReservedSlots as last read from the server; null = unknown */
+		reservedCap: number | null;
+		reservedUsed: number;
+		/** why the last run could not reach or finish on the server */
+		lastError: string;
+	}[];
 	lists: ListView[];
 }
 

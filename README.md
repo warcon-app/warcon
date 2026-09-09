@@ -33,6 +33,10 @@ on a container host, with the database wherever you like.
 - **Automation**: per-server triggers run by the poller, each dry-runnable against the last 24
   hours before it is switched on: welcome whisper on join, scheduled broadcasts, empty-server map
   reset, and kick-on-connect for VAC bans, brand-new accounts or bans elsewhere in the org.
+- **Organisation ban and reserved lists**: ban a player across every server in the organisation
+  at once, with a reason and an optional expiry; hand out reserved slots the same way. The poller
+  keeps every server in line and shows where each entry stands; bans added outside the panel are
+  left alone.
 - **Discord mirror**: an org owner points a channel webhook at the audit trail and picks what to
   mirror (bans, commands, trigger actions, sign-ins…), per server if wanted.
 - **Everything the official console does**: status, scoreboard, kick/ban/kill/whisper/change-team,
@@ -153,7 +157,7 @@ rejected as cross-site against the https `ORIGIN`.
 | `ORIGIN`                                                     | required           | The exact URL people open (scheme, host, port).                                                                                                                                   |
 | `ADDRESS_HEADER` / `XFF_DEPTH`                               | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                                                                                                    |
 | `PORT` / `HOST`                                              | `3000` / `0.0.0.0` | Listen address.                                                                                                                                                                   |
-| `POLL_SECONDS`                                               | `20`               | Analytics sampling interval per server; `0` disables the poller.                                                                                                                  |
+| `POLL_SECONDS`                                               | `20`               | Analytics sampling interval per server; `0` disables the poller (and with it triggers and the org list sync, which then only runs when a list is edited or synced by hand).       |
 | `APP_NAME`                                                   | `Warcon`           | Name shown in the UI.                                                                                                                                                             |
 | `AUDIT_LOG_READS`                                            | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                                            |
 | `ALLOW_ORG_SIGNUP`                                           | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                                                      |
@@ -222,6 +226,15 @@ sync, **failed** (hover for the server's answer), or **local**. Local means the 
 banned (or reserved) on that server by someone working outside the panel. The panel never removes
 what it did not add, so removing an org entry lifts it only where the panel applied it, and a
 local ban stays until an owner imports it into the org list or unbans it on that server.
+
+Sync happens twice over: right away when a list is edited (the toast says on how many servers the
+change landed, and which are unreachable and will be retried), and on every poll, where the
+poller re-applies anything missing, so an org ban that someone lifts on the server directly comes
+back at the next poll; use the org list to lift it everywhere. Reserved slots respect each
+server's `MaxReservedSlots`: when a server is full, the org's entries are applied in priority
+order and the rest show as failed until room is made. Every run that changes something, or fails,
+is in the audit trail under `system` as `lists.sync`, and reaches Discord webhooks that mirror
+bans. **Sync now** on a list page pushes everything on demand.
 
 ### Automation (triggers)
 
@@ -361,6 +374,7 @@ src/lib/server/users.ts        account management on top of Better Auth (create,
 src/lib/server/orgs.ts         organisations: members, per-server roles, invite links, joining
 src/lib/server/servers.ts      server records, reachability test, per-server grants
 src/lib/server/lists.ts        organisation ban and reserved-slot lists: entries, per-server standing, views
+src/lib/server/lists-plan.ts / lists-sync.ts   what to add or remove on a server (pure) / the per-server sync run and API fan-out
 src/lib/server/actions.ts      every panel action -> role level + /v1 call(s)
 src/lib/server/rcon-run.ts     /api/servers/:id/rcon/:action dispatcher with audit rows
 src/lib/server/rcon.ts         WardogsClient (Bearer auth, JSON/text calls, demo routing)
@@ -404,6 +418,8 @@ GET/POST /api/servers/:id/triggers {kind,name,enabled,config}   PATCH/DELETE ...
 GET/POST /api/orgs/:id/webhooks {label,url,events,serverIds,enabled}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
 GET  /api/orgs/:id/lists                                 the org's ban and reserved-slot lists, and the caller's role on them
 GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt,priority}   DELETE .../entries/:steamId   (kind = ban | reserve; ?includeRemoved=1)
+POST /api/orgs/:id/lists/sync                            push the lists to every org server now
+GET  /api/servers/:id/lists/state                        which bans / reserved slots here come from the org lists   POST .../lists/sync
 GET  /api/actions                     lists actions with their role level
 GET  /api/audit?server=&actor=&action=&outcome=&q=&from=&to=&before=&limit=
 GET  /api/audit/export?format=csv|json GET /api/audit/meta

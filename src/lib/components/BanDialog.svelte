@@ -28,7 +28,7 @@
 		/** may the user write to the org list? */
 		canOrg: boolean;
 		onclose: () => void;
-		ondone: (scope: 'org' | 'server') => void | Promise<void>;
+		ondone: (scope: 'org' | 'server') => unknown;
 	} = $props();
 
 	// Initial values only: the dialog is created fresh each time it opens.

@@ -73,6 +73,22 @@
 		}
 	}
 
+	async function syncNow() {
+		busy = true;
+		try {
+			const res = await api<{ sync: ListSyncSummary }>(
+				'POST',
+				`/api/orgs/${encodeURIComponent(org.id)}/lists/sync`
+			);
+			toast(describeSync(res.sync, 'Sync ran.'), 'ok', 8000);
+			await invalidateAll();
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function remove(e: ListEntryView) {
 		const label = e.name ? `${e.name} (${e.steamId})` : e.steamId;
 		if (
@@ -120,10 +136,34 @@
 			{/if}
 		</p>
 	</div>
-	{#if kind === 'ban'}
-		<button class="ml-auto btn btn-primary" onclick={() => (banning = true)}>Add ban</button>
-	{/if}
+	<span class="ml-auto inline-flex gap-1.5">
+		<button class="btn" disabled={busy || !lists.servers.length} onclick={syncNow}>Sync now</button>
+		{#if kind === 'ban'}
+			<button class="btn btn-primary" onclick={() => (banning = true)}>Add ban</button>
+		{/if}
+	</span>
 </div>
+
+{#if lists.servers.length}
+	<div class="mb-4 flex flex-wrap gap-2">
+		{#each lists.servers as s (s.id)}
+			<div
+				class="rounded-ctl border border-black bg-ink-950 px-3 py-2 text-[12.5px] {s.lastError
+					? 'border-l-2 border-l-danger'
+					: ''}"
+			>
+				<div class="font-medium">{s.name}</div>
+				<div class="text-mist-400">
+					{#if s.syncedAt}synced {fmtTime(s.syncedAt)}{:else}never synced{/if}
+					{#if kind === 'reserve' && s.reservedCap !== null}
+						· slots {s.reservedUsed} / {s.reservedCap}
+					{/if}
+				</div>
+				{#if s.lastError}<div class="text-danger">{s.lastError}</div>{/if}
+			</div>
+		{/each}
+	</div>
+{/if}
 
 {#if kind === 'reserve'}
 	<div class="mb-4 panel">

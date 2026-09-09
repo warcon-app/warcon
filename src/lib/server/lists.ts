@@ -10,13 +10,14 @@ import { and, asc, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { ApiError, int, newId, str } from './http';
 import { writeAudit } from './audit';
-import type { OrgRow, SessionUser } from './access';
+import { listsRoleFor, type OrgRow, type ServerRow, type SessionUser } from './access';
 import type { Db } from './db';
 import {
 	listEntries,
 	lists,
 	serverBans,
 	serverListState,
+	serverListSync,
 	serverLists,
 	serverReserved,
 	servers,
@@ -25,14 +26,18 @@ import {
 	type ListRow
 } from './db/schema';
 import { requireSteamId } from './steam';
+import { desiredFor, fanOut } from './lists-sync';
 import type {
 	ListEntryState,
 	ListEntryView,
 	ListKind,
 	ListServerStateView,
 	ListSyncSummary,
-	OrgListsView
+	OrgListsView,
+	ServerListsState
 } from '$lib/types';
+
+export { fanOut, reconcileServer } from './lists-sync';
 
 export type Kind = ListKind;
 export const LIST_KINDS: Kind[] = ['ban', 'reserve'];
@@ -254,11 +259,33 @@ export async function orgListsView(
 			.groupBy(listEntries.listId),
 		orgServerRefs(env, org.id)
 	]);
+	const syncRows = srv.length
+		? await env.db
+				.select()
+				.from(serverListSync)
+				.where(
+					inArray(
+						serverListSync.serverId,
+						srv.map((s) => s.id)
+					)
+				)
+		: [];
+	const syncOf = new Map(syncRows.map((s) => [s.serverId, s]));
 	const n = new Map(counts.map((c) => [c.listId, c.n]));
 	return {
 		role,
 		membersReserved: org.membersReserved,
-		servers: srv,
+		servers: srv.map((s) => {
+			const y = syncOf.get(s.id);
+			return {
+				id: s.id,
+				name: s.name,
+				syncedAt: iso(y?.syncedAt),
+				reservedCap: y?.reservedCap ?? null,
+				reservedUsed: y?.reservedUsed ?? 0,
+				lastError: y?.lastError ?? ''
+			};
+		}),
 		lists: rows.map((l) => ({ id: l.id, kind: l.kind, name: l.name, entryCount: n.get(l.id) ?? 0 }))
 	};
 }
@@ -443,14 +470,51 @@ export async function removeEntry(
 	return { sync };
 }
 
-// ---- sync hand-off -----------------------------------------------------------------------------
+// ---- per-server view (players page) ------------------------------------------------------------
 
-/**
- * Pushes the org's lists to every server right away, so the admin's toast can say where the change
- * landed. Until the sync engine lands (lists-sync.ts) the poller's next tick is what applies it.
- */
-export async function fanOut(env: Env, org: OrgRow): Promise<ListSyncSummary> {
-	void env;
-	void org;
-	return { servers: [] };
+/** Which of a server's bans and reserved slots the org lists manage, plus what is still pending. */
+export async function serverListsState(
+	env: Env,
+	server: ServerRow,
+	user: SessionUser
+): Promise<ServerListsState> {
+	const [bans, reserved, state, [sync], role] = await Promise.all([
+		env.db
+			.select({ steamId: serverBans.steamId })
+			.from(serverBans)
+			.where(eq(serverBans.serverId, server.id)),
+		env.db
+			.select({ steamId: serverReserved.steamId })
+			.from(serverReserved)
+			.where(eq(serverReserved.serverId, server.id)),
+		env.db.select().from(serverListState).where(eq(serverListState.serverId, server.id)),
+		env.db.select().from(serverListSync).where(eq(serverListSync.serverId, server.id)).limit(1),
+		listsRoleFor(env, user, server.orgId)
+	]);
+	const out: ServerListsState = {
+		canEditOrg: role !== null,
+		orgId: server.orgId,
+		bans: {},
+		reserved: {},
+		sync: sync
+			? {
+					syncedAt: iso(sync.syncedAt),
+					reservedCap: sync.reservedCap,
+					reservedUsed: sync.reservedUsed,
+					lastError: sync.lastError
+				}
+			: null
+	};
+	for (const b of bans) out.bans[b.steamId] = { state: 'local', managed: false };
+	for (const r of reserved) out.reserved[r.steamId] = { state: 'local', managed: false };
+	for (const s of state) {
+		const bucket = s.kind === 'ban' ? out.bans : out.reserved;
+		bucket[s.steamId] = { state: s.state, managed: true };
+	}
+	// wanted but not yet on the server
+	const org = { membersReserved: false };
+	const desired = await desiredFor(env, server, org);
+	for (const d of desired.bans) out.bans[d.steamId] ??= { state: 'pending', managed: true };
+	for (const d of desired.reserved) out.reserved[d.steamId] ??= { state: 'pending', managed: true };
+	return out;
 }

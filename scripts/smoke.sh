@@ -208,6 +208,24 @@ check lists-editor-add '"steamId":"76561198100000503"' "$(req $J5 POST /api/orgs
 check lists-editor-orgs-link "/orgs/$ORG/bans" "$(curl -s -b $J5 $B/orgs)"
 check page-editor-bans '200' "$(pagecode $J5 "/orgs/$ORG/bans")"
 check page-editor-overview '403' "$(pagecode $J5 "/orgs/$ORG")"
+# sync: adding an entry pushes it to the demo server straight away
+check sync-applied "$L1" "$(req $J1 GET /api/servers/$SID/rcon/bans)"
+check sync-state-managed "\"$L1\":{\"state\":\"applied\",\"managed\":true}" "$(req $J1 GET /api/servers/$SID/lists/state)"
+check sync-reserve-applied '76561198100000601' "$(req $J1 GET /api/servers/$SID/rcon/reserved)"
+check sync-local-ban '"76561198100000301":{"state":"local","managed":false}' "$(req $J1 GET /api/servers/$SID/lists/state)"
+check sync-remove '"ok":true' "$(req $J1 DELETE /api/orgs/$ORG/lists/ban/entries/$L1)"
+check sync-removed '0' "$(req $J1 GET /api/servers/$SID/rcon/bans | grep -c $L1)"
+check sync-local-kept '76561198100000301' "$(req $J1 GET /api/servers/$SID/rcon/bans)"
+check sync-now '"sync"' "$(req $J1 POST /api/orgs/$ORG/lists/sync)"
+check sync-server-now '"ok":true' "$(req $J1 POST /api/servers/$SID/lists/sync)"
+check sync-view-servers '"reservedCap"' "$(req $J1 GET /api/orgs/$ORG/lists)"
+# cap: the demo server holds 2 seeded slots + 1 added above + the org's 601; capping it at 3 makes the next org slot overflow
+CFG=$(req $J1 GET /api/servers/$SID/rcon/config); REV=$(echo "$CFG" | sed -E 's/.*"revision":"([^"]+)".*/\1/')
+BODY="{\"text\":\"[/Script/WDGame.WDGameSession]\\r\\nServerName=Renamed\\r\\nMaxReservedSlots=3\\r\\n\",\"revision\":\"$REV\"}"
+req $J1 POST /api/servers/$SID/rcon/configApply "$BODY" >/dev/null
+check reserve-full 'Reserved slots are full' "$(req $J1 POST /api/orgs/$ORG/lists/reserve/entries '{"steamId":"76561198100000602"}')"
+check reserve-full-state '"state":"failed"' "$(req $J1 GET /api/orgs/$ORG/lists/reserve/entries)"
+check audit-sync '"action":"lists.sync"' "$(req $J1 GET '/api/audit?action=lists.sync')"
 
 echo "== analytics"
 sleep 12
