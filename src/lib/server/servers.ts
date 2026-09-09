@@ -41,7 +41,7 @@ export async function validateTarget(
 	env: Env,
 	actor: SessionUser,
 	body: Record<string, unknown>,
-	current: Pick<ServerRow, 'host' | 'port' | 'scheme'> | null = null
+	current: Pick<ServerRow, 'host' | 'port' | 'scheme' | 'allowPrivate'> | null = null
 ): Promise<TargetFields> {
 	const partial = current !== null;
 	const out: TargetFields = {};
@@ -72,6 +72,11 @@ export async function validateTarget(
 		const allowPrivate = mayUsePrivateHosts(actor);
 		if (!isDemoServer(env, { host })) await assertReachableTarget(host, allowPrivate);
 		out.allowPrivate = allowPrivate;
+	} else if (current && !current.allowPrivate && mayUsePrivateHosts(actor)) {
+		// The site owner saving an existing target vouches for it. Rows from before the allow_private
+		// column start out false, so this is how a private target they added earlier gets its
+		// allowance back after an upgrade (link-local stays refused at request time regardless).
+		out.allowPrivate = true;
 	}
 	return out;
 }

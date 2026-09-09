@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api, errorMessage, qs } from '$lib/api';
-	import { fmtTime } from '$lib/format';
+	import { fmtTime, toDatetimeLocal } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
 	import type { AuditRow } from '$lib/server/audit';
 	import type { PageProps } from './$types';
@@ -20,7 +20,6 @@
 	});
 	let rows = $derived([...data.entries, ...extra]);
 
-	const toLocal = (iso?: string) => (iso ? new Date(iso).toISOString().slice(0, 16) : '');
 	let f = $state({ server: '', actor: '', action: '', outcome: '', q: '', from: '', to: '' });
 	$effect(() => {
 		const d = data.filters;
@@ -30,8 +29,8 @@
 			action: d.action || '',
 			outcome: d.outcome || '',
 			q: d.q || '',
-			from: toLocal(d.from),
-			to: toLocal(d.to)
+			from: toDatetimeLocal(d.from),
+			to: toDatetimeLocal(d.to)
 		};
 	});
 

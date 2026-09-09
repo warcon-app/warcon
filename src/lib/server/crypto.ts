@@ -6,6 +6,23 @@ import { ApiError } from './http';
 
 const TAG_BYTES = 16;
 
+/** The value .env.example ships for both secrets. */
+export const SECRET_PLACEHOLDER = 'replace-with-openssl-rand-base64-32';
+
+/**
+ * Why BETTER_AUTH_SECRET cannot be used (still the .env.example placeholder, or too short), or
+ * null when it is fine. An unset secret is reported elsewhere (the panel refuses to serve pages).
+ */
+export function authSecretProblem(value: string | undefined): string | null {
+	const secret = (value || '').trim();
+	if (!secret) return null;
+	if (secret === SECRET_PLACEHOLDER)
+		return 'BETTER_AUTH_SECRET is still the placeholder from .env.example. Set it to the output of `openssl rand -base64 32`.';
+	if (Buffer.byteLength(secret) < 32)
+		return 'BETTER_AUTH_SECRET must be at least 32 characters (openssl rand -base64 32).';
+	return null;
+}
+
 /** Constant-time string comparison (length leaks, contents do not). */
 export function timingSafeEqualStr(a: string, b: string): boolean {
 	const ab = Buffer.from(a);

@@ -6,6 +6,7 @@ import { discordEnabled, getEnv, turnstileSiteKey } from '$lib/server/env';
 import { normalizeError } from '$lib/server/http';
 import { requireUser } from '$lib/server/access';
 import { createOrg } from '$lib/server/orgs';
+import { userCount } from '$lib/server/users';
 import {
 	assertMayCreateOrg,
 	orgSignupEnabled,
@@ -18,6 +19,8 @@ const HERE = '/sign-up';
 export const load: PageServerLoad = async ({ locals }) => {
 	const env = getEnv();
 	if (!orgSignupEnabled(env)) error(404, 'Organisation sign-up is not enabled on this panel.');
+	// The first account must be the site owner (see /setup); sign-up opens after that.
+	if ((await userCount(env)) === 0) redirect(303, '/setup');
 	return {
 		discord: discordEnabled(env),
 		turnstileSiteKey: turnstileSiteKey(env),
@@ -31,6 +34,8 @@ export const actions: Actions = {
 		const env = getEnv();
 		if (!orgSignupEnabled(env)) return fail(404, { error: 'Sign-up is not enabled.' });
 		if (!discordEnabled(env)) return fail(404, { error: 'Discord sign-in is not configured.' });
+		if ((await userCount(env)) === 0)
+			return fail(409, { error: 'This panel has not been set up yet. Open /setup first.' });
 		const res = await locals.auth!.api.signInSocial({
 			body: {
 				provider: 'discord',

@@ -29,6 +29,13 @@
       "when": 1788913601789,
       "tag": "0003_server_allow_private",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788977949275,
+      "tag": "0004_audit_scrub_secrets",
+      "breakpoints": true
     }
   ]
 }

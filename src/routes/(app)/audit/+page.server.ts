@@ -10,7 +10,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const filters = auditFilters(url.searchParams);
 	const [page, meta] = await Promise.all([
 		queryAudit(env, { ...filters, visibleTo, limit: 100 }),
-		auditMeta(env)
+		auditMeta(env, visibleTo)
 	]);
 	return {
 		entries: page.entries,

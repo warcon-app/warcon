@@ -54,6 +54,42 @@ async function freeUsername(env: Env, wanted: string): Promise<string> {
 	return `${base.slice(0, 20)}${Date.now().toString(36)}`;
 }
 
+/**
+ * Better Auth routes the browser must never reach. The panel calls every one of these through
+ * auth.api.* on the server, behind its own lockout, audit trail and ownership checks; over HTTP they
+ * would skip all of that (a direct sign-in dodges the lockout, admin/set-role can demote the last
+ * owner, admin/set-user-password leaves sessions alive). Better Auth answers 404 for them;
+ * hooks.server.ts closes the rest of /api/auth/* as well.
+ */
+const DISABLED_PATHS = [
+	'/sign-in/email',
+	'/sign-in/username',
+	'/sign-in/social',
+	'/sign-up/email',
+	'/is-username-available',
+	'/update-user',
+	'/change-password',
+	'/set-password',
+	'/change-email',
+	'/delete-user',
+	'/delete-user/callback',
+	'/admin/create-user',
+	'/admin/list-users',
+	'/admin/get-user',
+	'/admin/set-role',
+	'/admin/ban-user',
+	'/admin/unban-user',
+	'/admin/list-user-sessions',
+	'/admin/revoke-user-session',
+	'/admin/revoke-user-sessions',
+	'/admin/impersonate-user',
+	'/admin/stop-impersonating',
+	'/admin/remove-user',
+	'/admin/set-user-password',
+	'/admin/update-user',
+	'/admin/has-permission'
+];
+
 // Global roles: "owner" runs the panel (every admin-plugin permission), "member" only sees
 // servers they are granted. Per-server roles live in server_grants, not here.
 const ac = createAccessControl(defaultStatements);
@@ -160,6 +196,7 @@ function build(env: Env) {
 			ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] }
 		},
 		trustedOrigins: [env.ORIGIN],
+		disabledPaths: DISABLED_PATHS,
 		plugins: [
 			username({
 				minUsernameLength: 2,

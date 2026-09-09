@@ -19,12 +19,14 @@ const SECURITY_HEADERS: Record<string, string> = {
 
 // Routes a user who must change their password may still reach.
 const PASSWORD_GATE_EXEMPT = /^\/(account|sign-out|join|api\/auth)(\/|$)/;
+// The only Better Auth routes a browser must reach: the OAuth callback and its error page.
+const AUTH_PUBLIC = /^\/api\/auth\/(callback\/[^/]+|error|ok)$/;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Reads config, opens the database, applies migrations, builds Better Auth and starts the poller once per process. */
 export const init: ServerInit = async () => {
 	if (building) return;
-	const env = await initEnv();
+	const env = await initEnv(); // also refuses a placeholder or short BETTER_AUTH_SECRET
 	if (authConfigured(env)) initAuth(env);
 	else
 		console.warn('[warcon] BETTER_AUTH_SECRET is not set; the panel will refuse to serve pages.');
@@ -57,12 +59,12 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const path = event.url.pathname;
 	const isAuthApi = path.startsWith('/api/auth');
 
-	// Accounts come from first-run setup, the site owner, an invite link, or (ALLOW_ORG_SIGNUP) the
-	// sign-up and sign-in pages; all of those call Better Auth server-side. The public sign-up and
-	// social sign-in endpoints stay closed so nobody can self-register by posting requestSignUp.
-	if (path.startsWith('/api/auth/sign-up') || path.startsWith('/api/auth/sign-in/social')) {
-		return json({ error: 'Sign-up is disabled.' }, { status: 404 });
-	}
+	// Every Better Auth call the panel makes is server-side (auth.api.*) from a form action or API
+	// route, behind the login lockout, the audit trail and the last-owner checks. Nothing in the
+	// browser talks to /api/auth/* except the OAuth callback, so the rest is closed: nobody can sign
+	// in, self-register or run admin-plugin endpoints around those checks. auth.ts lists the same
+	// routes in Better Auth's own disabledPaths.
+	if (isAuthApi && !AUTH_PUBLIC.test(path)) return json({ error: 'Not found.' }, { status: 404 });
 
 	// CSRF guard for the JSON API: every mutation must carry the custom header (browsers never add
 	// it to cross-site form posts or simple requests). Better Auth checks origins for its own routes.

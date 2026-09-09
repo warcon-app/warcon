@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, like, lt, lte, or, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, like, lt, lte, or, type SQL } from 'drizzle-orm';
 import type { Env } from './env';
 import { clientIp, userAgent, int, str } from './http';
 import { auditLog, user, type AuditRow } from './db/schema';
@@ -24,8 +24,12 @@ export interface AuditEvent {
 }
 
 const SECRET_KEYS = /pass|secret|token|key|authorization|cookie/i;
+/** `Password=...` style lines inside text values (ini documents, raw request bodies). */
+const SECRET_LINES =
+	/^([ \t]*[A-Za-z0-9_.-]*(?:pass|secret|token|key)[A-Za-z0-9_.-]*[ \t]*=)[^\r\n]*/gim;
+const MAX_TEXT = 4000;
 
-/** Strips anything that looks like a credential before it is persisted. */
+/** Strips anything that looks like a credential (by key name, and by line inside text) before it is persisted. */
 export function redact(value: unknown, depth = 0): unknown {
 	if (depth > 6) return '[deep]';
 	if (Array.isArray(value)) return value.slice(0, 50).map((v) => redact(v, depth + 1));
@@ -36,8 +40,12 @@ export function redact(value: unknown, depth = 0): unknown {
 		}
 		return out;
 	}
-	if (typeof value === 'string' && value.length > 4000)
-		return value.slice(0, 4000) + `…[${value.length - 4000} more chars]`;
+	if (typeof value === 'string') {
+		const text = value.replace(SECRET_LINES, '$1[redacted]');
+		return text.length > MAX_TEXT
+			? text.slice(0, MAX_TEXT) + `…[${text.length - MAX_TEXT} more chars]`
+			: text;
+	}
 	return value;
 }
 
@@ -72,6 +80,22 @@ export async function writeAudit(env: Env, req: Request | null, ev: AuditEvent):
 	});
 }
 
+/** What a non-site-owner may see (see access.ts auditVisibility); null means everything. */
+export type AuditVisibility = {
+	userId: string;
+	adminServerIds: string[];
+	ownedOrgIds: string[];
+} | null;
+
+/** The rows a caller may see: their own, those on servers they admin, those of orgs they own. */
+function visibleWhere(v: AuditVisibility | undefined): SQL | undefined {
+	if (!v) return undefined;
+	const any: SQL[] = [eq(auditLog.actorId, v.userId)];
+	if (v.adminServerIds.length) any.push(inArray(auditLog.serverId, v.adminServerIds));
+	if (v.ownedOrgIds.length) any.push(inArray(auditLog.orgId, v.ownedOrgIds));
+	return or(...any)!;
+}
+
 export interface AuditQuery {
 	serverId?: string;
 	actorId?: string;
@@ -84,7 +108,7 @@ export interface AuditQuery {
 	before?: number;
 	limit?: number;
 	/** Non-owners: their own rows, rows on servers they admin, rows of orgs they own. */
-	visibleTo?: { userId: string; adminServerIds: string[]; ownedOrgIds: string[] } | null;
+	visibleTo?: AuditVisibility;
 }
 
 const parseDate = (v: string | undefined): Date | null => {
@@ -122,13 +146,8 @@ export async function queryAudit(
 			)!
 		);
 	}
-	if (q.visibleTo) {
-		const { userId, adminServerIds, ownedOrgIds } = q.visibleTo;
-		const any: SQL[] = [eq(auditLog.actorId, userId)];
-		if (adminServerIds.length) any.push(inArray(auditLog.serverId, adminServerIds));
-		if (ownedOrgIds.length) any.push(inArray(auditLog.orgId, ownedOrgIds));
-		where.push(or(...any)!);
-	}
+	const visible = visibleWhere(q.visibleTo);
+	if (visible) where.push(visible);
 	const limit = int(q.limit, 100, 1, 500);
 	const found = await env.db
 		.select()
@@ -156,16 +175,18 @@ export function auditFilters(params: URLSearchParams) {
 	};
 }
 
-/** Distinct actions and actors for filter dropdowns. */
-export async function auditMeta(env: Env) {
+/** Distinct actions and actors for the filter dropdowns, limited to the rows the caller may see. */
+export async function auditMeta(env: Env, visibleTo: AuditVisibility) {
+	const visible = visibleWhere(visibleTo);
 	const actions = await env.db
 		.selectDistinct({ category: auditLog.category, action: auditLog.action })
 		.from(auditLog)
+		.where(visible)
 		.orderBy(auditLog.category, auditLog.action);
 	const actors = await env.db
 		.selectDistinct({ actorId: auditLog.actorId, actorName: auditLog.actorName })
 		.from(auditLog)
-		.where(eq(auditLog.actorId, auditLog.actorId))
+		.where(visible ? and(isNotNull(auditLog.actorId), visible) : isNotNull(auditLog.actorId))
 		.orderBy(auditLog.actorName);
 	return {
 		actions,

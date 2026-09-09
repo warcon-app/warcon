@@ -1,5 +1,6 @@
 // The action registry: every game-server operation the panel can perform, with the
 // minimum per-server role it needs. Routes call `runAction` and audit the result.
+import { createHash } from 'node:crypto';
 import type { ServerRole } from './access';
 import { ApiError, int, str } from './http';
 import { gamePath } from './hostpolicy';
@@ -10,8 +11,20 @@ export interface ActionDef {
 	mutating: boolean;
 	// What the audit row's target column should hold.
 	target?: (p: any) => string;
+	/**
+	 * What the audit row's detail column keeps instead of the raw params. Set on actions whose
+	 * payload can carry credentials (a config document, a raw body); everything else is stored
+	 * as sent, redacted by key.
+	 */
+	audit?: (p: any) => unknown;
 	run: (client: WardogsClient, p: any) => Promise<unknown>;
 }
+
+/** Length and SHA-256 of a text payload: enough to match an audit row to a document, never the text. */
+const fingerprint = (text: unknown) => {
+	const s = String(text ?? '');
+	return { length: s.length, sha256: createHash('sha256').update(s).digest('hex') };
+};
 
 const steamId = (v: unknown): string => {
 	const id = str(v, 32);
@@ -482,6 +495,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 	configValidate: {
 		level: 'admin',
 		mutating: false,
+		audit: (p) => ({ text: fingerprint(p.text) }),
 		run: async (c, p) => {
 			const { status, body } = await c.configCall(
 				'POST',
@@ -495,6 +509,13 @@ export const ACTIONS: Record<string, ActionDef> = {
 		level: 'admin',
 		mutating: true,
 		target: (p) => str(p.revision, 100),
+		// The document itself holds Password= / ServerPassword= lines; the trail keeps its fingerprint.
+		audit: (p) => ({
+			text: fingerprint(p.text),
+			revision: str(p.revision, 100),
+			force: !!p.force,
+			fullApply: !!p.fullApply
+		}),
 		run: async (c, p) => {
 			const query: string[] = [];
 			if (p.force) {
@@ -527,6 +548,12 @@ export const ACTIONS: Record<string, ActionDef> = {
 		level: 'admin',
 		mutating: true,
 		target: (p) => `${str(p.method, 10).toUpperCase()} ${str(p.path, 300)}`,
+		// Text bodies (config documents) are fingerprinted; JSON bodies are kept, redacted by key and line.
+		audit: (p) => ({
+			method: str(p.method, 10).toUpperCase(),
+			path: str(p.path, 500),
+			body: typeof p.body === 'string' ? fingerprint(p.body) : p.body
+		}),
 		run: async (c, p) => {
 			const method = str(p.method, 10).toUpperCase();
 			if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {

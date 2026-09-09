@@ -13,7 +13,13 @@ services:
       - '3000:3000'
     env_file: .env
     environment:
-      DATABASE_URL: postgres://warcon:${POSTGRES_PASSWORD:-warcon}@db:5432/warcon
+      # The bundled database, as separate fields so POSTGRES_PASSWORD never needs URL-encoding.
+      # For an external Postgres set DATABASE_URL in .env instead (it takes precedence) and drop `db`.
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: warcon
+      PGPASSWORD: ${POSTGRES_PASSWORD:-warcon}
+      PGDATABASE: warcon
       # The URL people open. Behind a reverse proxy set ORIGIN=https://... and ADDRESS_HEADER in .env (see README).
       ORIGIN: ${ORIGIN:-http://localhost:3000}
     # Uncomment to reach an RCON listener bound to 127.0.0.1 on the Docker host:

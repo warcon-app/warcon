@@ -87,10 +87,13 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Compose starts two containers: `warcon` and `db` (TimescaleDB). To use an external Postgres
-instead, remove the `db` service and set `DATABASE_URL` in `.env`; install the `timescaledb`
-extension there if you want automatic retention on the analytics samples (plain Postgres works too,
-the app prunes old samples itself).
+Compose starts two containers: `warcon` and `db` (TimescaleDB). The app reaches `db` through the
+`PGHOST`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` variables Compose sets, so `POSTGRES_PASSWORD`
+can contain any characters. To use an external Postgres instead, set `DATABASE_URL` in `.env` (it
+takes precedence over those) and delete the `db` service together with the `depends_on` block in
+`docker-compose.yml`; install the `timescaledb` extension there before the first start if you want
+automatic retention on the analytics samples (plain Postgres works too, the app prunes old samples
+itself).
 
 Open the URL. The first visit shows the **owner setup** form; after that it is a normal login. Then,
 as owner:
@@ -125,26 +128,27 @@ rejected as cross-site against the https `ORIGIN`.
 
 ### Configuration (`.env`)
 
-| Var                                           | Default            | Meaning                                                                                                                                               |
-| --------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET`                          | required           | Session signing secret.                                                                                                                               |
-| `ENCRYPTION_KEY`                              | required           | Base64 of 32 random bytes; encrypts stored RCON passwords.                                                                                            |
-| `DATABASE_URL`                                | set by Compose     | `postgres://user:pass@host:5432/warcon`.                                                                                                              |
-| `POSTGRES_PASSWORD`                           | `warcon`           | Password for the bundled `db` service (Compose only).                                                                                                 |
-| `ORIGIN`                                      | required           | The exact URL people open (scheme, host, port).                                                                                                       |
-| `ADDRESS_HEADER` / `XFF_DEPTH`                | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                                                                        |
-| `PORT` / `HOST`                               | `3000` / `0.0.0.0` | Listen address.                                                                                                                                       |
-| `POLL_SECONDS`                                | `20`               | Analytics sampling interval per server; `0` disables the poller.                                                                                      |
-| `APP_NAME`                                    | `Warcon`           | Name shown in the UI.                                                                                                                                 |
-| `AUDIT_LOG_READS`                             | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                |
-| `ALLOW_ORG_SIGNUP`                            | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                          |
-| `MAX_ORGS_PER_USER` / `MAX_SERVERS_PER_ORG`   | `3` / `10`         | Self-serve limits. The site owner is exempt and can raise the server limit per organisation, or suspend one, from the Orgs page.                      |
-| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | unset              | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.         |
-| `ALLOW_DEMO_SERVER`                           | `true`             | Allow a server with host `demo` served by the built-in mock.                                                                                          |
-| `GAME_TLS_INSECURE`                           | `false`            | Accept self-signed certificates on `https` game servers.                                                                                              |
-| `SETUP_TOKEN`                                 | unset              | When set, first-run setup requires it.                                                                                                                |
-| `STEAM_API_KEY`                               | unset              | Steam persona/avatar lookup.                                                                                                                          |
-| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` | unset              | "Sign in with Discord": invite links create accounts through it, existing accounts can link it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`. |
+| Var                                                          | Default            | Meaning                                                                                                                                               |
+| ------------------------------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`                                         | required           | Session signing secret.                                                                                                                               |
+| `ENCRYPTION_KEY`                                             | required           | Base64 of 32 random bytes; encrypts stored RCON passwords.                                                                                            |
+| `DATABASE_URL`                                               | unset              | `postgres://user:pass@host:5432/warcon`. Overrides the `PG*` fields; percent-encode `/ # % ?` in the password.                                        |
+| `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | set by Compose     | The database as separate fields (no encoding needed). Used when `DATABASE_URL` is unset.                                                              |
+| `POSTGRES_PASSWORD`                                          | `warcon`           | Password for the bundled `db` service (Compose only).                                                                                                 |
+| `ORIGIN`                                                     | required           | The exact URL people open (scheme, host, port).                                                                                                       |
+| `ADDRESS_HEADER` / `XFF_DEPTH`                               | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                                                                        |
+| `PORT` / `HOST`                                              | `3000` / `0.0.0.0` | Listen address.                                                                                                                                       |
+| `POLL_SECONDS`                                               | `20`               | Analytics sampling interval per server; `0` disables the poller.                                                                                      |
+| `APP_NAME`                                                   | `Warcon`           | Name shown in the UI.                                                                                                                                 |
+| `AUDIT_LOG_READS`                                            | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                |
+| `ALLOW_ORG_SIGNUP`                                           | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                          |
+| `MAX_ORGS_PER_USER` / `MAX_SERVERS_PER_ORG`                  | `3` / `10`         | Self-serve limits. The site owner is exempt and can raise the server limit per organisation, or suspend one, from the Orgs page.                      |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`                | unset              | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.         |
+| `ALLOW_DEMO_SERVER`                                          | `true`             | Allow a server with host `demo` served by the built-in mock.                                                                                          |
+| `GAME_TLS_INSECURE`                                          | `false`            | Accept self-signed certificates on `https` game servers.                                                                                              |
+| `SETUP_TOKEN`                                                | unset              | When set, first-run setup requires it.                                                                                                                |
+| `STEAM_API_KEY`                                              | unset              | Steam persona/avatar lookup.                                                                                                                          |
+| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`                | unset              | "Sign in with Discord": invite links create accounts through it, existing accounts can link it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`. |
 
 ### Roles
 
@@ -298,8 +302,9 @@ docs/wardogs-api.md            the reverse-engineered game-server API
 ### API cheatsheet
 
 All `/api` calls need the session cookie; mutations also need `X-Requested-With: warcon`.
-Sign-in, setup, password change and session revocation are SvelteKit form actions on their pages;
-`/api/auth/*` is Better Auth's own endpoint set (public sign-up is disabled).
+Sign-in, setup, password change and session revocation are SvelteKit form actions on their pages,
+which call Better Auth server-side behind the login lockout and the audit trail. Of Better Auth's
+own `/api/auth/*` routes only the OAuth callback is reachable over HTTP; everything else answers 404.
 
 ```
 GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id

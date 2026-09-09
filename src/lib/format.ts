@@ -14,6 +14,18 @@ export const fmtTime = (value: string | number | Date | null | undefined): strin
 	});
 };
 
+/**
+ * An ISO timestamp as the local wall-clock value a datetime-local input holds (YYYY-MM-DDTHH:MM),
+ * or '' when it is not a date. toISOString() alone would put the UTC clock in a field the browser
+ * reads as local time, shifting the filter by the timezone offset on every apply.
+ */
+export function toDatetimeLocal(iso: string | null | undefined): string {
+	if (!iso) return '';
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return '';
+	return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
 export const fmtDuration = (sec: number | null | undefined): string => {
 	if (sec === null || sec === undefined) return '—';
 	const s = Math.max(0, Math.floor(sec));

@@ -3,18 +3,7 @@ import { getEnv } from '$lib/server/env';
 import { route } from '$lib/server/http';
 import { auditVisibility, requireUser } from '$lib/server/access';
 import { auditFilters, queryAudit, type AuditRow } from '$lib/server/audit';
-
-function csvEscape(v: unknown): string {
-	const s =
-		v === null || v === undefined
-			? ''
-			: v instanceof Date
-				? v.toISOString()
-				: typeof v === 'object'
-					? JSON.stringify(v)
-					: String(v);
-	return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
+import { csvCell } from '$lib/server/csv';
 
 export const GET = route(async ({ locals, url }) => {
 	const env = getEnv();
@@ -58,7 +47,7 @@ export const GET = route(async ({ locals, url }) => {
 		'durationMs'
 	];
 	const lines = [cols.join(',')];
-	for (const row of rows) lines.push(cols.map((k) => csvEscape(row[k])).join(','));
+	for (const row of rows) lines.push(cols.map((k) => csvCell(row[k])).join(','));
 	return new Response(lines.join('\r\n'), {
 		headers: {
 			'content-type': 'text/csv; charset=utf-8',

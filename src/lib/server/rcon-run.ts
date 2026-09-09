@@ -8,11 +8,11 @@ import { ACTIONS, ACTION_NAMES } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { assertRate } from './ratelimit';
 
-function safe(fn: () => string): string {
+function safe<T>(fn: () => T, fallback: T): T {
 	try {
 		return fn();
 	} catch {
-		return '';
+		return fallback;
 	}
 }
 
@@ -57,7 +57,10 @@ export async function runAction(
 	if (!server || !role) throw new ApiError(404, 'Server not found.', 'not_found');
 
 	const auditReads = flag(env.AUDIT_LOG_READS, false);
-	const target = def.target ? safe(() => def.target!(params)) : '';
+	const target = def.target ? safe(() => def.target!(params), '') : '';
+	// What the trail keeps of the request: the action's own safe shape when it has one, else the
+	// params (writeAudit redacts by key name and secret-looking lines on insert).
+	const detail: unknown = def.audit ? safe(() => def.audit!(params), undefined) : params;
 	const base = {
 		actor: user,
 		server: { id: server.id, name: server.name },
@@ -72,7 +75,7 @@ export async function runAction(
 			outcome: 'denied',
 			status: 403,
 			message: `Needs '${def.level}', has '${role}'`,
-			detail: params
+			detail
 		});
 		throw new ApiError(
 			403,
@@ -94,7 +97,7 @@ export async function runAction(
 				outcome: 'ok',
 				status: 200,
 				message: messageOf(result),
-				detail: def.mutating ? params : undefined,
+				detail: def.mutating ? detail : undefined,
 				durationMs
 			});
 		}
@@ -108,7 +111,7 @@ export async function runAction(
 					outcome: 'error',
 					status: err.status,
 					message: err.message,
-					detail: def.mutating ? params : undefined,
+					detail: def.mutating ? detail : undefined,
 					durationMs
 				});
 			}
@@ -138,7 +141,7 @@ export async function runAction(
 					outcome: 'error',
 					status: err.status,
 					message: err.message,
-					detail: params,
+					detail,
 					durationMs
 				});
 			throw err;
@@ -149,7 +152,7 @@ export async function runAction(
 			outcome: 'error',
 			status: 500,
 			message,
-			detail: def.mutating ? params : undefined,
+			detail: def.mutating ? detail : undefined,
 			durationMs
 		});
 		throw err;

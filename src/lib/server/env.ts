@@ -2,6 +2,7 @@
 import { resolve } from 'node:path';
 import { env as processEnv } from '$env/dynamic/private';
 import { connect, hasTimescale, runMigrations, type Db, type SqlClient } from './db';
+import { authSecretProblem } from './crypto';
 
 export interface Env {
 	db: Db;
@@ -92,12 +93,35 @@ function parseOrigin(value: string | undefined): string {
 
 let cached: Env | null = null;
 
+/**
+ * Where the database is: DATABASE_URL, else the libpq-style PGHOST / PGPORT / PGUSER / PGPASSWORD /
+ * PGDATABASE variables. Docker Compose passes the bundled database as the latter, so the password
+ * never has to be URL-encoded.
+ */
+function databaseTarget(): string | Bun.SQL.PostgresOrMySQLOptions {
+	const url = processEnv.DATABASE_URL;
+	if (url) return url;
+	const host = processEnv.PGHOST;
+	if (host && processEnv.PGPASSWORD !== undefined)
+		return {
+			hostname: host,
+			port: positiveInt(processEnv.PGPORT, 5432),
+			username: processEnv.PGUSER || 'warcon',
+			password: processEnv.PGPASSWORD,
+			database: processEnv.PGDATABASE || 'warcon'
+		};
+	throw new Error(
+		'Set DATABASE_URL (postgres://user:pass@host:5432/warcon), or PGHOST and PGPASSWORD (plus PGPORT, PGUSER, PGDATABASE).'
+	);
+}
+
 /** Reads configuration, connects, applies migrations. Called once from the server init hook. */
 export async function initEnv(): Promise<Env> {
 	const origin = parseOrigin(processEnv.ORIGIN);
-	const url = processEnv.DATABASE_URL;
-	if (!url) throw new Error('DATABASE_URL is not set (postgres://user:pass@host:5432/warcon).');
-	const { client, db } = connect(url);
+	// Refuse the .env.example placeholder (or a short secret) before touching the database.
+	const secretProblem = authSecretProblem(processEnv.BETTER_AUTH_SECRET);
+	if (secretProblem) throw new Error(secretProblem);
+	const { client, db } = connect(databaseTarget());
 	await runMigrations(db, resolve(process.cwd(), 'drizzle'));
 	const timescale = await hasTimescale(db);
 	console.log(`[warcon] database ready (timescaledb ${timescale ? 'on' : 'off'})`);

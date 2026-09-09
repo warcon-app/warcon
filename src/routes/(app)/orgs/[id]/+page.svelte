@@ -167,17 +167,15 @@
 		inv.maxUses === null ? `${inv.uses}` : `${inv.uses} / ${inv.maxUses}`;
 
 	// --- site owner controls ---
-	let limitInput = $state('');
+	// A number input binds a number, or null when blank (blank = the instance default).
+	let limitInput = $state<number | null>(null);
 	let suspendReason = $state('');
 	$effect(() => {
-		limitInput = data.org.customServerLimit === null ? '' : String(data.org.customServerLimit);
+		limitInput = data.org.customServerLimit;
 	});
 	function saveLimit() {
 		void run(
-			() =>
-				api('PATCH', orgPath, {
-					serverLimit: limitInput.trim() === '' ? null : Number(limitInput)
-				}),
+			() => api('PATCH', orgPath, { serverLimit: limitInput }),
 			'Server limit updated.',
 			false
 		);

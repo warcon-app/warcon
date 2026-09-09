@@ -6,7 +6,7 @@ import { flag, maxOrgsPerUser, turnstileSiteKey, type Env } from './env';
 import { ApiError, clientIp, normalizeError, str } from './http';
 import { writeAudit } from './audit';
 import { loginLockSeconds, noteLoginFailure, type SessionUser } from './access';
-import { createUser, validatePassword, validateUsername } from './users';
+import { createUser, userCount, validatePassword, validateUsername } from './users';
 import { organizations } from './db/schema';
 
 export const orgSignupEnabled = (env: Pick<Env, 'ALLOW_ORG_SIGNUP'>) =>
@@ -80,6 +80,13 @@ export async function registerFromForm(event: RequestEvent, env: Env, here: stri
 		username: str(form.get('username'), 32),
 		displayName: str(form.get('displayName'), 80)
 	};
+	// Until first-run setup has made the site owner, nobody may create an account here: the first
+	// account on the panel must be the owner, and /setup refuses once any user exists.
+	if ((await userCount(env)) === 0)
+		return fail(409, {
+			error: 'This panel has not been set up yet. Open /setup first.',
+			...values
+		});
 	const keys = signupKeys(request);
 	const lock = await loginLockSeconds(env, keys);
 	if (lock > 0) {

@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { decryptSecret, encryptSecret, encryptionKey, timingSafeEqualStr } from './crypto';
+import {
+	authSecretProblem,
+	decryptSecret,
+	encryptSecret,
+	encryptionKey,
+	SECRET_PLACEHOLDER,
+	timingSafeEqualStr
+} from './crypto';
 import type { Env } from './env';
 
 // Bytes 0..31, base64. The blob below was produced by the earlier WebCrypto implementation;
@@ -42,6 +49,17 @@ describe('stored secrets (AES-256-GCM)', () => {
 		);
 		expect(() => encryptionKey({ ENCRYPTION_KEY: '' })).toThrow('ENCRYPTION_KEY');
 		expect(() => encryptionKey({ ENCRYPTION_KEY: 'c2hvcnQ=' })).toThrow('32 bytes');
+	});
+});
+
+describe('authSecretProblem', () => {
+	test('accepts a real secret, refuses the placeholder and short values', () => {
+		expect(authSecretProblem('AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=')).toBeNull();
+		expect(authSecretProblem('x'.repeat(32))).toBeNull();
+		expect(authSecretProblem(undefined)).toBeNull(); // "not set" is reported elsewhere
+		expect(authSecretProblem(SECRET_PLACEHOLDER)).toMatch(/placeholder/);
+		expect(authSecretProblem('short-secret')).toMatch(/at least 32/);
+		expect(authSecretProblem('x'.repeat(31))).toMatch(/at least 32/);
 	});
 });
 

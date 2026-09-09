@@ -8,8 +8,19 @@ import * as schema from './schema';
 
 export { schema };
 
-export function connect(url: string) {
-	const client = new SQL(url, { max: 10 });
+/** Opens the pool from a connection URL or from separate fields (host, user, password, database). */
+export function connect(target: string | Bun.SQL.PostgresOrMySQLOptions) {
+	let client: SQL;
+	try {
+		client =
+			typeof target === 'string' ? new SQL(target, { max: 10 }) : new SQL({ ...target, max: 10 });
+	} catch (err) {
+		// Bun rejects the URL before connecting when the password holds / # % or ? unencoded.
+		throw new Error(
+			`DATABASE_URL is not a valid URL (${err instanceof Error ? err.message : String(err)}). Percent-encode the password, or pass PGHOST, PGUSER, PGPASSWORD and PGDATABASE instead.`,
+			{ cause: err }
+		);
+	}
 	const db = drizzle({ client, schema, casing: 'snake_case' });
 	return { client, db };
 }
