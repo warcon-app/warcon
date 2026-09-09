@@ -27,10 +27,19 @@ check login-bad '401' "$(form $J2 '/sign-in?/password' 'username=james&password=
 check login-ok '303' "$(form $J2 '/sign-in?/password' 'username=james&password=correct-horse-battery')"
 check login-page-authed-redirect '303' "$(curl -s -o /dev/null -w '%{http_code}' -b $J2 $B/sign-in)"
 
+echo "== orgs"
+check org-list-default '"slug":"default"' "$(req $J1 GET /api/orgs)"
+R=$(req $J1 POST /api/orgs '{"name":"Smoke Clan"}'); check org-create '"id"' "$R"
+ORG=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+check org-list-created '"slug":"smoke-clan"' "$(req $J1 GET /api/orgs)"
+check org-members-owner '"username":"james"' "$(req $J1 GET /api/orgs/$ORG/members)"
+
 echo "== servers"
-R=$(req $J1 POST /api/servers '{"name":"Demo One","host":"demo","port":1,"scheme":"http","password":"demo","notes":"mock"}'); check server-create '"id"' "$R"
+check server-create-no-org 'orgId' "$(req $J1 POST /api/servers '{"name":"No Org","host":"demo","port":9,"scheme":"http","password":"demo"}')"
+R=$(req $J1 POST /api/servers "{\"orgId\":\"$ORG\",\"name\":\"Demo One\",\"host\":\"demo\",\"port\":1,\"scheme\":\"http\",\"password\":\"demo\",\"notes\":\"mock\"}"); check server-create '"id"' "$R"
 SID=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
-R=$(req $J1 POST /api/servers '{"name":"Bad PW","host":"demo","port":2,"scheme":"http","password":"wrong"}'); SID2=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+R=$(req $J1 POST /api/servers "{\"orgId\":\"$ORG\",\"name\":\"Bad PW\",\"host\":\"demo\",\"port\":2,\"scheme\":\"http\",\"password\":\"wrong\"}"); SID2=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+check org-server-count '"serverCount":2' "$(req $J1 GET /api/orgs)"
 check server-list-no-password '0' "$(req $J1 GET /api/servers | grep -c password_enc)"
 check server-list-demo-flag '"demo":true' "$(req $J1 GET /api/servers)"
 check server-test '"serverName":"Warcon Demo Server' "$(req $J1 POST /api/servers/$SID/test)"
@@ -87,6 +96,7 @@ check bob-server-404 'Server not found' "$(req $J3 GET /api/servers/$SID/rcon/st
 GB="{\"grants\":[{\"serverId\":\"$SID\",\"role\":\"viewer\"}]}"
 check grant-viewer '"role":"viewer"' "$(req $J1 PUT /api/users/$UID_BOB/grants "$GB")"
 check bob-sees-server '"role":"viewer"' "$(req $J3 GET /api/servers)"
+check bob-org-member '"username":"bob"' "$(req $J1 GET /api/orgs/$ORG/members)"
 check bob-status-ok '"scores"' "$(req $J3 GET /api/servers/$SID/rcon/status)"
 check bob-kick-denied "needs the 'operator' role" "$(req $J3 POST /api/servers/$SID/rcon/kick '{"steamId":"76561198100000103"}')"
 GB="{\"grants\":[{\"userId\":\"$UID_BOB\",\"role\":\"operator\"}]}"
@@ -137,7 +147,7 @@ check analytics-anon 'Sign in required' "$(req $J3 GET "/api/servers/$SID/analyt
 check analytics-page '200' "$(pagecode $J1 "/server/$SID/analytics")"
 
 echo "== pages (owner)"
-for p in / /audit /users /servers /account "/server/$SID" "/server/$SID/players" "/server/$SID/rotation" "/server/$SID/config" "/server/$SID/log" "/audit?outcome=denied&q=kick"; do check "page $p" '200' "$(pagecode $J1 "$p")"; done
+for p in / /audit /users /servers /orgs "/orgs/$ORG" /account "/server/$SID" "/server/$SID/players" "/server/$SID/rotation" "/server/$SID/config" "/server/$SID/log" "/audit?outcome=denied&q=kick"; do check "page $p" '200' "$(pagecode $J1 "$p")"; done
 check page-unknown-server '404' "$(pagecode $J1 /server/nope)"
 check server-delete '"ok":true' "$(req $J1 DELETE /api/servers/$SID2)"
 check page-sessions 'this session' "$(curl -s -b $J1 $B/account)"
