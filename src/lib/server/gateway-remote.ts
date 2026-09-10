@@ -14,6 +14,8 @@ import type { PollerStats } from './poller';
 import { RELAY_PREFIX, type RelayError } from './relay';
 
 const TIMEOUT_MS = 30_000;
+/** Health probes answer fast or not at all: keep them well inside the container health check. */
+const HEALTH_TIMEOUT_MS = 2_000;
 /** No frame or ping from the worker for this long: reconnect. */
 const IDLE_MS = 40_000;
 
@@ -23,7 +25,13 @@ function rethrow(e: RelayError): never {
 	throw new ApiError(502, `Worker: ${e.message}`, 'worker_error');
 }
 
-async function call<T>(env: Env, path: string, body?: unknown, method = 'POST'): Promise<T> {
+async function call<T>(
+	env: Env,
+	path: string,
+	body?: unknown,
+	method = 'POST',
+	timeoutMs = TIMEOUT_MS
+): Promise<T> {
 	const url = `${env.RELAY_URL!.replace(/\/$/, '')}${RELAY_PREFIX}${path}`;
 	let res: Response;
 	try {
@@ -34,7 +42,7 @@ async function call<T>(env: Env, path: string, body?: unknown, method = 'POST'):
 				'content-type': 'application/json'
 			},
 			body: body === undefined ? undefined : JSON.stringify(body),
-			signal: AbortSignal.timeout(TIMEOUT_MS)
+			signal: AbortSignal.timeout(timeoutMs)
 		});
 	} catch (err) {
 		throw new ApiError(
@@ -155,7 +163,7 @@ export function connectRemoteGateway(env: Env): Gateway {
 		},
 		subscribe,
 		health(env) {
-			return call<PollerStats>(env, '/health', undefined, 'GET');
+			return call<PollerStats>(env, '/health', undefined, 'GET', HEALTH_TIMEOUT_MS);
 		}
 	};
 }
