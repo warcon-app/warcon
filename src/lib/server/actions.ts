@@ -155,8 +155,13 @@ export const ACTIONS: Record<string, ActionDef> = {
 		mutating: false,
 		run: async (c) => {
 			const d = await c.json('GET', '/v1/players');
+			// Anything but a list means the answer is not a player list (a proxy page, a half-written
+			// response): treating it as "nobody on" would close every session and fire join triggers
+			// for everyone on the next poll.
+			if (!Array.isArray(d?.players))
+				throw new GameError(502, 'The server did not return a player list.', 'bad_response', d);
 			return {
-				players: (d.players || []).map((p: any) => ({
+				players: d.players.map((p: any) => ({
 					name: p.name,
 					steamId: p.steamId,
 					faction: p.faction ?? null,

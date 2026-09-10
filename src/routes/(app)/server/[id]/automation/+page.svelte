@@ -7,13 +7,47 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import MapPicker from '$lib/components/MapPicker.svelte';
-	import type { DryRunResult, MapSelection, TriggerKind, TriggerView } from '$lib/types';
+	import { watchLive } from '$lib/live';
+	import type {
+		DryRunResult,
+		MapSelection,
+		OutboxView,
+		TriggerKind,
+		TriggerView
+	} from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let admin = $derived(can(data.server.role, 'admin'));
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
+
+	/** The last actions the rules took and what became of them; refreshed as deliveries happen. */
+	let deliveries = $state<OutboxView[]>([]);
+	let deliveriesTimer: ReturnType<typeof setTimeout> | undefined;
+	async function refreshDeliveries() {
+		try {
+			deliveries = (
+				await api<{ items: OutboxView[] }>('GET', `/api/servers/${encodeURIComponent(id)}/outbox`)
+			).items;
+		} catch {
+			/* shown as empty */
+		}
+	}
+	$effect(() => {
+		void id;
+		void refreshDeliveries();
+		return watchLive(
+			[id],
+			() => {},
+			() => {
+				clearTimeout(deliveriesTimer);
+				deliveriesTimer = setTimeout(() => void refreshDeliveries(), 300);
+			}
+		);
+	});
+	const stateTone = (s: OutboxView['state']) =>
+		s === 'delivered' ? 'ok' : s === 'pending' ? 'info' : s === 'skipped' ? 'warn' : 'err';
 
 	const KINDS: { kind: TriggerKind; label: string; blurb: string }[] = [
 		{
@@ -222,9 +256,9 @@
 
 <div class="mb-4 flex flex-wrap items-center gap-2">
 	<p class="text-[13px] text-mist-400">
-		Rules the panel runs on every poll, {data.server.demo
-			? 'on the demo server'
-			: 'from the poller'}. Everything they do is in the audit trail as
+		Rules the worker evaluates on every observation{data.server.demo ? ' of the demo server' : ''}:
+		a join is acted on within a couple of seconds. Every action is queued, delivered, and recorded
+		below and in the audit trail as
 		<span class="chip">trigger</span>. Dry-run a rule against the last 24 hours before it touches
 		anyone.
 	</p>
@@ -513,3 +547,36 @@
 		</form>
 	</Modal>
 {/if}
+
+<div class="mt-4 panel">
+	<div class="mb-3 flex flex-wrap items-center gap-2">
+		<span class="label-sm mb-0">Recent actions</span>
+		<span class="text-[12.5px] text-mist-600"
+			>what the rules did, newest first · <b>unknown</b> means sent with no answer, never retried on its
+			own</span
+		>
+	</div>
+	<div class="table-wrap">
+		<table>
+			<thead
+				><tr
+					><th>When</th><th>Rule</th><th>Action</th><th>Target</th><th>State</th><th>Result</th></tr
+				></thead
+			>
+			<tbody>
+				{#each deliveries as d (d.id)}
+					<tr>
+						<td class="whitespace-nowrap">{fmtTime(d.createdAt)}</td>
+						<td>{d.triggerName}</td>
+						<td class="font-mono text-[12px]">{d.action}</td>
+						<td class="font-mono text-[12px]">{d.target}</td>
+						<td><Badge tone={stateTone(d.state)}>{d.state}</Badge></td>
+						<td class="text-mist-400">{d.outcome}</td>
+					</tr>
+				{:else}
+					<tr><td colspan="6" class="py-6 text-center text-mist-600">No actions yet.</td></tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
+</div>

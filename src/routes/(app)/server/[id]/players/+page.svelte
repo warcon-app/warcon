@@ -1,13 +1,13 @@
 <script lang="ts">
-	import { api, qs, rconGet, rconPost, errorMessage } from '$lib/api';
-	import { poll } from '$lib/poll';
+	import { api, qs, rconPost, errorMessage } from '$lib/api';
+	import { watchLive } from '$lib/live';
 	import { can, fmtNum } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
-	import type { Player, PlayerMark, ServerListsState, Status } from '$lib/types';
+	import type { LiveView, Player, PlayerMark, ServerListsState, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -57,15 +57,18 @@
 			return null;
 		}
 	}
+	function onLive(v: LiveView) {
+		all = v.players;
+		if (v.status) {
+			status = v.status;
+			if (!team && v.status.scores.length) team = v.status.scores[0].name;
+		}
+		void refreshMarks(v.players);
+	}
+	/** After a command the worker looks again by itself; this only refreshes the panel's own marks. */
 	async function refreshPlayers() {
-		const [d, s] = await Promise.all([
-			rconGet<{ players: Player[] }>(id, 'players'),
-			status ? Promise.resolve(status) : rconGet<Status>(id, 'status')
-		]);
-		all = d.players;
-		status = s;
-		if (!team && s.scores.length) team = s.scores[0].name;
-		void refreshMarks(d.players);
+		marksKey = '';
+		await refreshMarks(all);
 	}
 	async function refreshMarks(players: Player[]) {
 		const ids = players.map((p) => p.steamId).filter((s) => /^\d{17}$/.test(s));
@@ -103,7 +106,7 @@
 	$effect(() => {
 		void id;
 		void refreshListState();
-		return poll(refreshPlayers, 3000);
+		return watchLive([id], onLive);
 	});
 
 	const withPlayer = (fn: (p: Player) => unknown) => () => {

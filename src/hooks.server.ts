@@ -8,6 +8,10 @@ import { getEnv, initEnv } from '$lib/server/env';
 import { encryptionKey } from '$lib/server/crypto';
 import { CLIENT_IP_HEADER, normalizeError, resolveClientIp } from '$lib/server/http';
 import { startPoller } from '$lib/server/poller';
+import { setGateway } from '$lib/server/gateway';
+import { localGateway } from '$lib/server/gateway-local';
+import { connectRemoteGateway } from '$lib/server/gateway-remote';
+import { loadSettings } from '$lib/server/settings';
 
 const SECURITY_HEADERS: Record<string, string> = {
 	'x-content-type-options': 'nosniff',
@@ -33,7 +37,19 @@ export const init: ServerInit = async () => {
 	if (env.ENCRYPTION_KEY)
 		encryptionKey(env); // fail at startup, not on the first server add
 	else console.warn('[warcon] ENCRYPTION_KEY is not set; servers cannot be added.');
-	startPoller(env);
+	await loadSettings(env);
+	if (env.WARCON_ROLE === 'web') {
+		// The worker runs elsewhere: every game request, live read and lease goes over the relay.
+		setGateway(connectRemoteGateway(env));
+		console.log(`[warcon] web role; worker relay at ${env.RELAY_URL}`);
+	} else {
+		if (env.WARCON_ROLE === 'worker')
+			throw new Error(
+				'WARCON_ROLE=worker runs the worker binary (bun run worker), not the web server.'
+			);
+		setGateway(localGateway);
+		startPoller(env, 'all');
+	}
 };
 
 export const handle: Handle = async ({ event, resolve }) => {

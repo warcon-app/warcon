@@ -6,7 +6,10 @@
 	"description": "Self-hostable multi-server RCON panel for WARDOGS dedicated servers. Bun + SvelteKit + Postgres/TimescaleDB, Docker Compose.",
 	"scripts": {
 		"dev": "bun --bun vite dev",
-		"build": "bun --bun vite build",
+		"build": "bun --bun vite build && bun run build:worker",
+		"build:worker": "bun scripts/build-worker.ts",
+		"worker": "bun ./build/worker.js",
+		"db:migrate": "bun run build:worker && bun ./build/migrate.js",
 		"start": "bun ./build/index.js",
 		"preview": "bun run build && bun ./build/index.js",
 		"prepare": "svelte-kit sync || echo ''",

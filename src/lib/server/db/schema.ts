@@ -9,6 +9,7 @@ import {
 	integer,
 	pgTable,
 	primaryKey,
+	real,
 	text,
 	timestamp,
 	uniqueIndex
@@ -581,6 +582,126 @@ export const serverListSync = pgTable('server_list_sync', {
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });
 
+// ---- live observation, trigger outbox, settings, worker ownership --------------------------------
+
+/**
+ * What the worker last saw on each server: one row per server, overwritten on every observation
+ * that changed something (and on a heartbeat), so a page load is one indexed read.
+ */
+export const serverLive = pgTable('server_live', {
+	serverId: text('server_id')
+		.primaryKey()
+		.references(() => servers.id, { onDelete: 'cascade' }),
+	ok: boolean('ok').notNull().default(false),
+	error: text('error').notNull().default(''),
+	/** watched | hot | idle | offline */
+	tier: text('tier').notNull().default('idle'),
+	/** Status as the action registry shapes it */
+	status: jsonb('status'),
+	/** Player[] as the action registry shapes it */
+	players: jsonb('players'),
+	playerCount: integer('player_count').notNull().default(0),
+	statusAt: ts('status_at'),
+	playersAt: ts('players_at'),
+	/** last attempt, successful or not */
+	observedAt: ts('observed_at'),
+	updatedAt: ts('updated_at').notNull().defaultNow()
+});
+
+/**
+ * Trigger actions the rules decided on, written in the same transaction as the observation that
+ * caused them and delivered by the worker afterwards. A crash between the two leaves the row, not
+ * a lost whisper. `unknown` is a send with no answer; it is never retried automatically.
+ */
+export const outbox = pgTable(
+	'outbox',
+	{
+		id: bigserial('id', { mode: 'number' }).primaryKey(),
+		serverId: text('server_id')
+			.notNull()
+			.references(() => servers.id, { onDelete: 'cascade' }),
+		triggerId: text('trigger_id'),
+		triggerName: text('trigger_name').notNull().default(''),
+		triggerKind: text('trigger_kind').notNull().default(''),
+		/** an action name from the registry, or "sequence" with params.steps */
+		action: text('action').notNull(),
+		params: jsonb('params'),
+		/** SteamID or message the audit row names */
+		target: text('target').notNull().default(''),
+		/** extra fields for the audit row */
+		detail: jsonb('detail'),
+		/** a whisper or kick is only meaningful while the player is on; null for broadcasts */
+		steamId: text('steam_id'),
+		okMessage: text('ok_message').notNull().default(''),
+		dedupeKey: text('dedupe_key').notNull(),
+		/** pending | delivered | failed | unknown | skipped */
+		state: text('state').notNull().default('pending'),
+		attempts: integer('attempts').notNull().default(0),
+		notBefore: ts('not_before').notNull().defaultNow(),
+		leaseUntil: ts('lease_until'),
+		outcome: text('outcome').notNull().default(''),
+		createdAt: ts('created_at').notNull().defaultNow(),
+		doneAt: ts('done_at')
+	},
+	(t) => [
+		uniqueIndex('outbox_dedupe_idx').on(t.dedupeKey),
+		index('outbox_pending_idx').on(t.state, t.notBefore),
+		index('outbox_server_idx').on(t.serverId, t.createdAt.desc())
+	]
+);
+
+/**
+ * Hourly rollups of samples (rollups.ts fills them; analytics.ts reads them for ranges longer than
+ * the raw retention). Durations are seconds of cover; player_s is player-count × seconds while up.
+ */
+export const sampleRollups = pgTable(
+	'sample_rollups',
+	{
+		serverId: text('server_id').notNull(),
+		bucket: ts('bucket').notNull(),
+		samples: integer('samples').notNull().default(0),
+		okSamples: integer('ok_samples').notNull().default(0),
+		upS: real('up_s').notNull().default(0),
+		downS: real('down_s').notNull().default(0),
+		playerS: real('player_s').notNull().default(0),
+		maxPlayers: integer('max_players'),
+		maxCap: integer('max_cap')
+	},
+	(t) => [primaryKey({ columns: [t.serverId, t.bucket] })]
+);
+
+export const sampleMapRollups = pgTable(
+	'sample_map_rollups',
+	{
+		serverId: text('server_id').notNull(),
+		bucket: ts('bucket').notNull(),
+		map: text('map').notNull(),
+		secs: real('secs').notNull().default(0)
+	},
+	(t) => [primaryKey({ columns: [t.serverId, t.bucket, t.map] })]
+);
+
+/** Owner-editable runtime settings (cadences, budgets, retention); see settings.ts for keys and bounds. */
+export const siteSettings = pgTable('site_settings', {
+	key: text('key').primaryKey(),
+	value: jsonb('value'),
+	updatedAt: ts('updated_at').notNull().defaultNow(),
+	updatedBy: text('updated_by')
+});
+
+/**
+ * One row: which worker process owns observation and delivery, with a lease it must keep
+ * renewing. Every worker write checks the token inside its transaction (fencing), so a worker
+ * that lost the lease can never write late.
+ */
+export const workerOwnership = pgTable('worker_ownership', {
+	id: integer('id').primaryKey(),
+	token: text('token').notNull(),
+	label: text('label').notNull().default(''),
+	acquiredAt: ts('acquired_at').notNull().defaultNow(),
+	leaseUntil: ts('lease_until').notNull()
+});
+
 export type ServerRow = typeof servers.$inferSelect;
 export type OrgRow = typeof organizations.$inferSelect;
 export type OrgInviteRow = typeof orgInvites.$inferSelect;
@@ -595,3 +716,5 @@ export type ListRow = typeof lists.$inferSelect;
 export type ListEntryRow = typeof listEntries.$inferSelect;
 export type ServerListStateRow = typeof serverListState.$inferSelect;
 export type ServerListSyncRow = typeof serverListSync.$inferSelect;
+export type ServerLiveRow = typeof serverLive.$inferSelect;
+export type OutboxRow = typeof outbox.$inferSelect;

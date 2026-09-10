@@ -1,365 +1,353 @@
-// Background sampler: every POLL_SECONDS it asks each game server for status and players, stores
-// a sample, and turns the player list into sessions and match boundaries. Only one process polls:
-// the leader holds a Postgres advisory lock on a reserved connection, so extra replicas stay idle.
-import { and, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
+// The worker's scheduler. A quarter-second beat launches whichever servers are due for a look,
+// each on its own phase and its own cadence (observe.ts decides the tier: watched, busy, idle,
+// unreachable), through the server's lane in dispatcher.ts so nothing else talks to that server
+// at the same time. A global cap bounds how many observations run at once; servers that stopped
+// answering can only take a share of it. One process does this: the one holding the worker
+// lease (leadership.ts), renewed every few seconds and re-checked inside every write.
+import { and, eq, gt, lt } from 'drizzle-orm';
 import type { Env } from './env';
-import { pollSeconds } from './env';
-import { publicMessage } from './http';
 import type { OrgRow, ServerRow } from './access';
-import { ACTIONS } from './actions';
-import { WardogsClient } from './rcon';
 import { matches, organizations, playerSessions, samples, servers } from './db/schema';
-import { getProfiles, steamEnabled } from './steam';
-import { runTriggers } from './triggers';
+import { expireEntries } from './lists-sync';
+import { PRIORITY, dispatcherStats, withServer } from './dispatcher';
 import {
-	expireEntries,
-	liveObserved,
-	reconcileServer,
-	writeSnapshot,
-	type Observed
-} from './lists-sync';
-import type { Player, Status } from '$lib/types';
-import { cashByFaction } from '$lib/cash';
+	acquireOrRenew,
+	isOwner,
+	LostOwnership,
+	ownershipStats,
+	releaseOwnership
+} from './leadership';
+import { loadSettings, settings, settingsVersion } from './settings';
+import { watchedCount } from './interest';
+import { deliveryStats, outboxDepth, startDelivery, stopDelivery } from './outbox';
+import {
+	allMemory,
+	cadenceOf,
+	forgetMemory,
+	memoryFor,
+	memoryOf,
+	observeServer,
+	OFFLINE_AFTER_FAILURES,
+	planNext,
+	replan,
+	type ServerMemory
+} from './observe';
+import { phaseOffset, pickDue } from './poller-schedule';
+import { applyRetentionPolicy, rollupSamples } from './rollups';
+import { liveView } from './live';
+import type { LiveView } from '$lib/types';
 
-export { pollSeconds };
-
-const SAMPLE_RETENTION_DAYS = 90;
-const SESSION_RETENTION_DAYS = 365;
-/** Close open sessions after this many consecutive failed polls. */
-const OFFLINE_AFTER_FAILURES = 3;
-/** Any stable 64-bit constant; identifies "the Warcon poller" to pg_try_advisory_lock. */
-const LEADER_LOCK_KEY = 7741221;
-/** How often each server's ban list and reserved slots are re-read for the trigger engine. */
-const LISTS_TTL_MS = 5 * 60_000;
-
-interface Memory {
-	inFlight: boolean;
-	failures: number;
-	lastMatchSeconds: number | null;
-	/** Scores from the previous sample: the last known state of a match that just ended. */
-	lastScores: unknown;
-	/** No successful tick yet in this process: every open session would look like a join. */
-	firstTick: boolean;
-	/** Ban list and reserved slots, refreshed every LISTS_TTL_MS. */
-	listsAt: number;
-	reserved: Set<string>;
-}
-
-const memory = new Map<string, Memory>();
-const mem = (id: string): Memory => {
-	let m = memory.get(id);
-	if (!m) {
-		m = {
-			inFlight: false,
-			failures: 0,
-			lastMatchSeconds: null,
-			lastScores: null,
-			firstTick: true,
-			listsAt: 0,
-			reserved: new Set()
-		};
-		memory.set(id, m);
-	}
-	return m;
-};
+const BEAT_MS = 250;
+const RENEW_MS = 5000;
+const ROSTER_MS = 5000;
+const SETTINGS_MS = 10_000;
+const EXPIRY_MS = 5000;
+const PRUNE_MS = 3600_000;
+/** Share of the concurrency budget that unreachable servers may hold at once. */
+const OFFLINE_SHARE = 0.5;
+/** An observation still running after this long is reported once and counted as stuck. */
+const STUCK_AFTER_MS = 120_000;
 
 declare global {
 	// Survives Vite HMR re-evaluation in dev so we never run two loops.
 	var __warconPoller: ReturnType<typeof setInterval> | undefined;
 }
 
-type Reserved = Awaited<ReturnType<Env['sql']['reserve']>>;
-let leaderConn: Reserved | null = null;
-let leader = false;
-
-/** Tries (once per tick) to become the poller for this database. The lock lives on a reserved connection. */
-async function ensureLeader(env: Env): Promise<boolean> {
-	if (leader) return true;
-	try {
-		leaderConn ??= await env.sql.reserve();
-		const [row] = (await leaderConn`SELECT pg_try_advisory_lock(${LEADER_LOCK_KEY}) AS ok`) as {
-			ok: boolean;
-		}[];
-		leader = !!row?.ok;
-		if (leader) console.log('[warcon] this instance is the analytics poller');
-		return leader;
-	} catch (err) {
-		console.error('[warcon] leader lock', err);
-		leaderConn = null;
-		return false;
-	}
+interface Scheduler {
+	label: string;
+	roster: ServerMemory[];
+	rosterAt: number;
+	renewAt: number;
+	settingsAt: number;
+	settingsSeen: number;
+	expiryAt: number;
+	pruneAt: number;
+	active: number;
+	activeOffline: number;
+	beating: boolean;
+	lastBeatAt: number;
+	launched: number;
 }
 
-export function startPoller(env: Env): void {
-	const seconds = pollSeconds(env);
+let scheduler: Scheduler | null = null;
+let envRef: Env | null = null;
+
+export function startPoller(env: Env, label = 'worker'): void {
+	envRef = env;
 	if (globalThis.__warconPoller) clearInterval(globalThis.__warconPoller);
-	if (!seconds) {
-		console.log('[warcon] analytics poller disabled (POLL_SECONDS=0)');
-		return;
-	}
-	let ticks = 0;
-	const tick = async () => {
-		if (!(await ensureLeader(env))) return;
-		await expireEntries(env).catch((err) => console.error('[warcon] list expiry', err));
-		await pollAll(env).catch((err) => console.error('[warcon] poll', err));
-		if (ticks++ % Math.max(1, Math.floor(3600 / seconds)) === 0)
-			await prune(env).catch((err) => console.error('[warcon] prune', err));
+	scheduler = {
+		label,
+		roster: [],
+		rosterAt: 0,
+		renewAt: 0,
+		settingsAt: 0,
+		settingsSeen: settingsVersion(),
+		expiryAt: 0,
+		pruneAt: 0,
+		active: 0,
+		activeOffline: 0,
+		beating: false,
+		lastBeatAt: 0,
+		launched: 0
 	};
-	globalThis.__warconPoller = setInterval(() => void tick(), seconds * 1000);
-	setTimeout(() => void tick(), 2000);
-	console.log(`[warcon] analytics poller every ${seconds}s`);
+	startDelivery(env);
+	globalThis.__warconPoller = setInterval(() => void beat(env), BEAT_MS);
+	console.log('[warcon] worker scheduler started');
 }
 
-export async function pollAll(env: Env): Promise<void> {
-	const all = await env.db
-		.select({ server: servers, org: organizations })
-		.from(servers)
-		.innerJoin(organizations, eq(organizations.id, servers.orgId));
-	await Promise.all(all.map(({ server, org }) => pollServer(env, server, org)));
+/** Stops the beat and gives the lease up. Observations in flight finish on their own. */
+export async function stopPoller(): Promise<void> {
+	if (globalThis.__warconPoller) clearInterval(globalThis.__warconPoller);
+	globalThis.__warconPoller = undefined;
+	stopDelivery();
+	scheduler = null;
+	if (envRef) await releaseOwnership(envRef);
 }
 
-export async function pollServer(env: Env, server: ServerRow, org: OrgRow): Promise<void> {
-	const m = mem(server.id);
-	if (m.inFlight) return;
-	m.inFlight = true;
-	const started = Date.now();
-	const ts = new Date();
-	try {
-		let status: Status;
-		let players: Player[];
-		let client: WardogsClient;
-		try {
-			client = await WardogsClient.forServer(env, server);
-			status = (await ACTIONS.status.run(client, {})) as Status;
-			players = ((await ACTIONS.players.run(client, {})) as { players: Player[] }).players;
-		} catch (err) {
-			m.failures++;
-			await env.db.insert(samples).values({
-				serverId: server.id,
-				ts,
-				ok: false,
-				latencyMs: Date.now() - started,
-				error: publicMessage(err, 'Poll failed.').slice(0, 300)
-			});
-			if (m.failures === OFFLINE_AFTER_FAILURES) {
-				await env.db
-					.update(playerSessions)
-					.set({ leftAt: sql`${playerSessions.lastSeen}` })
-					.where(and(eq(playerSessions.serverId, server.id), isNull(playerSessions.leftAt)));
-				m.lastMatchSeconds = null;
-			}
-			return;
-		}
-		// Joins seen on the first tick of a process, or right after an outage closed every session,
-		// are reconnects or people who were there all along: no whispers or kicks for those.
-		const joinsReliable = !m.firstTick && m.failures === 0;
-		m.failures = 0;
-		m.firstTick = false;
-		const scores = status.scores.map((s) => ({ name: s.name, score: s.score }));
-		await env.db.insert(samples).values({
-			serverId: server.id,
-			ts,
-			ok: true,
-			playerCount: status.playerCount,
-			maxPlayers: status.maxPlayers,
-			map: status.map,
-			experiences: status.experiences.join('+'),
-			lighting: status.lighting,
-			matchSeconds: status.matchSeconds,
-			scores,
-			cash: cashByFaction(status, players),
-			latencyMs: Date.now() - started
-		});
-		const { joined, firstVisit } = await reconcileSessions(env, server.id, ts, players);
-		await reconcileMatch(env, server.id, ts, status, m, scores);
-		const observed = await refreshLists(env, server, client, m, ts).catch((err) => {
-			console.warn('[warcon] ban list snapshot', publicMessage(err));
-			return null;
-		});
-		// Push the org's ban and reserved lists. Plans against the snapshot (fresh or from an
-		// earlier tick) and re-reads the server before changing anything; never throws.
-		const synced = await reconcileServer(env, server, org, {
-			reason: 'poll',
-			waitMs: 0,
-			client,
-			observed: observed ?? undefined
-		}).catch((err) => {
-			console.warn('[warcon] list sync', publicMessage(err));
-			return null;
-		});
-		if (synced?.observed) m.reserved = new Set(synced.observed.reserved);
-		// Warm the Steam cache for newcomers so the players table and dossier have their data.
-		if (joined.length && steamEnabled(env))
-			await getProfiles(
-				env,
-				joined.map((p) => p.steamId)
-			);
-		await runTriggers(env, {
-			server,
-			client,
-			status,
-			players,
-			joined,
-			firstVisit,
-			reserved: m.reserved,
-			joinsReliable,
-			ts
-		});
-	} finally {
-		m.inFlight = false;
+/** Look at this server as soon as its lane is free (a command was just sent, a list was edited). */
+export function observeSoon(serverId: string): void {
+	const m = memoryOf(serverId);
+	if (!m) return;
+	if (m.inFlight !== null) m.again = true;
+	else {
+		m.playersDueAt = Date.now();
+		m.statusDueAt = Date.now();
 	}
 }
 
 /**
- * Re-reads the ban list and reserved slots now and then, keeping copies in server_bans and
- * server_reserved for the dossier and the list sync. Returns what it read, or null when the
- * copies are still fresh.
+ * Observes one server right now (through its lane, ahead of background work) and returns the
+ * view: for a server that was just added, or a read that cannot wait for the schedule. Without
+ * the lease this returns whatever is in memory.
  */
-async function refreshLists(
-	env: Env,
-	server: ServerRow,
-	client: WardogsClient,
-	m: Memory,
-	ts: Date
-): Promise<Observed | null> {
-	if (ts.getTime() - m.listsAt < LISTS_TTL_MS) return null;
-	m.listsAt = ts.getTime();
-	const observed = await liveObserved(client);
-	m.reserved = new Set(observed.reserved);
-	await writeSnapshot(env, server.id, observed, ts);
-	return observed;
+export async function observeNow(env: Env, serverId: string): Promise<LiveView | null> {
+	let m = memoryOf(serverId);
+	if (!m) {
+		const [row] = await env.db
+			.select({ server: servers, org: organizations })
+			.from(servers)
+			.innerJoin(organizations, eq(organizations.id, servers.orgId))
+			.where(eq(servers.id, serverId))
+			.limit(1);
+		if (!row) return null;
+		m = memoryFor(row.server, row.org);
+		if (scheduler) scheduler.rosterAt = 0;
+	}
+	if (!isOwner()) return m.observedAt ? liveView(m) : null;
+	const mem = m;
+	await withServer(serverId, PRIORITY.command, () =>
+		observeServer(env, mem, { status: true, players: true })
+	).catch((err) => {
+		if (!(err instanceof LostOwnership)) console.error(`[warcon] observe ${mem.server.name}`, err);
+	});
+	return mem.observedAt ? liveView(mem) : null;
 }
 
-/** Returns who joined this tick (no open session before it) and which of those were never seen on this server. */
-async function reconcileSessions(
-	env: Env,
-	serverId: string,
-	ts: Date,
-	players: Player[]
-): Promise<{ joined: Player[]; firstVisit: Set<string> }> {
-	const open = await env.db
-		.select({ id: playerSessions.id, steamId: playerSessions.steamId })
-		.from(playerSessions)
-		.where(and(eq(playerSessions.serverId, serverId), isNull(playerSessions.leftAt)));
-	const byId = new Map(open.map((s) => [s.steamId, s.id]));
-	const seen = new Set<string>();
-	const joined: Player[] = [];
-	const firstVisit = new Set<string>();
-	await env.db.transaction(async (tx) => {
-		const joins: (typeof playerSessions.$inferInsert)[] = [];
-		for (const p of players) {
-			if (!p.steamId || seen.has(p.steamId)) continue;
-			seen.add(p.steamId);
-			const id = byId.get(p.steamId);
-			if (id !== undefined) {
-				await tx
-					.update(playerSessions)
-					.set({
-						name: p.name,
-						faction: p.faction,
-						lastSeen: ts,
-						kills: p.kills,
-						deaths: p.deaths,
-						cash: p.cash
-					})
-					.where(eq(playerSessions.id, id));
-			} else {
-				joined.push(p);
-				joins.push({
-					serverId,
-					steamId: p.steamId,
-					name: p.name,
-					faction: p.faction,
-					joinedAt: ts,
-					lastSeen: ts,
-					kills: p.kills,
-					deaths: p.deaths,
-					cash: p.cash
-				});
+async function beat(env: Env): Promise<void> {
+	const s = scheduler;
+	if (!s || s.beating) return;
+	s.beating = true;
+	try {
+		const now = Date.now();
+		s.lastBeatAt = now;
+		if (now - s.renewAt >= RENEW_MS) {
+			s.renewAt = now;
+			await acquireOrRenew(env, s.label).catch((err) =>
+				console.error('[warcon] worker lease', err)
+			);
+		}
+		if (!isOwner()) return;
+		if (now - s.settingsAt >= SETTINGS_MS) {
+			s.settingsAt = now;
+			await loadSettings(env).catch((err) => console.error('[warcon] settings', err));
+			if (settingsVersion() !== s.settingsSeen) {
+				s.settingsSeen = settingsVersion();
+				for (const m of allMemory()) if (m.inFlight === null) replan(m, now);
+				console.log('[warcon] settings changed; cadences re-planned');
+				void applyRetentionPolicy(env).catch((err) => console.error('[warcon] retention', err));
 			}
 		}
-		if (joins.length) {
-			const known = await tx
-				.selectDistinct({ steamId: playerSessions.steamId })
-				.from(playerSessions)
-				.where(
-					and(
-						eq(playerSessions.serverId, serverId),
-						inArray(
-							playerSessions.steamId,
-							joins.map((j) => j.steamId)
-						)
-					)
-				);
-			const knownIds = new Set(known.map((k) => k.steamId));
-			for (const j of joins) if (!knownIds.has(j.steamId)) firstVisit.add(j.steamId);
-			await tx.insert(playerSessions).values(joins);
-		}
-		const gone = open.filter((s) => !seen.has(s.steamId)).map((s) => s.id);
-		for (const id of gone)
-			await tx
-				.update(playerSessions)
-				.set({ leftAt: sql`${playerSessions.lastSeen}` })
-				.where(eq(playerSessions.id, id));
-	});
-	return { joined, firstVisit };
+		if (now - s.rosterAt >= ROSTER_MS) await refreshRoster(env, s, now);
+		launchDue(env, s, now);
+	} catch (err) {
+		console.error('[warcon] scheduler beat', err);
+	} finally {
+		s.beating = false;
+	}
 }
 
-async function reconcileMatch(
-	env: Env,
-	serverId: string,
-	ts: Date,
-	status: Status,
-	m: Memory,
-	scores: { name: string; score: number }[]
-): Promise<void> {
-	const [current] = await env.db
-		.select({ id: matches.id, map: matches.map, peakPlayers: matches.peakPlayers })
-		.from(matches)
-		.where(and(eq(matches.serverId, serverId), isNull(matches.endedAt)))
-		.orderBy(desc(matches.id))
-		.limit(1);
-	const secs = status.matchSeconds ?? null;
-	// A new match: the map changed, or the clock went backwards (restart / rotation advance).
-	const restarted = secs !== null && m.lastMatchSeconds !== null && secs < m.lastMatchSeconds - 30;
-	const mapChanged = !!current && current.map !== status.map;
-	m.lastMatchSeconds = secs;
-	if (current && (restarted || mapChanged)) {
-		const last = (m.lastScores as { name: string; score: number }[] | null) ?? scores;
-		const winner = [...last].sort((a, b) => b.score - a.score)[0]?.name ?? null;
-		await env.db
-			.update(matches)
-			.set({ endedAt: ts, finalScores: last, winner })
-			.where(eq(matches.id, current.id));
+async function refreshRoster(env: Env, s: Scheduler, now: number): Promise<void> {
+	s.rosterAt = now;
+	let rows: { server: ServerRow; org: OrgRow }[];
+	try {
+		rows = await env.db
+			.select({ server: servers, org: organizations })
+			.from(servers)
+			.innerJoin(organizations, eq(organizations.id, servers.orgId));
+	} catch (err) {
+		console.error('[warcon] roster', err);
+		return;
 	}
-	if (!current || restarted || mapChanged) {
-		const startedAt = secs !== null ? new Date(ts.getTime() - secs * 1000) : ts;
-		await env.db.insert(matches).values({
-			serverId,
-			startedAt,
-			map: status.map,
-			experiences: status.experiences.join('+'),
-			lighting: status.lighting,
-			peakPlayers: status.playerCount
+	const present = new Set<string>();
+	s.roster = rows.map(({ server, org }) => {
+		present.add(server.id);
+		const m = memoryFor(server, org);
+		if (!m.playersDueAt) {
+			// New to us: spread first looks across the idle cadence so a restart is not a burst.
+			const offset = phaseOffset(server.id, Math.min(settings().idleMs, 30_000));
+			m.playersDueAt = now + offset;
+			m.statusDueAt = now + offset;
+		}
+		return m;
+	});
+	for (const m of allMemory())
+		if (!present.has(m.server.id) && m.inFlight === null) forgetMemory(m.server.id);
+	if (now - s.expiryAt >= EXPIRY_MS) {
+		s.expiryAt = now;
+		const expired = await expireEntries(env).catch((err) => {
+			console.error('[warcon] list expiry', err);
+			return { lifted: 0, orgIds: [] as string[] };
 		});
-	} else if (status.playerCount > current.peakPlayers) {
-		await env.db
-			.update(matches)
-			.set({ peakPlayers: status.playerCount })
-			.where(eq(matches.id, current.id));
+		// A lifted ban comes off the servers on their next look, not at the next scheduled sync.
+		if (expired.lifted)
+			for (const m of s.roster)
+				if (expired.orgIds.includes(m.org.id)) {
+					m.syncAt = 0;
+					observeSoon(m.server.id);
+				}
 	}
-	m.lastScores = scores;
+	if (now - s.pruneAt >= PRUNE_MS) {
+		s.pruneAt = now;
+		void housekeep(env);
+	}
+}
+
+function launchDue(env: Env, s: Scheduler, now: number): void {
+	const slots = s.roster.map((m) => {
+		if (m.inFlight !== null && now - m.inFlight > STUCK_AFTER_MS && !m.stuckReported) {
+			m.stuckReported = true;
+			console.warn(
+				`[warcon] observation of ${m.server.name} has been running for ${Math.round((now - m.inFlight) / 1000)}s`
+			);
+		}
+		return {
+			id: m.server.id,
+			m,
+			dueAt: Math.min(m.playersDueAt, m.statusDueAt),
+			inFlight: m.inFlight !== null,
+			offline: m.failures >= OFFLINE_AFTER_FAILURES
+		};
+	});
+	const picked = pickDue(slots, now, {
+		total: settings().concurrency,
+		active: s.active,
+		offlineActive: s.activeOffline,
+		offlineShare: OFFLINE_SHARE
+	});
+	for (const { m, offline } of picked) {
+		const kinds = { status: m.statusDueAt <= now, players: m.playersDueAt <= now };
+		planNext(m, now);
+		m.inFlight = now;
+		m.stuckReported = false;
+		s.active++;
+		s.launched++;
+		if (offline) s.activeOffline++;
+		withServer(m.server.id, PRIORITY.observe, () => observeServer(env, m, kinds))
+			.catch((err) => {
+				if (err instanceof LostOwnership) return;
+				console.error(`[warcon] observe ${m.server.name}`, err);
+			})
+			.finally(() => {
+				m.inFlight = null;
+				s.active--;
+				if (offline) s.activeOffline--;
+				replan(m, Date.now());
+			});
+	}
+}
+
+/** Hourly: rollups, then the prune, then the retention policy; each on its own. */
+async function housekeep(env: Env): Promise<void> {
+	await rollupSamples(env).catch((err) => console.error('[warcon] rollups', err));
+	await prune(env).catch((err) => console.error('[warcon] prune', err));
+	await applyRetentionPolicy(env).catch((err) => console.error('[warcon] retention', err));
 }
 
 async function prune(env: Env): Promise<void> {
-	const cutSessions = new Date(Date.now() - SESSION_RETENTION_DAYS * 86400000);
+	const s = settings();
+	const cutSessions = new Date(Date.now() - s.sessionRetentionDays * 86400000);
 	// TimescaleDB's retention policy drops old sample chunks; plain Postgres needs this delete.
 	if (!env.timescale)
 		await env.db
 			.delete(samples)
-			.where(lt(samples.ts, new Date(Date.now() - SAMPLE_RETENTION_DAYS * 86400000)));
+			.where(lt(samples.ts, new Date(Date.now() - s.rawRetentionDays * 86400000)));
 	await env.db
 		.delete(playerSessions)
 		.where(and(lt(playerSessions.leftAt, cutSessions), gt(playerSessions.id, 0)));
 	await env.db.delete(matches).where(lt(matches.endedAt, cutSessions));
 }
+
+// ---- stats --------------------------------------------------------------------------------------
+
+export interface PollerStats {
+	enabled: boolean;
+	owner: boolean;
+	servers: number;
+	tiers: Record<'watched' | 'hot' | 'idle' | 'offline', number>;
+	cadence: Record<'watched' | 'hot' | 'idle', { players: number; status: number }>;
+	concurrency: number;
+	active: number;
+	/** servers overdue by more than their own cadence: the worker is not keeping up */
+	behind: number;
+	stuck: number;
+	launched: number;
+	beatAgoMs: number | null;
+	lanes: { busy: number; queued: number };
+	delivery: ReturnType<typeof deliveryStats> & { pending: number; oldestMs: number | null };
+	settingsVersion: number;
+	ownership: ReturnType<typeof ownershipStats>;
+}
+
+export async function pollerStats(): Promise<PollerStats> {
+	const s = scheduler;
+	const now = Date.now();
+	const tiers = { watched: 0, hot: 0, idle: 0, offline: 0 };
+	let behind = 0;
+	let stuck = 0;
+	if (s)
+		for (const m of s.roster) {
+			tiers[m.tier]++;
+			const due = Math.min(m.playersDueAt, m.statusDueAt);
+			const c = cadenceOf(m.tier, m.failures);
+			if (m.inFlight === null && due > 0 && now - due > Math.min(c.players, c.status)) behind++;
+			if (m.inFlight !== null && now - m.inFlight > STUCK_AFTER_MS) stuck++;
+		}
+	const set = settings();
+	const depth =
+		envRef && isOwner()
+			? await outboxDepth(envRef).catch(() => ({ pending: 0, oldestMs: null }))
+			: { pending: 0, oldestMs: null };
+	return {
+		enabled: !!s,
+		owner: isOwner(),
+		servers: s?.roster.length ?? 0,
+		tiers,
+		cadence: {
+			watched: { players: set.watchedPlayersMs, status: set.watchedStatusMs },
+			hot: { players: set.hotPlayersMs, status: set.hotStatusMs },
+			idle: { players: set.idleMs, status: set.idleMs }
+		},
+		concurrency: set.concurrency,
+		active: s?.active ?? 0,
+		behind,
+		stuck,
+		launched: s?.launched ?? 0,
+		beatAgoMs: s?.lastBeatAt ? now - s.lastBeatAt : null,
+		lanes: dispatcherStats(),
+		delivery: { ...deliveryStats(), ...depth },
+		settingsVersion: settingsVersion(),
+		ownership: ownershipStats()
+	};
+}
+
+export const watchedServers = watchedCount;

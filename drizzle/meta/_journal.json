@@ -64,6 +64,20 @@
       "when": 1788996826671,
       "tag": "0008_jsonb_repair",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789039830921,
+      "tag": "0009_live_outbox_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789041561121,
+      "tag": "0010_sample_rollups",
+      "breakpoints": true
     }
   ]
 }

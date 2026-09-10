@@ -27,9 +27,29 @@ export function connect(target: string | Bun.SQL.PostgresOrMySQLOptions) {
 
 export type Db = ReturnType<typeof connect>['db'];
 export type SqlClient = ReturnType<typeof connect>['client'];
+/** A Drizzle transaction handle, or the plain db when no transaction is open. */
+export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
+export type DbOrTx = Db | Tx;
 
 export async function runMigrations(db: Db, migrationsFolder: string): Promise<void> {
 	await migrate(db, { migrationsFolder });
+}
+
+/** How many migrations in the folder's journal the database has not applied yet. */
+export async function pendingMigrations(db: Db, migrationsFolder: string): Promise<number> {
+	const journal = JSON.parse(await Bun.file(`${migrationsFolder}/meta/_journal.json`).text()) as {
+		entries: { tag: string }[];
+	};
+	let applied = 0;
+	try {
+		const [row] = await db.execute<{ n: string }>(
+			sql`SELECT COUNT(*) AS n FROM drizzle.__drizzle_migrations`
+		);
+		applied = Number(row?.n ?? 0);
+	} catch {
+		applied = 0; // no migrations table yet
+	}
+	return Math.max(0, journal.entries.length - applied);
 }
 
 /** True when the timescaledb extension is installed in this database. */
@@ -38,38 +58,4 @@ export async function hasTimescale(db: Db): Promise<boolean> {
 		sql`SELECT COUNT(*)::int AS n FROM pg_extension WHERE extname = 'timescaledb'`
 	);
 	return (row?.n ?? 0) > 0;
-}
-
-/** Every jsonb column the app writes; kept in step with schema.ts. */
-const JSONB_COLUMNS: [table: string, column: string][] = [
-	['audit_log', 'detail'],
-	['samples', 'scores'],
-	['samples', 'cash'],
-	['matches', 'final_scores'],
-	['triggers', 'config'],
-	['triggers', 'state'],
-	['webhooks', 'events'],
-	['webhooks', 'server_ids']
-];
-
-/**
- * Unwraps jsonb values that an older build stored double-encoded (a JSON array or object inside
- * a JSON string; see the jsonb type in schema.ts). Migration 0008 did this once, but a process
- * still running the old code keeps writing the old shape until it restarts (a rolling deploy,
- * or a dev server left open), so every start checks again. Cheap when there is nothing to fix.
- * Returns how many rows were rewritten.
- */
-export async function repairLegacyJsonb(db: Db): Promise<number> {
-	let fixed = 0;
-	for (const [table, column] of JSONB_COLUMNS) {
-		const t = sql.identifier(table);
-		const c = sql.identifier(column);
-		const res = await db.execute(sql`
-			UPDATE ${t} SET ${c} = (${c} #>> '{}')::jsonb
-			 WHERE jsonb_typeof(${c}) = 'string' AND left(${c} #>> '{}', 1) IN ('[', '{')`);
-		// Bun's SQL result reports the UPDATE's row count as `count`.
-		const r = res as { count?: number | null; affectedRows?: number | null };
-		fixed += Number(r.count ?? r.affectedRows ?? 0);
-	}
-	return fixed;
 }

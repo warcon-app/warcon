@@ -58,7 +58,8 @@
 		{/each}
 	</div>
 	<span class="ml-auto text-[12.5px] text-mist-600">
-		{#if a}sampled every {a.pollSeconds}s · {fmtNum(a.summary.samples)} samples{#if loading}
+		{#if a}{fmtNum(a.summary.samples)} samples over {a.summary.coveredHours} h · heartbeat every {a.sampleSeconds}s
+			plus every change{#if loading}
 				· refreshing…{/if}{:else}Loading…{/if}
 	</span>
 </div>

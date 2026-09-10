@@ -64,6 +64,32 @@ export interface Player {
 	cash: number;
 	ping: number | null;
 }
+/** What the worker last saw on a server: the dashboard, server page and players page render this. */
+export interface LiveView {
+	serverId: string;
+	ok: boolean;
+	error: string;
+	tier: 'watched' | 'hot' | 'idle' | 'offline';
+	status: Status | null;
+	players: Player[];
+	statusAt: string | null;
+	playersAt: string | null;
+	observedAt: string | null;
+}
+/** One trigger action and what became of it. */
+export interface OutboxView {
+	id: number;
+	triggerId: string | null;
+	triggerName: string;
+	triggerKind: string;
+	action: string;
+	target: string;
+	state: 'pending' | 'delivered' | 'failed' | 'skipped' | 'unknown';
+	attempts: number;
+	outcome: string;
+	createdAt: string;
+	doneAt: string | null;
+}
 export interface RotationEntry {
 	map: string;
 	experiences: string[];

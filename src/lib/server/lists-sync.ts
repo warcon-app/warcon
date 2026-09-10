@@ -1,7 +1,7 @@
 // The org-list sync: pushes each org's ban and reserved-slot lists to its game servers. The
-// poller runs it on every successful tick (planning against the snapshot it keeps in server_bans
-// and server_reserved, and re-reading the server before it changes anything); the API runs it
-// right after an admin edits a list, so the toast can say where the change landed.
+// worker runs it on a schedule inside its observations (planning against the snapshot it keeps in
+// server_bans and server_reserved, and re-reading the server before it changes anything); the API
+// runs it right after an admin edits a list, so the toast can say where the change landed.
 //
 // Rules of the road: the panel adds what the lists want and removes only what it added itself
 // (server_list_state). Every game call is idempotent in the panel's reading of it ("already
@@ -13,6 +13,7 @@ import type { Env } from './env';
 import { publicMessage } from './http';
 import { writeAudit } from './audit';
 import { ACTIONS } from './actions';
+import { withServer, type Priority } from './dispatcher';
 import { GameError, WardogsClient } from './rcon';
 import {
 	listEntries,
@@ -186,7 +187,7 @@ export async function memberSlots(
  * next reconcile takes it off every server the panel applied it to. The poller runs this every
  * tick and fanOut before pushing, so an install without a poller still catches up on edit.
  */
-export async function expireEntries(env: Env): Promise<number> {
+export async function expireEntries(env: Env): Promise<{ lifted: number; orgIds: string[] }> {
 	const now = new Date();
 	const rows = await env.db
 		.update(listEntries)
@@ -199,7 +200,7 @@ export async function expireEntries(env: Env): Promise<number> {
 			)
 		)
 		.returning({ listId: listEntries.listId, steamId: listEntries.steamId });
-	if (!rows.length) return 0;
+	if (!rows.length) return { lifted: 0, orgIds: [] };
 	const listIds = [...new Set(rows.map((r) => r.listId))];
 	const owners = await env.db
 		.select({ listId: lists.id, orgId: lists.orgId, orgName: organizations.name })
@@ -220,7 +221,7 @@ export async function expireEntries(env: Env): Promise<number> {
 			detail: { orgId: o.orgId, org: o.orgName, steamIds: ids }
 		}).catch((err) => console.error('[warcon] list.expire audit', err));
 	}
-	return rows.length;
+	return { lifted: rows.length, orgIds: [...new Set(owners.map((o) => o.orgId))] };
 }
 
 async function snapshotObserved(env: Env, serverId: string): Promise<Observed> {
@@ -242,11 +243,10 @@ async function snapshotObserved(env: Env, serverId: string): Promise<Observed> {
 	};
 }
 
+/** Reads the server's ban list and reserved slots, one request at a time (one in flight per server). */
 export async function liveObserved(client: WardogsClient): Promise<Observed> {
-	const [bans, reserved] = await Promise.all([
-		ACTIONS.bans.run(client, {}) as Promise<{ bans: Ban[] }>,
-		ACTIONS.reserved.run(client, {}) as Promise<{ reserved: string[] }>
-	]);
+	const bans = (await ACTIONS.bans.run(client, {})) as { bans: Ban[] };
+	const reserved = (await ACTIONS.reserved.run(client, {})) as { reserved: string[] };
 	return {
 		bans: bans.bans.filter((b) => /^\d{17}$/.test(b.steamId)),
 		reserved: reserved.reserved.filter((id) => /^\d{17}$/.test(id))
@@ -321,6 +321,11 @@ export interface ReconcileOptions {
 	client?: WardogsClient;
 	/** the server's lists as just read by the caller (the poller's periodic refresh) */
 	observed?: Observed;
+	/**
+	 * How to get at the server: a dispatcher priority to queue for its lane, or 'held' when the
+	 * caller already holds the lane (the worker, inside an observation).
+	 */
+	lane: Priority | 'held';
 }
 
 const failure = (err: unknown) => {
@@ -346,7 +351,10 @@ export async function reconcileServer(
 		error: ''
 	};
 	if (org.suspendedAt) return { ...base, skipped: 'suspended', error: 'Organisation suspended.' };
-	const ran = await withServerLock(server.id, opts.waitMs, () => run(env, server, org, opts, base));
+	const locked = () =>
+		withServerLock(server.id, opts.waitMs, () => run(env, server, org, opts, base));
+	const ran =
+		opts.lane === 'held' ? await locked() : await withServer(server.id, opts.lane, locked);
 	return ran ?? { ...base, pending: true, skipped: 'busy', error: 'Sync already running.' };
 }
 
@@ -688,7 +696,8 @@ export async function fanOut(env: Env, org: OrgRow): Promise<ListSyncSummary> {
 			};
 			const work = reconcileServer(env, server, org, {
 				reason: 'api',
-				waitMs: FANOUT_WAIT_MS
+				waitMs: FANOUT_WAIT_MS,
+				lane: 0
 			}).catch((err): SyncResult => ({
 				...pending,
 				pending: false,

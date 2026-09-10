@@ -4,7 +4,7 @@ import { env as processEnv } from '$env/dynamic/private';
 import {
 	connect,
 	hasTimescale,
-	repairLegacyJsonb,
+	pendingMigrations,
 	runMigrations,
 	type Db,
 	type SqlClient
@@ -41,8 +41,26 @@ export interface Env {
 	TURNSTILE_SECRET_KEY?: string;
 	/** Accept self-signed certificates on https game servers. */
 	GAME_TLS_INSECURE?: string;
-	/** Analytics sampling interval in seconds; 0 disables the poller. */
+	/** all (default: serve, migrate, run the worker in-process) | web | worker */
+	WARCON_ROLE: Role;
+	/** web role: where the worker's relay listens, e.g. http://worker:7700 */
+	RELAY_URL?: string;
+	/** shared secret between web and worker (required for the split roles) */
+	RELAY_SECRET?: string;
+	/** worker role: relay and health port (default 7700) */
+	WORKER_PORT?: string;
+	/** Seed for the analytics heartbeat setting on a fresh install (seconds); settings.ts owns it after that. */
 	POLL_SECONDS?: string;
+	/** Seed for the observation concurrency setting on a fresh install. */
+	POLL_CONCURRENCY?: string;
+}
+
+export type Role = 'all' | 'web' | 'worker';
+
+export function parseRole(value: string | undefined): Role {
+	const v = (value || 'all').trim().toLowerCase();
+	if (v === 'all' || v === 'web' || v === 'worker') return v;
+	throw new Error(`WARCON_ROLE must be all, web or worker (got ${JSON.stringify(value)}).`);
 }
 
 export const flag = (value: string | undefined, fallback = false): boolean =>
@@ -53,12 +71,6 @@ export const positiveInt = (value: string | undefined, fallback: number): number
 	const n = Number(value);
 	return Number.isInteger(n) && n > 0 ? n : fallback;
 };
-
-/** Analytics sampling interval in seconds (at least 5), or 0 when the poller is off. */
-export function pollSeconds(env: Pick<Env, 'POLL_SECONDS'>): number {
-	const n = Number(env.POLL_SECONDS ?? 20);
-	return Number.isFinite(n) && n > 0 ? Math.max(5, Math.floor(n)) : 0;
-}
 
 export const DEFAULT_MAX_ORGS_PER_USER = 3;
 export const DEFAULT_MAX_SERVERS_PER_ORG = 10;
@@ -128,22 +140,45 @@ function databaseTarget(): string | Bun.SQL.PostgresOrMySQLOptions {
 	);
 }
 
-/** Reads configuration, connects, applies migrations. Called once from the server init hook. */
-export async function initEnv(): Promise<Env> {
+/**
+ * Reads configuration and connects. The single-process role applies migrations itself; the split
+ * roles refuse to start while any are pending (run `bun run db:migrate` first), so a web and a
+ * worker never disagree about the schema. Called once per process.
+ */
+export async function initEnv(opts: { role?: Role } = {}): Promise<Env> {
+	const role = opts.role ?? parseRole(processEnv.WARCON_ROLE);
 	const origin = parseOrigin(processEnv.ORIGIN);
 	// Refuse the .env.example placeholder (or a short secret) before touching the database.
 	const secretProblem = authSecretProblem(processEnv.BETTER_AUTH_SECRET);
 	if (secretProblem) throw new Error(secretProblem);
+	if (role !== 'all') {
+		if (!processEnv.RELAY_SECRET || processEnv.RELAY_SECRET.length < 16)
+			throw new Error(
+				'RELAY_SECRET (16+ characters, shared by web and worker) is required for the web and worker roles.'
+			);
+		if (role === 'web' && !processEnv.RELAY_URL)
+			throw new Error('RELAY_URL (e.g. http://worker:7700) is required for the web role.');
+	}
 	const { client, db } = connect(databaseTarget());
-	await runMigrations(db, resolve(process.cwd(), 'drizzle'));
-	const repaired = await repairLegacyJsonb(db);
-	if (repaired) console.log(`[warcon] rewrote ${repaired} double-encoded jsonb rows`);
+	const migrations = resolve(process.cwd(), 'drizzle');
+	if (role === 'all') await runMigrations(db, migrations);
+	else {
+		const pending = await pendingMigrations(db, migrations);
+		if (pending)
+			throw new Error(
+				`${pending} database migration(s) pending: run \`bun run db:migrate\` before starting the ${role}.`
+			);
+	}
 	const timescale = await hasTimescale(db);
 	console.log(`[warcon] database ready (timescaledb ${timescale ? 'on' : 'off'})`);
 	cached = {
 		db,
 		sql: client,
 		timescale,
+		WARCON_ROLE: role,
+		RELAY_URL: processEnv.RELAY_URL,
+		RELAY_SECRET: processEnv.RELAY_SECRET,
+		WORKER_PORT: processEnv.WORKER_PORT,
 		ORIGIN: origin,
 		BETTER_AUTH_SECRET: processEnv.BETTER_AUTH_SECRET,
 		ENCRYPTION_KEY: processEnv.ENCRYPTION_KEY,
@@ -160,7 +195,8 @@ export async function initEnv(): Promise<Env> {
 		TURNSTILE_SITE_KEY: processEnv.TURNSTILE_SITE_KEY,
 		TURNSTILE_SECRET_KEY: processEnv.TURNSTILE_SECRET_KEY,
 		GAME_TLS_INSECURE: processEnv.GAME_TLS_INSECURE,
-		POLL_SECONDS: processEnv.POLL_SECONDS
+		POLL_SECONDS: processEnv.POLL_SECONDS,
+		POLL_CONCURRENCY: processEnv.POLL_CONCURRENCY
 	};
 	return cached;
 }

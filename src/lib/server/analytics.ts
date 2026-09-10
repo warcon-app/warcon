@@ -1,8 +1,16 @@
 // Read side of the analytics tables: one query bundle per server and time range.
+//
+// Samples are written when something changed and at a heartbeat, not on a fixed clock, so every
+// figure that used to multiply a sample count by the poll interval is duration-weighted instead:
+// each sample covers the time until the next one (capped, so a lone sample before a long gap
+// does not claim hours), averages weight player counts by that cover, uptime is covered-up time
+// over covered time, and session minutes come straight from joined_at and left_at.
 import { and, count, desc, eq, gte, isNull, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { matches, playerSessions } from './db/schema';
-import { pollSeconds } from './env';
+import { settings } from './settings';
+
+import { MAX_COVER_S } from './rollups';
 
 export type Range = '24h' | '7d' | '30d';
 const RANGE_MS: Record<Range, number> = {
@@ -22,6 +30,9 @@ export interface PopulationPoint {
 	cap: number | null;
 	ok: number;
 	total: number;
+	/** seconds this bucket's samples covered while up / while unreachable */
+	up: number;
+	down: number;
 }
 /** Cash in play at one moment or bucket: the total and each faction's share ('' = unassigned). */
 export interface CashPoint {
@@ -60,7 +71,8 @@ export interface Analytics {
 	range: Range;
 	from: string;
 	to: string;
-	pollSeconds: number;
+	/** the heartbeat between samples when nothing changes */
+	sampleSeconds: number;
 	bucketSeconds: number;
 	summary: {
 		uniquePlayers: number;
@@ -70,6 +82,8 @@ export interface Analytics {
 		onlineNow: number;
 		samples: number;
 		matches: number;
+		/** hours of covered time in the range */
+		coveredHours: number;
 	};
 	population: PopulationPoint[];
 	cash: CashPoint[];
@@ -84,12 +98,54 @@ const numOrNull = (v: unknown): number | null => (v === null || v === undefined 
 const isoOf = (v: unknown): string =>
 	v instanceof Date ? v.toISOString() : new Date(String(v)).toISOString();
 
+/**
+ * The samples in range with the seconds each one covers (until the next, or now, capped):
+ * ts, ok, player_count (weighted), peak, max_players, map, dur, n (samples represented).
+ */
+const rawRows = (serverId: string, from: Date) => sql`
+	SELECT ts, ok, player_count::float AS player_count, player_count AS peak, max_players, map,
+	       LEAST(${MAX_COVER_S}, EXTRACT(EPOCH FROM (COALESCE(LEAD(ts) OVER (ORDER BY ts), now()) - ts))) AS dur,
+	       1 AS n
+	  FROM samples WHERE server_id = ${serverId} AND ts >= ${from}`;
+
+/** The same shape from the hourly rollups up to their newest bucket, then raw samples. */
+const rolledRows = (serverId: string, from: Date) => sql`
+	WITH cut AS (SELECT COALESCE(MAX(bucket) + interval '1 hour', ${from}::timestamptz) AS t
+	               FROM sample_rollups WHERE server_id = ${serverId} AND bucket >= ${from})
+	SELECT r.bucket AS ts, true AS ok, r.player_s / NULLIF(r.up_s, 0) AS player_count, r.max_players AS peak,
+	       r.max_cap AS max_players, NULL::text AS map, r.up_s AS dur, r.ok_samples AS n
+	  FROM sample_rollups r, cut WHERE r.server_id = ${serverId} AND r.bucket >= ${from} AND r.bucket < cut.t AND r.up_s > 0
+	UNION ALL
+	SELECT r.bucket, false, NULL, NULL, NULL, NULL, r.down_s, r.samples - r.ok_samples
+	  FROM sample_rollups r, cut WHERE r.server_id = ${serverId} AND r.bucket >= ${from} AND r.bucket < cut.t AND r.down_s > 0
+	UNION ALL
+	SELECT x.ts, x.ok, x.player_count, x.peak, x.max_players, x.map, x.dur, x.n
+	  FROM (${rawRows(serverId, from)}) x, cut WHERE x.ts >= cut.t`;
+
+/** Map cover in range: rollups up to their newest bucket, then raw samples. */
+const mapRows = (serverId: string, from: Date, rolled: boolean) =>
+	rolled
+		? sql`
+	WITH cut AS (SELECT COALESCE(MAX(bucket) + interval '1 hour', ${from}::timestamptz) AS t
+	               FROM sample_rollups WHERE server_id = ${serverId} AND bucket >= ${from})
+	SELECT map, secs FROM sample_map_rollups, cut
+	 WHERE server_id = ${serverId} AND bucket >= ${from} AND bucket < cut.t
+	UNION ALL
+	SELECT x.map, x.dur FROM (${rawRows(serverId, from)}) x, cut
+	 WHERE x.ts >= cut.t AND x.ok AND x.map IS NOT NULL AND x.map <> ''`
+		: sql`
+	SELECT x.map, x.dur AS secs FROM (${rawRows(serverId, from)}) x
+	 WHERE x.ok AND x.map IS NOT NULL AND x.map <> ''`;
+
 export async function loadAnalytics(env: Env, serverId: string, range: Range): Promise<Analytics> {
 	const to = new Date();
 	const from = new Date(to.getTime() - RANGE_MS[range]);
 	const bucket = BUCKET_S[range];
-	const poll = pollSeconds(env) || 20;
 	const db = env.db;
+	// Longer than the raw retention: the hourly rollups carry the older part of the range.
+	const rolled = RANGE_MS[range] > settings().rawRetentionDays * 86400000;
+	const covered = (serverId: string, from: Date) =>
+		rolled ? rolledRows(serverId, from) : rawRows(serverId, from);
 
 	// time_bucket() would be nicer, but this floor() form works on plain Postgres too.
 	const population = (
@@ -100,43 +156,51 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 			cap: number | null;
 			ok: string;
 			total: string;
+			up: string | null;
+			down: string | null;
 		}>(sql`
+				WITH s AS (${covered(serverId, from)})
 				SELECT to_timestamp(floor(extract(epoch FROM ts) / ${bucket}) * ${bucket}) AS b,
-				       AVG(CASE WHEN ok THEN player_count END) AS avg,
-				       MAX(player_count) AS max, MAX(max_players) AS cap,
-				       COUNT(*) FILTER (WHERE ok) AS ok, COUNT(*) AS total
-				  FROM samples WHERE server_id = ${serverId} AND ts >= ${from}
-				 GROUP BY b ORDER BY b`)
+				       SUM(player_count * dur) FILTER (WHERE ok) / NULLIF(SUM(dur) FILTER (WHERE ok), 0) AS avg,
+				       MAX(peak) AS max, MAX(max_players) AS cap,
+				       SUM(n) FILTER (WHERE ok) AS ok, SUM(n) AS total,
+				       SUM(dur) FILTER (WHERE ok) AS up, SUM(dur) FILTER (WHERE NOT ok) AS down
+				  FROM s GROUP BY b ORDER BY b`)
 	).map((r) => ({
 		ts: isoOf(r.b),
 		avg: numOrNull(r.avg),
 		max: numOrNull(r.max),
 		cap: numOrNull(r.cap),
 		ok: num(r.ok),
-		total: num(r.total)
+		total: num(r.total),
+		up: num(r.up),
+		down: num(r.down)
 	}));
 
 	const cash = await bucketedCash(env, serverId, from, bucket);
 
 	const [totals] = await db.execute<{
 		n: string;
-		ok: string;
 		peak: number | null;
 		avg: string | null;
+		up: string | null;
+		down: string | null;
 	}>(sql`
-			SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE ok) AS ok, MAX(player_count) AS peak,
-			       AVG(CASE WHEN ok THEN player_count END) AS avg
-			  FROM samples WHERE server_id = ${serverId} AND ts >= ${from}`);
+			WITH s AS (${covered(serverId, from)})
+			SELECT SUM(n) AS n, MAX(peak) AS peak,
+			       SUM(player_count * dur) FILTER (WHERE ok) / NULLIF(SUM(dur) FILTER (WHERE ok), 0) AS avg,
+			       SUM(dur) FILTER (WHERE ok) AS up, SUM(dur) FILTER (WHERE NOT ok) AS down
+			  FROM s`);
 
 	const maps = (
-		await db.execute<{ map: string; n: string; matches: string }>(sql`
-				SELECT s.map, COUNT(*) AS n,
-				       (SELECT COUNT(*) FROM matches m WHERE m.server_id = s.server_id AND m.map = s.map AND m.started_at >= ${from}) AS matches
-				  FROM samples s WHERE s.server_id = ${serverId} AND s.ts >= ${from} AND s.ok AND s.map IS NOT NULL AND s.map <> ''
-				 GROUP BY s.server_id, s.map ORDER BY n DESC`)
+		await db.execute<{ map: string; secs: string; matches: string }>(sql`
+				WITH s AS (${mapRows(serverId, from, rolled)})
+				SELECT s.map, SUM(s.secs) AS secs,
+				       (SELECT COUNT(*) FROM matches m WHERE m.server_id = ${serverId} AND m.map = s.map AND m.started_at >= ${from}) AS matches
+				  FROM s GROUP BY s.map ORDER BY secs DESC`)
 	).map((r) => ({
 		map: r.map,
-		minutes: Math.round((num(r.n) * poll) / 60),
+		minutes: Math.round(num(r.secs) / 60),
 		matches: num(r.matches)
 	}));
 
@@ -153,7 +217,7 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 		}>(sql`
 				SELECT p.steam_id AS "steamId",
 				       (SELECT name FROM player_sessions p2 WHERE p2.steam_id = p.steam_id AND p2.server_id = p.server_id ORDER BY last_seen DESC LIMIT 1) AS name,
-				       SUM(EXTRACT(EPOCH FROM (p.last_seen - GREATEST(p.joined_at, ${from}::timestamptz))) + ${poll}) / 60 AS minutes,
+				       SUM(EXTRACT(EPOCH FROM (COALESCE(p.left_at, now()) - GREATEST(p.joined_at, ${from}::timestamptz)))) / 60 AS minutes,
 				       COUNT(*) AS sessions, SUM(p.kills) AS kills, SUM(p.deaths) AS deaths,
 				       MAX(p.last_seen) AS "lastSeen", COUNT(*) FILTER (WHERE p.left_at IS NULL) AS online
 				  FROM player_sessions p WHERE p.server_id = ${serverId} AND p.last_seen >= ${from}
@@ -191,26 +255,29 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 
 	const hourly = (
 		await db.execute<{ hour: number; avg: string }>(sql`
-				SELECT EXTRACT(HOUR FROM ts)::int AS hour, AVG(player_count) AS avg
-				  FROM samples WHERE server_id = ${serverId} AND ts >= ${from} AND ok
-				 GROUP BY hour ORDER BY hour`)
+				WITH s AS (${covered(serverId, from)})
+				SELECT EXTRACT(HOUR FROM ts)::int AS hour,
+				       SUM(player_count * dur) / NULLIF(SUM(dur), 0) AS avg
+				  FROM s WHERE ok GROUP BY hour ORDER BY hour`)
 	).map((r) => ({ hour: num(r.hour), avg: num(r.avg) }));
 
+	const up = num(totals?.up);
+	const down = num(totals?.down);
 	return {
 		range,
 		from: from.toISOString(),
 		to: to.toISOString(),
-		pollSeconds: poll,
+		sampleSeconds: Math.round(settings().sampleMs / 1000),
 		bucketSeconds: bucket,
 		summary: {
 			uniquePlayers: num(unique?.n),
 			peakPlayers: num(totals?.peak),
 			avgPlayers: Math.round(num(totals?.avg) * 10) / 10,
-			uptimePct:
-				totals && num(totals.n) ? Math.round((num(totals.ok) / num(totals.n)) * 1000) / 10 : null,
+			uptimePct: up + down > 0 ? Math.round((up / (up + down)) * 1000) / 10 : null,
 			onlineNow: num(online?.n),
 			samples: num(totals?.n),
-			matches: num(matchCount?.n)
+			matches: num(matchCount?.n),
+			coveredHours: Math.round(((up + down) / 3600) * 10) / 10
 		},
 		population,
 		cash,

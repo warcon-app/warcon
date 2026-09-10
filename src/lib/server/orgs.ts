@@ -16,7 +16,7 @@ import { orgInvites, orgMembers, organizations, serverGrants, servers, user } fr
 import type { OrgInviteRow } from './db/schema';
 import type { Db } from './db';
 import { ensureOrgLists } from './lists';
-import { fanOut } from './lists-sync';
+import { gateway } from './gateway';
 import type { InviteStatus, InviteView, ListSyncSummary, OrgMemberView, OrgView } from '$lib/types';
 
 /** A Drizzle transaction handle (what `db.transaction(async (tx) => ...)` passes). */
@@ -205,7 +205,7 @@ export async function setMembersReserved(
 			: 'Members no longer get a reserved slot',
 		detail: { orgId: org.id, membersReserved: on }
 	});
-	return fanOut(env, { ...org, membersReserved: on });
+	return gateway().syncOrg(env, { ...org, membersReserved: on });
 }
 
 /** Creates an org with the actor as its first owner. */

@@ -1,11 +1,10 @@
 <script lang="ts">
-	import { api, errorMessage } from '$lib/api';
-	import { poll } from '$lib/poll';
+	import { watchLive } from '$lib/live';
 	import { fmtNum } from '$lib/format';
 	import { setHealth } from '$lib/health.svelte';
 	import Pulse from '$lib/components/Pulse.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
-	import type { Status } from '$lib/types';
+	import type { LiveView, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -13,23 +12,18 @@
 	type Summary = { ok: true; status: Status } | { ok: false; error: string };
 	let summaries = $state<Record<string, Summary>>({});
 
-	async function refreshOne(id: string) {
-		try {
-			const d = await api<{ ok: boolean; status: Status; error?: { message: string } }>(
-				'GET',
-				`/api/servers/${encodeURIComponent(id)}/summary`
-			);
-			summaries[id] = { ok: true, status: d.status };
-			setHealth(id, true);
-		} catch (err) {
-			summaries[id] = { ok: false, error: errorMessage(err) };
-			setHealth(id, false);
-		}
+	// Every observation the worker makes of these servers arrives here as it happens.
+	function onLive(v: LiveView) {
+		if (v.ok && v.status) summaries[v.serverId] = { ok: true, status: v.status };
+		else if (v.status && !v.ok)
+			summaries[v.serverId] = { ok: false, error: v.error || 'Unreachable.' };
+		else summaries[v.serverId] = { ok: false, error: v.error || 'Not observed yet.' };
+		setHealth(v.serverId, v.ok);
 	}
 
 	$effect(() => {
 		const ids = data.servers.map((s) => s.id);
-		return poll(() => Promise.all(ids.map(refreshOne)), 10000);
+		return watchLive(ids, onLive);
 	});
 </script>
 

@@ -21,20 +21,28 @@ on a container host, with the database wherever you like.
 - **Full audit trail**: every login, user or server change, and every game-server command, with
   actor, server, target, outcome, upstream status, IP and duration. Filterable and exportable
   (CSV/JSON). The game server's own listener log is shown alongside it.
-- **Analytics**: a background poller samples every server and keeps what the game does not:
-  players online over time, cash in play per faction, uptime, time per map, busiest hours, player
-  playtime and sessions, match history with results.
+- **Live view**: a worker process watches every server on a cadence that follows what is
+  happening: every second or two while someone has it open or people are on it, every half
+  minute when it is empty. Pages get each observation as it happens over an event stream, and a
+  command you send shows its effect on the next look. Browsers never talk to a game server.
+- **Analytics**: the worker keeps what the game does not: players online over time, cash in play
+  per faction, uptime, time per map, busiest hours, player playtime and sessions, match history
+  with results. Samples are written when something changes plus a heartbeat, and every figure is
+  duration-weighted, so a faster cadence never distorts them.
 - **Player dossiers**: click any player for their history across the organisation's servers
   (sessions, playtime, names used, K/D), the admin actions taken on them, shared notes and a
   watchlist, and, with a Steam key, their Steam persona, account age and VAC / game-ban record.
 - **Connect-time risk**: an advisory score from the Steam Web API, bans on the org's other
   servers, lookalike names of banned players and the watchlist, shown next to each connected
   player. It sees what RCON exposes and nothing more: no aim, position or input telemetry.
-- **Automation**: per-server triggers run by the poller, each dry-runnable against the last 24
-  hours before it is switched on: welcome whisper on join, scheduled broadcasts, empty-server map
-  reset, and kick-on-connect for VAC bans, brand-new accounts or bans elsewhere in the org.
+- **Automation**: per-server triggers the worker evaluates on every observation, so a welcome
+  whisper or a risk kick lands within a couple of seconds of the join. Every action goes through
+  an outbox and is recorded as delivered, failed, skipped or unknown, and survives a restart in
+  between. Each rule is dry-runnable against the last 24 hours before it is switched on: welcome
+  whisper on join, scheduled broadcasts, empty-server map reset, and kick-on-connect for VAC bans,
+  brand-new accounts or bans elsewhere in the org.
 - **Organisation ban and reserved lists**: ban a player across every server in the organisation
-  at once, with a reason and an optional expiry; hand out reserved slots the same way. The poller
+  at once, with a reason and an optional expiry; hand out reserved slots the same way. The worker
   keeps every server in line and shows where each entry stands; bans added outside the panel are
   left alone.
 - **Discord mirror**: an org owner points a channel webhook at the audit trail and picks what to
@@ -82,11 +90,18 @@ More in [docs/screenshots/](docs/screenshots/): the [dashboard](docs/screenshots
 ## How it works
 
 ```
-browser ──HTTPS──▶ Warcon (Bun + SvelteKit) ──HTTP──▶ game server :7776 (WDRCON)
-                     │  server-rendered pages, /api/* JSON, /api/auth/* (Better Auth)
-                     │  poller: status + players every POLL_SECONDS → samples, sessions, matches
-                     └─ Postgres (Drizzle schema; TimescaleDB hypertable + retention for samples)
+browser ──HTTPS──▶ web (Bun + SvelteKit)            worker ──HTTP──▶ game server :7776 (WDRCON)
+                     │  pages, /api/* JSON, Better Auth      │  observes every server on its tier
+                     │  live view + SSE from the worker      │  (1–2 s watched/busy, 30 s idle)
+                     │  commands → relay → worker's lane     │  sessions, triggers → outbox → delivery
+                     └─ Postgres / TimescaleDB ◀─────────────┘  samples, matches, live snapshot, settings
 ```
+
+One image, three roles: `web` serves the panel, `worker` owns every game request, `migrate`
+applies the schema and exits. `WARCON_ROLE=all` (the default outside Compose) does all of it in
+one process for the smallest install. Web and worker talk over a small HTTP relay guarded by
+`RELAY_SECRET`; the worker holds a lease in the database so exactly one process observes, and
+re-checks it inside every write.
 
 The official console calls the game server straight from the browser over plain HTTP, so it cannot
 be hosted on HTTPS and every admin needs the raw RCON password. Warcon keeps the password
@@ -107,7 +122,8 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Compose starts two containers: `warcon` and `db` (TimescaleDB). The app reaches `db` through the
+Compose starts `migrate` (runs once), `warcon` (the web), `worker` and `db` (TimescaleDB); set
+`RELAY_SECRET` in `.env` to any long random string. The app reaches `db` through the
 `PGHOST`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` variables Compose sets, so `POSTGRES_PASSWORD`
 can contain any characters. To use an external Postgres instead, set `DATABASE_URL` in `.env` (it
 takes precedence over those) and delete the `db` service together with the `depends_on` block in
@@ -124,8 +140,9 @@ as owner:
    Discord. People open it, sign in with Discord, and appear under **Members**, where you can adjust
    their per-server roles.
 
-The database lives in the `warcon-db` volume; back it up with `pg_dump`. Migrations apply
-automatically when Warcon starts. Keep `ENCRYPTION_KEY` safe: losing it means re-entering every
+The database lives in the `warcon-db` volume; back it up with `pg_dump`. Migrations are applied
+by the `migrate` container before web and worker start (a single `WARCON_ROLE=all` process applies
+them itself); web and worker refuse to start while any are pending. Keep `ENCRYPTION_KEY` safe: losing it means re-entering every
 server's RCON password. Never change it after servers are added unless you intend to re-enter them.
 
 ### Behind a reverse proxy or Cloudflare
@@ -148,27 +165,29 @@ rejected as cross-site against the https `ORIGIN`.
 
 ### Configuration (`.env`)
 
-| Var                                                          | Default            | Meaning                                                                                                                                                                           |
-| ------------------------------------------------------------ | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET`                                         | required           | Session signing secret.                                                                                                                                                           |
-| `ENCRYPTION_KEY`                                             | required           | Base64 of 32 random bytes; encrypts stored RCON passwords.                                                                                                                        |
-| `DATABASE_URL`                                               | unset              | `postgres://user:pass@host:5432/warcon`. Overrides the `PG*` fields; percent-encode `/ # % ?` in the password.                                                                    |
-| `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | set by Compose     | The database as separate fields (no encoding needed). Used when `DATABASE_URL` is unset.                                                                                          |
-| `POSTGRES_PASSWORD`                                          | `warcon`           | Password for the bundled `db` service (Compose only).                                                                                                                             |
-| `ORIGIN`                                                     | required           | The exact URL people open (scheme, host, port).                                                                                                                                   |
-| `ADDRESS_HEADER` / `XFF_DEPTH`                               | unset / `1`        | Behind a proxy: the header carrying the client IP (see above).                                                                                                                    |
-| `PORT` / `HOST`                                              | `3000` / `0.0.0.0` | Listen address.                                                                                                                                                                   |
-| `POLL_SECONDS`                                               | `20`               | Analytics sampling interval per server; `0` disables the poller (and with it triggers and the org list sync, which then only runs when a list is edited or synced by hand).       |
-| `APP_NAME`                                                   | `Warcon`           | Name shown in the UI.                                                                                                                                                             |
-| `AUDIT_LOG_READS`                                            | `false`            | Also audit read-only calls (status polls etc.). Noisy.                                                                                                                            |
-| `ALLOW_ORG_SIGNUP`                                           | `false`            | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                                                      |
-| `MAX_ORGS_PER_USER` / `MAX_SERVERS_PER_ORG`                  | `3` / `10`         | Self-serve limits. The site owner is exempt and can raise the server limit per organisation, or suspend one, from the Orgs page.                                                  |
-| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`                | unset              | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.                                     |
-| `ALLOW_DEMO_SERVER`                                          | `true`             | Allow a server with host `demo` served by the built-in mock.                                                                                                                      |
-| `GAME_TLS_INSECURE`                                          | `false`            | Accept self-signed certificates on `https` game servers.                                                                                                                          |
-| `SETUP_TOKEN`                                                | unset              | When set, first-run setup requires it.                                                                                                                                            |
-| `STEAM_API_KEY`                                              | unset              | Steam lookups: persona and avatar, account age, VAC and game bans, for dossiers, the risk score and the kick-on-connect trigger. Free at <https://steamcommunity.com/dev/apikey>. |
-| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`                | unset              | "Sign in with Discord": invite links create accounts through it, existing accounts can link it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`.                             |
+| Var                                                          | Default                | Meaning                                                                                                                                                                           |
+| ------------------------------------------------------------ | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`                                         | required               | Session signing secret.                                                                                                                                                           |
+| `ENCRYPTION_KEY`                                             | required               | Base64 of 32 random bytes; encrypts stored RCON passwords.                                                                                                                        |
+| `DATABASE_URL`                                               | unset                  | `postgres://user:pass@host:5432/warcon`. Overrides the `PG*` fields; percent-encode `/ # % ?` in the password.                                                                    |
+| `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | set by Compose         | The database as separate fields (no encoding needed). Used when `DATABASE_URL` is unset.                                                                                          |
+| `POSTGRES_PASSWORD`                                          | `warcon`               | Password for the bundled `db` service (Compose only).                                                                                                                             |
+| `ORIGIN`                                                     | required               | The exact URL people open (scheme, host, port).                                                                                                                                   |
+| `ADDRESS_HEADER` / `XFF_DEPTH`                               | unset / `1`            | Behind a proxy: the header carrying the client IP (see above).                                                                                                                    |
+| `PORT` / `HOST`                                              | `3000` / `0.0.0.0`     | Listen address.                                                                                                                                                                   |
+| `WARCON_ROLE`                                                | `all`                  | `all` serves, migrates and runs the worker in one process; `web` and `worker` split them (Compose does); `migrate` applies migrations and exits.                                  |
+| `RELAY_SECRET` / `RELAY_URL` / `WORKER_PORT`                 | unset / unset / `7700` | Split roles only: the secret web and worker share, where the web finds the worker (`http://worker:7700`), and the worker's port.                                                  |
+| `POLL_SECONDS` / `POLL_CONCURRENCY`                          | `20` / `128`           | Seeds for two of the runtime settings on a fresh install only; after that the owner edits cadences, budgets and retention on the **Settings** page without a restart.             |
+| `APP_NAME`                                                   | `Warcon`               | Name shown in the UI.                                                                                                                                                             |
+| `AUDIT_LOG_READS`                                            | `false`                | Also audit read-only calls (status polls etc.). Noisy.                                                                                                                            |
+| `ALLOW_ORG_SIGNUP`                                           | `false`                | Anyone may create an account and their own organisation at `/sign-up` (3 orgs per person). For hosted, multi-clan instances.                                                      |
+| `MAX_ORGS_PER_USER` / `MAX_SERVERS_PER_ORG`                  | `3` / `10`             | Self-serve limits. The site owner is exempt and can raise the server limit per organisation, or suspend one, from the Orgs page.                                                  |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`                | unset                  | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.                                     |
+| `ALLOW_DEMO_SERVER`                                          | `true`                 | Allow a server with host `demo` served by the built-in mock.                                                                                                                      |
+| `GAME_TLS_INSECURE`                                          | `false`                | Accept self-signed certificates on `https` game servers.                                                                                                                          |
+| `SETUP_TOKEN`                                                | unset                  | When set, first-run setup requires it.                                                                                                                                            |
+| `STEAM_API_KEY`                                              | unset                  | Steam lookups: persona and avatar, account age, VAC and game bans, for dossiers, the risk score and the kick-on-connect trigger. Free at <https://steamcommunity.com/dev/apikey>. |
+| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`                | unset                  | "Sign in with Discord": invite links create accounts through it, existing accounts can link it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`.                             |
 
 ### Roles
 
@@ -367,10 +386,16 @@ bun install
 docker run -d --name warcon-pg -p 5432:5432 -e POSTGRES_USER=warcon -e POSTGRES_PASSWORD=warcon \
   -e POSTGRES_DB=warcon timescale/timescaledb:2.30.0-pg18
 cp .env.example .env      # set the two secrets, ORIGIN=http://localhost:5173, DATABASE_URL=postgres://warcon:warcon@127.0.0.1:5432/warcon
-bun run dev               # http://localhost:5173
+bun run dev               # http://localhost:5173 (single process: web + worker in-process)
 bun run check             # svelte-check
 bun run build && bun run start   # production build, http://localhost:3000 (set ORIGIN to match)
 ```
+
+To run the split roles locally after `bun run build`: `bun run db:migrate`, then
+`WARCON_ROLE=worker RELAY_SECRET=… bun run worker` in one terminal and
+`WARCON_ROLE=web RELAY_SECRET=… RELAY_URL=http://127.0.0.1:7700 bun run start` in another.
+`/api/health` on the web (and `/health` on the worker) shows the worker's tiers, in-flight count,
+"behind" and "stuck" figures, and the delivery queue; the owner's **Settings** page shows the same.
 
 The schema is defined in [src/lib/server/db/schema.ts](src/lib/server/db/schema.ts). After changing
 it, run `bun run db:generate` to write a new migration into `drizzle/`; the app applies pending
@@ -380,7 +405,9 @@ server.
 ## Layout
 
 ```
-src/hooks.server.ts            startup (migrations, poller), session lookup, Better Auth handler, CSRF header check
+src/hooks.server.ts            startup (role, gateway, worker in-process for `all`), session lookup, Better Auth handler, CSRF header check
+src/worker/worker.ts           the worker process entry (WARCON_ROLE=worker); runtime.ts serves the relay; migrate.ts = bun run db:migrate
+scripts/build-worker.ts        bundles the worker with Bun (shims $env and $app), run by bun run build
 src/lib/server/env.ts          process config + the database connection
 src/lib/server/db/schema.ts    every table, as Drizzle definitions (source of truth for migrations)
 src/lib/server/db/index.ts     Bun SQL client + Drizzle + migration runner
@@ -396,11 +423,21 @@ src/lib/server/actions.ts      every panel action -> role level + /v1 call(s)
 src/lib/server/rcon-run.ts     /api/servers/:id/rcon/:action dispatcher with audit rows
 src/lib/server/rcon.ts         WardogsClient (Bearer auth, JSON/text calls, demo routing)
 src/lib/server/transport.ts    fetch to the game server
-src/lib/server/poller.ts       background sampler (leader-elected via advisory lock): samples, sessions, matches, ban snapshots, triggers
+src/lib/server/poller.ts       the worker's scheduler: tiers, phases, concurrency budget, roster, housekeeping, stats
+src/lib/server/poller-schedule.ts  the scheduler's maths (phase per server, next due, budget) — pure
+src/lib/server/observe.ts      one observation: status/players, session diff, trigger evaluation, one fenced transaction, live snapshot, samples
+src/lib/server/sessions.ts     player presence in memory, batched session writes (join, leave, heartbeat)
+src/lib/server/outbox.ts       trigger delivery loop: claim with a lease, send through the lane, record the outcome
+src/lib/server/rollups.ts      hourly sample rollups behind the long ranges, and the retention policy
+src/lib/server/dispatcher.ts   one lane per game server: one request in flight, humans ahead of the worker
+src/lib/server/leadership.ts   the worker lease and the fenced transaction every worker write uses
+src/lib/server/live.ts / events.ts / interest.ts   live snapshot rows, the in-process event bus, watch leases
+src/lib/server/gateway.ts      the web↔worker seam; gateway-local.ts (same process), gateway-remote.ts + relay.ts (HTTP)
+src/lib/server/settings.ts     owner-editable runtime settings (site_settings): keys, bounds, hot reload
 src/lib/server/players.ts      dossiers, notes, watchlist, per-player marks (risk) for the players table
 src/lib/server/steam.ts        Steam Web API lookups cached in steam_profiles
 src/lib/server/risk.ts         advisory risk score and name resemblance (pure)
-src/lib/server/trigger-rules.ts / triggers.ts   trigger settings and verdicts (pure) / the per-tick engine and dry runs
+src/lib/server/trigger-rules.ts / triggers.ts   trigger settings and verdicts (pure) / evaluation into intents, dry runs
 src/lib/server/webhooks.ts     Discord webhook records; webhook-delivery.ts batches audit rows to Discord
 src/lib/server/analytics.ts    analytics queries per server and range
 src/lib/server/audit.ts        audit writer/query with secret redaction
@@ -454,12 +491,16 @@ configApply raw` (admin).
 
 ## Notes and limits
 
-- Analytics are derived from polling: player sessions are accurate to one interval, and match
-  boundaries are inferred from the match clock and map changes. Samples are kept for 90 days
-  (a TimescaleDB retention policy, or the poller's own prune on plain Postgres), sessions and
-  matches for a year.
-- Several Warcon replicas can share one database; a Postgres advisory lock makes exactly one of
-  them the poller.
+- Analytics are derived from observation: player sessions are accurate to the cadence in force
+  (a second or two on a busy server), and match boundaries are inferred from the match clock and
+  map changes. Raw samples are kept for 14 days by default (a TimescaleDB retention policy, or the
+  worker's own prune on plain Postgres) with hourly rollups behind the 30-day charts; sessions and
+  matches for a year. Both are settings.
+- Several web processes can share one database and one worker; the worker's lease makes exactly
+  one process observe, and a second worker takes over within seconds if the first stops renewing.
+- The game has no push API. Freshness is the observation cadence, which the owner sets; the
+  defaults (1 s players / 2 s status while watched, 2 s / 5 s while busy) are lighter on the game
+  than the old per-browser polling was.
 - Password hashing is Better Auth's default scrypt, which runs natively via `node:crypto` on Bun.
 - Sessions are looked up in the database on every request (no cookie cache), so disabling a user
   or revoking a session takes effect immediately.

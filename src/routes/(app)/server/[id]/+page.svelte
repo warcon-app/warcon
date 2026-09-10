@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { rconGet, rconPost, errorMessage } from '$lib/api';
 	import { poll } from '$lib/poll';
+	import { watchLive } from '$lib/live';
 	import {
 		can,
 		expSetLabel,
@@ -20,7 +21,7 @@
 	import { api } from '$lib/api';
 	import { factionColor } from '$lib/format';
 	import type { CashPoint } from '$lib/server/analytics';
-	import type { Player, Rotation, Status } from '$lib/types';
+	import type { LiveView, Player, Rotation, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -31,6 +32,8 @@
 	let statusAt = $state(0);
 	let rotation = $state<Rotation | null>(null);
 	let players = $state<Player[]>([]);
+	let live = $state<LiveView | null>(null);
+	let playersSeenAt = '';
 	let teamFilter = $state('');
 	let now = $state(Date.now());
 	let showPicker = $state(false);
@@ -105,38 +108,43 @@
 		}
 	}
 
-	async function refreshStatus() {
-		try {
-			const [s, r] = await Promise.all([
-				rconGet<Status>(id, 'status'),
-				rconGet<Rotation>(id, 'rotation').catch(() => null)
-			]);
-			status = s;
-			statusAt = Date.now();
-			rotation = r;
-			setHealth(id, true);
-			noteCashStatus(s);
+	// Status and players come from the worker's observations (an event stream, a few times a
+	// second while this page is open); the rotation is read on load, after a command, and now and then.
+	function onLive(v: LiveView) {
+		live = v;
+		setHealth(id, v.ok);
+		if (v.status) {
+			status = v.status;
+			statusAt = v.statusAt ? Date.parse(v.statusAt) : Date.now();
+			noteCashStatus(v.status);
 			if (!seeded && picker) {
 				seeded = true;
 				void picker.setFrom({
-					map: s.map,
-					experiences: s.experiences,
-					lighting: s.lighting,
-					zoneAlternator: s.alternator
+					map: v.status.map,
+					experiences: v.status.experiences,
+					lighting: v.status.lighting,
+					zoneAlternator: v.status.alternator
 				});
 			}
+		}
+		if (v.playersAt && v.playersAt !== playersSeenAt) {
+			playersSeenAt = v.playersAt;
+			players = v.players;
+			noteCashSample(players);
+		}
+	}
+	async function refreshRotation() {
+		try {
+			rotation = await rconGet<Rotation>(id, 'rotation');
 		} catch (err) {
-			setHealth(id, false);
 			toast(errorMessage(err), 'err');
 		}
 	}
-	async function refreshPlayers() {
-		players = (await rconGet<{ players: Player[] }>(id, 'players')).players;
-		noteCashSample(players);
-	}
+	/** After a command: the worker looks again on its own; the rotation is ours to re-read. */
+	const refreshStatus = refreshRotation;
 
 	$effect(() => {
-		const stops = [poll(refreshStatus, 4000), poll(refreshPlayers, 3000)];
+		const stops = [watchLive([id], onLive), poll(refreshRotation, 30000)];
 		const t = setInterval(() => (now = Date.now()), 1000);
 		return () => {
 			stops.forEach((s) => s());
@@ -336,7 +344,7 @@
 	<div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
 		<span class="label-sm mb-0">Cash in play</span>
 		<span class="text-[12px] text-mist-600"
-			>held by connected players this match · sampled every 3 s</span
+			>held by connected players this match · one point per observation</span
 		>
 		<span class="join ml-auto">
 			<button
@@ -402,7 +410,10 @@
 				>
 			{/each}
 		</div>
-		<span class="ml-auto text-[12.5px] text-mist-600">{players.length} on the server</span>
+		<span class="ml-auto text-[12.5px] text-mist-600"
+			>{players.length} on the server{#if live?.playersAt}
+				· seen {Math.max(0, Math.round((now - Date.parse(live.playersAt)) / 1000))}s ago{/if}</span
+		>
 	</div>
 	<div class="table-wrap">
 		<table>

@@ -1,20 +1,22 @@
-// Dashboard read: status of one server, never throws for game-side failures.
+// Dashboard read: the worker's latest view of one server, never a game request.
 import { getEnv } from '$lib/server/env';
-import { apiJson, param, publicMessage, route } from '$lib/server/http';
+import { apiJson, param, route } from '$lib/server/http';
 import { requireServerRole } from '$lib/server/access';
-import { ACTIONS } from '$lib/server/actions';
-import { WardogsClient } from '$lib/server/rcon';
+import { gateway } from '$lib/server/gateway';
 
 export const GET = route(async (event) => {
 	const env = getEnv();
 	const { server, role } = await requireServerRole(env, event.locals, param(event, 'id'), 'viewer');
-	const started = Date.now();
-	try {
-		const client = await WardogsClient.forServer(env, server);
-		const status = await ACTIONS.status.run(client, {});
-		return apiJson({ ok: true, role, status, durationMs: Date.now() - started });
-	} catch (err) {
-		const message = publicMessage(err);
-		return apiJson({ ok: false, role, error: { message }, durationMs: Date.now() - started });
-	}
+	const live =
+		(await gateway().live(env, [server.id])).get(server.id) ??
+		(await gateway().observeNow(env, server.id));
+	if (!live)
+		return apiJson({ ok: false, role, live: null, error: { message: 'Not observed yet.' } });
+	return apiJson({
+		ok: live.ok,
+		role,
+		live,
+		status: live.status,
+		error: live.ok ? undefined : { message: live.error }
+	});
 });

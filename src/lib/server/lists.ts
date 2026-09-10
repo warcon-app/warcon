@@ -26,7 +26,8 @@ import {
 	type ListRow
 } from './db/schema';
 import { requireSteamId } from './steam';
-import { desiredFor, fanOut, MEMBER_PRIORITY, memberSlots } from './lists-sync';
+import { desiredFor, MEMBER_PRIORITY, memberSlots } from './lists-sync';
+import { gateway } from './gateway';
 import type {
 	ImportCandidate,
 	ListEntryState,
@@ -445,7 +446,7 @@ export async function addEntry(
 			priority
 		}
 	});
-	const sync = await fanOut(env, org);
+	const sync = await gateway().syncOrg(env, org);
 	const entry = (await entriesView(env, org, kind)).find((e) => e.id === id)!;
 	return { entry, sync };
 }
@@ -489,7 +490,7 @@ export async function removeEntry(
 			kind === 'ban' ? `Unbanned across ${org.name}` : `Reserved slot withdrawn across ${org.name}`,
 		detail: { orgId: org.id, org: org.name, kind, listId: list.id, entryId: row.id }
 	});
-	const sync = await fanOut(env, org);
+	const sync = await gateway().syncOrg(env, org);
 	return { sync };
 }
 
@@ -625,7 +626,7 @@ export async function importEntries(
 			message: `Imported ${imported} server entr${imported === 1 ? 'y' : 'ies'} into ${org.name}'s lists`,
 			detail: { orgId: org.id, org: org.name, entries: adopted }
 		});
-	const sync = imported ? await fanOut(env, org) : { servers: [] };
+	const sync = imported ? await gateway().syncOrg(env, org) : { servers: [] };
 	return { imported, skipped: picks.length - imported, sync };
 }
 

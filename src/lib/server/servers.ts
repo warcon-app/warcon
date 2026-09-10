@@ -13,7 +13,7 @@ import {
 	type ServerRow,
 	type SessionUser
 } from './access';
-import { ACTIONS } from './actions';
+import { gateway } from './gateway';
 import { GameError, WardogsClient } from './rcon';
 import { serverGrants, servers, user } from './db/schema';
 import { assertCanAddServer, ensureMemberships } from './orgs';
@@ -159,6 +159,9 @@ export async function createServer(
 		target: `${t.host}:${t.port}`,
 		detail: { scheme: t.scheme, orgId, allowPrivate: t.allowPrivate }
 	});
+	void gateway()
+		.observeNow(env, id)
+		.catch(() => {});
 	return id;
 }
 
@@ -232,11 +235,10 @@ export async function testServer(
 ): Promise<TestResult> {
 	const started = Date.now();
 	try {
-		const client = await WardogsClient.forServer(env, server);
-		const status = await ACTIONS.status.run(client, {});
+		const status = await gateway().run(env, server, 'status', {});
 		let capabilities: unknown = null;
 		try {
-			capabilities = await ACTIONS.capabilities.run(client, {});
+			capabilities = await gateway().run(env, server, 'capabilities', {});
 		} catch {
 			/* older plugin builds lack it */
 		}

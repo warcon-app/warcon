@@ -13,7 +13,9 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production && rm -rf ~/.bun/install/cache
 COPY --from=build /app/build ./build
 COPY drizzle ./drizzle
+COPY docker-entrypoint.sh ./
 USER bun
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD bun -e "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
-CMD ["bun", "./build/index.js"]
+EXPOSE 3000 7700
+# The web (and single-process) roles answer on 3000; the worker on WORKER_PORT (7700).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD bun -e "const w = (process.env.WARCON_ROLE || 'all') === 'worker'; fetch(w ? 'http://127.0.0.1:' + (process.env.WORKER_PORT || 7700) + '/health' : 'http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+CMD ["./docker-entrypoint.sh"]

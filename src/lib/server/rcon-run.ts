@@ -5,7 +5,8 @@ import { ApiError, apiJson, readJson } from './http';
 import { writeAudit } from './audit';
 import { getServer, requireUser, roleAtLeast, serverRoleFor } from './access';
 import { ACTIONS, ACTION_NAMES } from './actions';
-import { GameError, WardogsClient } from './rcon';
+import { GameError } from './rcon';
+import { gateway } from './gateway';
 import { assertRate } from './ratelimit';
 
 function safe<T>(fn: () => T, fallback: T): T {
@@ -89,9 +90,10 @@ export async function runAction(
 
 	const started = Date.now();
 	try {
-		const client = await WardogsClient.forServer(env, server);
-		const result = await def.run(client, params);
+		const result = await gateway().run(env, server, name, params);
 		const durationMs = Date.now() - started;
+		// The panel shows what the worker last saw; after a change, have it look again now.
+		if (def.mutating) gateway().observeSoon(server.id);
 		if (def.mutating || auditReads) {
 			await writeAudit(env, req, {
 				...base,

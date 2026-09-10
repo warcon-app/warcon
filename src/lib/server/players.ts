@@ -2,7 +2,6 @@
 // watchlist) and the marks the players table shows next to each connected player.
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { Env } from './env';
-import { pollSeconds } from './env';
 import { ApiError, str } from './http';
 import { queryAudit, writeAudit } from './audit';
 import {
@@ -212,7 +211,6 @@ export async function dossier(
 	const visible = (await accessibleServers(env, user)).filter((s) => s.orgId === server.orgId);
 	const ids = visible.map((s) => s.id);
 	const nameOf = new Map(visible.map((s) => [s.id, s.name]));
-	const poll = pollSeconds(env) || 20;
 	const db = env.db;
 
 	const [summary] = await db.execute<{
@@ -224,7 +222,7 @@ export async function dossier(
 		lastSeen: Date | null;
 	}>(sql`
 		SELECT COUNT(*) AS sessions,
-		       SUM(EXTRACT(EPOCH FROM (last_seen - joined_at)) + ${poll}) / 60 AS minutes,
+		       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS minutes,
 		       SUM(kills) AS kills, SUM(deaths) AS deaths,
 		       MIN(joined_at) AS "firstSeen", MAX(last_seen) AS "lastSeen"
 		  FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids.length ? ids : ['']}`);
@@ -238,7 +236,7 @@ export async function dossier(
 				lastSeen: Date;
 			}>(sql`
 			SELECT server_id AS "serverId", COUNT(*) AS sessions,
-			       SUM(EXTRACT(EPOCH FROM (last_seen - joined_at)) + ${poll}) / 60 AS minutes,
+			       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS minutes,
 			       SUM(kills) AS kills, SUM(deaths) AS deaths, MAX(last_seen) AS "lastSeen"
 			  FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids}
 			 GROUP BY server_id ORDER BY "lastSeen" DESC`)
@@ -341,7 +339,7 @@ export async function dossier(
 			joinedAt: s.joinedAt.toISOString(),
 			lastSeen: s.lastSeen.toISOString(),
 			leftAt: iso(s.leftAt),
-			minutes: Math.round((s.lastSeen.getTime() - s.joinedAt.getTime()) / 60000 + poll / 60),
+			minutes: Math.round(((s.leftAt ?? new Date()).getTime() - s.joinedAt.getTime()) / 60000),
 			kills: s.kills,
 			deaths: s.deaths,
 			cash: s.cash
