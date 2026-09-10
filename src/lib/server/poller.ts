@@ -24,6 +24,7 @@ import {
 	allMemory,
 	cadenceOf,
 	forgetMemory,
+	forgetRemembered,
 	memoryFor,
 	memoryOf,
 	observeServer,
@@ -67,6 +68,9 @@ interface Scheduler {
 	beating: boolean;
 	lastBeatAt: number;
 	launched: number;
+	renewTimer: ReturnType<typeof setInterval> | null;
+	/** the ownership period we last prepared memory for (ownershipStats().since) */
+	epoch: number;
 }
 
 let scheduler: Scheduler | null = null;
@@ -88,8 +92,16 @@ export function startPoller(env: Env, label = 'worker'): void {
 		activeOffline: 0,
 		beating: false,
 		lastBeatAt: 0,
-		launched: 0
+		launched: 0,
+		renewTimer: null,
+		epoch: 0
 	};
+	// Lease renewal runs on its own timer so a slow roster or settings read never delays it.
+	scheduler.renewTimer = setInterval(
+		() =>
+			void acquireOrRenew(env, label).catch((err) => console.error('[warcon] worker lease', err)),
+		RENEW_MS
+	);
 	startDelivery(env);
 	globalThis.__warconPoller = setInterval(() => void beat(env), BEAT_MS);
 	console.log('[warcon] worker scheduler started');
@@ -99,6 +111,7 @@ export function startPoller(env: Env, label = 'worker'): void {
 export async function stopPoller(): Promise<void> {
 	if (globalThis.__warconPoller) clearInterval(globalThis.__warconPoller);
 	globalThis.__warconPoller = undefined;
+	if (scheduler?.renewTimer) clearInterval(scheduler.renewTimer);
 	stopDelivery();
 	scheduler = null;
 	if (envRef) await releaseOwnership(envRef);
@@ -150,13 +163,20 @@ async function beat(env: Env): Promise<void> {
 	try {
 		const now = Date.now();
 		s.lastBeatAt = now;
-		if (now - s.renewAt >= RENEW_MS) {
+		if (!s.renewAt) {
+			// The first acquisition; renewals then run on their own timer.
 			s.renewAt = now;
 			await acquireOrRenew(env, s.label).catch((err) =>
 				console.error('[warcon] worker lease', err)
 			);
 		}
 		if (!isOwner()) return;
+		const period = ownershipStats().since;
+		if (period !== s.epoch) {
+			// A new ownership period: anything remembered may be stale against another worker's writes.
+			s.epoch = period;
+			forgetRemembered();
+		}
 		if (now - s.settingsAt >= SETTINGS_MS) {
 			s.settingsAt = now;
 			await loadSettings(env).catch((err) => console.error('[warcon] settings', err));
@@ -164,7 +184,7 @@ async function beat(env: Env): Promise<void> {
 				s.settingsSeen = settingsVersion();
 				for (const m of allMemory()) if (m.inFlight === null) replan(m, now);
 				console.log('[warcon] settings changed; cadences re-planned');
-				void applyRetentionPolicy(env).catch((err) => console.error('[warcon] retention', err));
+				void housekeep(env);
 			}
 		}
 		if (now - s.rosterAt >= ROSTER_MS) await refreshRoster(env, s, now);
@@ -246,7 +266,7 @@ function launchDue(env: Env, s: Scheduler, now: number): void {
 	});
 	for (const { m, offline } of picked) {
 		const kinds = { status: m.statusDueAt <= now, players: m.playersDueAt <= now };
-		planNext(m, now);
+		planNext(m, now, kinds);
 		m.inFlight = now;
 		m.stuckReported = false;
 		s.active++;
@@ -266,9 +286,17 @@ function launchDue(env: Env, s: Scheduler, now: number): void {
 	}
 }
 
-/** Hourly: rollups, then the prune, then the retention policy; each on its own. */
+/**
+ * Hourly: rollups first, and only if they succeeded the prune and the retention policy, so raw
+ * history is never dropped before its rollup exists.
+ */
 async function housekeep(env: Env): Promise<void> {
-	await rollupSamples(env).catch((err) => console.error('[warcon] rollups', err));
+	try {
+		await rollupSamples(env);
+	} catch (err) {
+		console.error('[warcon] rollups failed; keeping raw samples until they succeed', err);
+		return;
+	}
 	await prune(env).catch((err) => console.error('[warcon] prune', err));
 	await applyRetentionPolicy(env).catch((err) => console.error('[warcon] retention', err));
 }

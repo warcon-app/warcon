@@ -115,6 +115,17 @@ async function relay(env: Env, path: string, url: URL, req: Request): Promise<Re
 			const stream = new ReadableStream<Uint8Array>({
 				start(controller) {
 					const send = (s: string) => {
+						// A web process that stopped reading is cut off rather than buffered without end.
+						if ((controller.desiredSize ?? 1) < -256) {
+							unsubscribe();
+							clearInterval(ping);
+							try {
+								controller.close();
+							} catch {
+								/* closed */
+							}
+							return;
+						}
 						try {
 							controller.enqueue(encoder.encode(s));
 						} catch {

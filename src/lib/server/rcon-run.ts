@@ -87,6 +87,8 @@ export async function runAction(
 	}
 
 	if (name === 'raw') assertRate(`raw:${user.id}`, 30, 60_000);
+	// Pages read the live view; direct game reads are for tools and the odd refresh, not a poll loop.
+	assertRate(`rcon:${user.id}`, 120, 60_000);
 
 	const started = Date.now();
 	try {

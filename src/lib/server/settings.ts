@@ -220,6 +220,7 @@ export async function saveSettings(
 	patch: Record<string, unknown>,
 	updatedBy: string | null
 ): Promise<{ settings: Settings; changed: Partial<Settings> }> {
+	await loadSettings(env); // compare against what is stored, not this process's cache
 	const problems: string[] = [];
 	const updates: Partial<Settings> = {};
 	for (const [k, raw] of Object.entries(patch)) {
@@ -271,6 +272,7 @@ export interface SettingView extends SettingSpec {
 
 /** Every setting with its effective value, for the owner's settings page. */
 export async function settingsView(env: Env): Promise<SettingView[]> {
+	await loadSettings(env);
 	const stored = new Set(
 		(await env.db.select({ key: siteSettings.key }).from(siteSettings)).map((r) => r.key)
 	);

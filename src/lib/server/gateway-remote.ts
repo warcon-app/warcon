@@ -14,6 +14,8 @@ import type { PollerStats } from './poller';
 import { RELAY_PREFIX, type RelayError } from './relay';
 
 const TIMEOUT_MS = 30_000;
+/** No frame or ping from the worker for this long: reconnect. */
+const IDLE_MS = 40_000;
 
 function rethrow(e: RelayError): never {
 	if (e.kind === 'game') throw new GameError(e.status, e.message, e.code, e.body ?? null);
@@ -62,9 +64,18 @@ function consumeEvents(env: Env): void {
 	let backoff = 1000;
 	const loop = async () => {
 		for (;;) {
+			// The worker pings every 15 s; silence for longer means the connection is dead even if
+			// nothing has closed it, so a watchdog aborts and the loop reconnects.
+			const abort = new AbortController();
+			let watchdog = setTimeout(() => abort.abort(), IDLE_MS);
+			const alive = () => {
+				clearTimeout(watchdog);
+				watchdog = setTimeout(() => abort.abort(), IDLE_MS);
+			};
 			try {
 				const res = await fetch(`${env.RELAY_URL!.replace(/\/$/, '')}${RELAY_PREFIX}/events`, {
-					headers: { authorization: `Bearer ${env.RELAY_SECRET}`, accept: 'text/event-stream' }
+					headers: { authorization: `Bearer ${env.RELAY_SECRET}`, accept: 'text/event-stream' },
+					signal: abort.signal
 				});
 				if (!res.ok || !res.body) throw new Error(`worker answered ${res.status}`);
 				backoff = 1000;
@@ -74,6 +85,7 @@ function consumeEvents(env: Env): void {
 				for (;;) {
 					const { value, done } = await reader.read();
 					if (done) break;
+					alive();
 					buf += decoder.decode(value, { stream: true });
 					let i: number;
 					while ((i = buf.indexOf('\n\n')) >= 0) {
@@ -95,6 +107,8 @@ function consumeEvents(env: Env): void {
 				}
 			} catch (err) {
 				console.warn('[warcon] worker event stream:', err instanceof Error ? err.message : err);
+			} finally {
+				clearTimeout(watchdog);
 			}
 			await new Promise((r) => setTimeout(r, backoff));
 			backoff = Math.min(backoff * 2, 15_000);

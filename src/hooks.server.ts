@@ -41,6 +41,8 @@ export const init: ServerInit = async () => {
 	if (env.WARCON_ROLE === 'web') {
 		// The worker runs elsewhere: every game request, live read and lease goes over the relay.
 		setGateway(connectRemoteGateway(env));
+		// Settings saved on another web process reach this one within a few seconds.
+		setInterval(() => void loadSettings(env).catch(() => {}), 10_000);
 		console.log(`[warcon] web role; worker relay at ${env.RELAY_URL}`);
 	} else {
 		if (env.WARCON_ROLE === 'worker')

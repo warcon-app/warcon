@@ -18,6 +18,7 @@ import { getProfiles, steamEnabled } from './steam';
 import {
 	enabledTriggers,
 	evaluateTriggers,
+	invalidateTriggers,
 	needsRiskInputs,
 	riskInputs,
 	type TickContext
@@ -34,7 +35,7 @@ import {
 	type Presence,
 	type PresenceDiff
 } from './sessions';
-import { LostOwnership, withOwnedTransaction } from './leadership';
+import { isOwner, LostOwnership, withOwnedTransaction } from './leadership';
 import { settings } from './settings';
 import { isWatched } from './interest';
 import { emit } from './events';
@@ -132,12 +133,31 @@ export function memoryFor(server: ServerRow, org: OrgRow): ServerMemory {
 }
 
 export const memoryOf = (id: string): ServerMemory | undefined => registry.get(id);
+
+/** Another process may have written since we last owned the worker: forget what we remember. */
+export function forgetRemembered(): void {
+	for (const m of registry.values()) {
+		m.presence = newPresence();
+		m.lastMatchSeconds = null;
+		m.lastScores = null;
+		m.liveKey = '';
+		m.sampleKey = '';
+		m.listsAt = 0;
+		m.syncAt = 0;
+	}
+	invalidateTriggers();
+}
 export const allMemory = (): IterableIterator<ServerMemory> => registry.values();
 export function forgetMemory(id: string): void {
 	registry.delete(id);
 }
 
 // ---- tiers and cadence --------------------------------------------------------------------------
+
+export interface ObserveKinds {
+	status: boolean;
+	players: boolean;
+}
 
 export function tierOf(m: ServerMemory, now = Date.now()): Tier {
 	if (m.failures >= OFFLINE_AFTER_FAILURES) return 'offline';
@@ -163,13 +183,15 @@ export function cadenceOf(tier: Tier, failures = 0): { players: number; status: 
 	}
 }
 
-/** The next observation kinds and their due times, set when an observation launches (fixed cadence). */
-export function planNext(m: ServerMemory, now: number): void {
+/** Sets the next due time of each kind being launched (fixed cadence); the other kind keeps its deadline. */
+export function planNext(m: ServerMemory, now: number, kinds: ObserveKinds): void {
 	m.tier = tierOf(m, now);
 	const c = cadenceOf(m.tier, m.failures);
-	m.playersIntervalMs = c.players;
-	m.playersDueAt = nextDue(m.playersDueAt || now, c.players, now);
-	m.statusDueAt = nextDue(m.statusDueAt || now, c.status, now);
+	if (kinds.players) {
+		m.playersIntervalMs = c.players;
+		m.playersDueAt = nextDue(m.playersDueAt || now, c.players, now);
+	}
+	if (kinds.status) m.statusDueAt = nextDue(m.statusDueAt || now, c.status, now);
 }
 
 /** After an observation the tier may have changed: pull the due times in if it got faster. */
@@ -183,11 +205,6 @@ export function replan(m: ServerMemory, now: number): void {
 		m.playersDueAt = now;
 		m.statusDueAt = now;
 	}
-}
-
-export interface ObserveKinds {
-	status: boolean;
-	players: boolean;
 }
 
 // ---- keys that decide what gets written -----------------------------------------------------------
@@ -314,6 +331,15 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 					rows
 				)
 			: { intents: [], updates: [] };
+	// Memory follows every player observation; the database only when something is due.
+	for (const { player: p, session: s } of diff.stayed) {
+		s.name = p.name;
+		s.faction = p.faction;
+		s.kills = p.kills;
+		s.deaths = p.deaths;
+		s.cash = p.cash;
+		s.lastSeen = started;
+	}
 	const presenceDue =
 		diff.joined.length > 0 || diff.left.length > 0 || (heartbeatDue && diff.stayed.length > 0);
 	const needWrite =
@@ -329,17 +355,6 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 				if (liveDue) await writeLive(tx, m, ts);
 				if (sampleDue) await writeSample(tx, m, ts, latencyMs);
 			});
-		else if (players) {
-			// Keep the in-memory stats fresh even when nothing is written.
-			for (const { player: p, session: s } of diff.stayed) {
-				s.name = p.name;
-				s.faction = p.faction;
-				s.kills = p.kills;
-				s.deaths = p.deaths;
-				s.cash = p.cash;
-				s.lastSeen = started;
-			}
-		}
 		if (liveDue) {
 			m.liveKey = liveKey;
 			m.liveWrittenAt = started;
@@ -349,18 +364,21 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 			m.sampleWrittenAt = started;
 		}
 	} catch (err) {
-		if (err instanceof LostOwnership) throw err;
 		// Nothing was committed, but the presence map may have moved: reload it next time so the
 		// joins are seen (and their triggers evaluated) again.
 		m.presence = newPresence();
+		if (err instanceof LostOwnership) throw err;
 		console.warn(`[warcon] observation of ${server.name} not saved:`, publicMessage(err));
 	}
 	emit({ type: 'live', live: liveView(m) });
 	if (intents) wakeDelivery();
 
-	// Housekeeping, each part on its own.
-	if (status) await stage('match', m, () => reconcileMatch(env.db, m, ts, status!));
-	await stage('lists', m, () => keepLists(env, m, client, started, ts));
+	// Housekeeping, each part on its own, and only while this process still owns the worker.
+	if (status)
+		await stage('match', m, () =>
+			withOwnedTransaction(env, (tx) => reconcileMatch(tx, m, ts, status!))
+		);
+	if (isOwner()) await stage('lists', m, () => keepLists(env, m, client, started, ts));
 	if (diff.joined.length && steamEnabled(env))
 		void getProfiles(
 			env,
@@ -386,9 +404,10 @@ async function observationFailed(
 	const sampleDue = m.failures === 1 || started - m.sampleWrittenAt >= s.sampleMs;
 	try {
 		await withOwnedTransaction(env, async (tx) => {
-			if (m.failures === OFFLINE_AFTER_FAILURES) {
+			if (m.failures >= OFFLINE_AFTER_FAILURES) {
+				// Close every open session once; a rollback below reloads the map so this retries.
 				if (!m.presence.loaded) await loadPresence(tx, m.server.id, m.presence);
-				await closeAllSessions(tx, m.presence);
+				if (m.presence.open.size) await closeAllSessions(tx, m.presence);
 				m.lastMatchSeconds = null;
 			}
 			if (sampleDue)
@@ -410,6 +429,7 @@ async function observationFailed(
 			m.sampleWrittenAt = started;
 		}
 	} catch (e) {
+		m.presence = newPresence();
 		if (e instanceof LostOwnership) throw e;
 		console.warn(`[warcon] failure of ${m.server.name} not saved:`, publicMessage(e));
 	}

@@ -1,7 +1,7 @@
 // The in-process gateway: the worker runs in this process, so everything is a function call.
 import type { Env } from './env';
 import type { OrgRow, ServerRow } from './access';
-import { PRIORITY, withServer, type Priority } from './dispatcher';
+import { LaneFull, LaneTimeout, PRIORITY, withServer, type Priority } from './dispatcher';
 import { ACTIONS } from './actions';
 import { ApiError } from './http';
 import { WardogsClient } from './rcon';
@@ -26,10 +26,16 @@ export async function runGameAction(
 ): Promise<unknown> {
 	const def = ACTIONS[action];
 	if (!def) throw new ApiError(404, `Unknown action '${action}'.`, 'unknown_action');
-	return withServer(server.id, priority, async () => {
-		const client = await WardogsClient.forServer(env, server);
-		return def.run(client, params);
-	});
+	try {
+		return await withServer(server.id, priority, async () => {
+			const client = await WardogsClient.forServer(env, server);
+			return def.run(client, params);
+		});
+	} catch (err) {
+		if (err instanceof LaneFull) throw new ApiError(503, err.message, 'server_busy');
+		if (err instanceof LaneTimeout) throw new ApiError(504, err.message, 'server_busy');
+		throw err;
+	}
 }
 
 export const localGateway: Gateway = {

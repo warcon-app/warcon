@@ -496,8 +496,10 @@ configApply raw` (admin).
   map changes. Raw samples are kept for 14 days by default (a TimescaleDB retention policy, or the
   worker's own prune on plain Postgres) with hourly rollups behind the 30-day charts; sessions and
   matches for a year. Both are settings.
-- Several web processes can share one database and one worker; the worker's lease makes exactly
+- Several `web` processes can share one database and one worker; the worker's lease makes exactly
   one process observe, and a second worker takes over within seconds if the first stops renewing.
+  Run `WARCON_ROLE=all` as a single replica only: two `all` processes would each keep their own
+  live view and lanes, and browsers on the one that does not hold the lease would see nothing live.
 - The game has no push API. Freshness is the observation cadence, which the owner sets; the
   defaults (1 s players / 2 s status while watched, 2 s / 5 s while busy) are lighter on the game
   than the old per-browser polling was.

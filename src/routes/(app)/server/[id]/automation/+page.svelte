@@ -47,7 +47,13 @@
 		);
 	});
 	const stateTone = (s: OutboxView['state']) =>
-		s === 'delivered' ? 'ok' : s === 'pending' ? 'info' : s === 'skipped' ? 'warn' : 'err';
+		s === 'delivered'
+			? 'ok'
+			: s === 'pending' || s === 'sending'
+				? 'info'
+				: s === 'skipped'
+					? 'warn'
+					: 'err';
 
 	const KINDS: { kind: TriggerKind; label: string; blurb: string }[] = [
 		{

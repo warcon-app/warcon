@@ -11,7 +11,7 @@ import { outbox, triggers, type OutboxRow } from './db/schema';
 import { ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { ApiError } from './http';
-import { PRIORITY, withServer } from './dispatcher';
+import { LaneFull, LaneTimeout, PRIORITY, withServer } from './dispatcher';
 import { emit } from './events';
 import { isOwner, LostOwnership, withOwnedTransaction } from './leadership';
 import { settings } from './settings';
@@ -98,10 +98,15 @@ async function pass(): Promise<void> {
 	try {
 		stats.lastPassAt = Date.now();
 		const lease = settings().outboxLeaseMs;
+		// A send whose lease lapsed may have reached the game: it is unknown, never sent again.
+		await env.db.execute(sql`
+			UPDATE outbox SET state = 'unknown', outcome = 'The worker stopped while sending; the game may have acted.', done_at = now(), lease_until = NULL
+			 WHERE state = 'sending' AND lease_until < now()`);
+		// Claiming moves the row to "sending" durably before anything is sent.
 		const claimed = (await env.db.execute(sql`
-			UPDATE outbox SET lease_until = now() + (${lease} || ' milliseconds')::interval, attempts = attempts + 1
+			UPDATE outbox SET state = 'sending', lease_until = now() + (${lease} || ' milliseconds')::interval, attempts = attempts + 1
 			 WHERE id IN (SELECT id FROM outbox
-			               WHERE state = 'pending' AND not_before <= now() AND (lease_until IS NULL OR lease_until < now())
+			               WHERE state = 'pending' AND not_before <= now()
 			               ORDER BY id LIMIT ${CLAIM_LIMIT} FOR UPDATE SKIP LOCKED)
 			 RETURNING id, server_id AS "serverId", trigger_id AS "triggerId", trigger_name AS "triggerName",
 			           trigger_kind AS "triggerKind", action, params, target, detail, steam_id AS "steamId",
@@ -128,23 +133,45 @@ async function pass(): Promise<void> {
 
 type Outcome = 'delivered' | 'failed' | 'skipped' | 'unknown';
 
-async function deliverOne(env: Env, row: OutboxRow): Promise<void> {
-	const m = memoryOf(row.serverId);
-	const server = m?.server;
-	if (!server) return finish(env, row, 'skipped', 'Server no longer polled.');
+/** Why a row must not be sent right now, or null. Checked again inside the lane, right before sending. */
+function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | null {
+	if (!m) return 'Server no longer polled.';
 	const age = Date.now() - new Date(row.createdAt).getTime();
-	if (age > settings().outboxMaxAgeMs)
-		return finish(env, row, 'skipped', `Stale (${Math.round(age / 1000)}s old).`);
+	if (age > settings().outboxMaxAgeMs) return `Stale (${Math.round(age / 1000)}s old).`;
 	if (row.steamId && m.playersAt && !m.players.some((p) => p.steamId === row.steamId))
-		return finish(env, row, 'skipped', 'Player already left.');
+		return 'Player already left.';
+	if (row.action === 'empty_reset' && (m.players.length > 0 || (m.status?.playerCount ?? 0) > 0))
+		return 'Players arrived before the reset.';
+	return null;
+}
+
+class Skipped extends Error {}
+
+async function deliverOne(env: Env, row: OutboxRow): Promise<void> {
+	const early = skipReason(row, memoryOf(row.serverId));
+	if (early) return finish(env, row, 'skipped', early);
 	stats.inFlight++;
 	try {
-		const result = await withServer(row.serverId, PRIORITY.delivery, async () => {
-			const client = await WardogsClient.forServer(env, server);
-			return execute(client, row);
-		});
+		const result = await withServer(
+			row.serverId,
+			PRIORITY.delivery,
+			async () => {
+				// The wait for the lane may have changed things: look again before sending.
+				const m = memoryOf(row.serverId);
+				const late = skipReason(row, m);
+				if (late) throw new Skipped(late);
+				if (!isOwner()) throw new LostOwnership();
+				const client = await WardogsClient.forServer(env, m!.server);
+				return execute(client, row);
+			},
+			settings().outboxLeaseMs
+		);
 		await finish(env, row, 'delivered', messageOf(result) || row.okMessage);
 	} catch (err) {
+		if (err instanceof Skipped) return finish(env, row, 'skipped', err.message);
+		if (err instanceof LostOwnership) return; // the lease sweep marks it unknown
+		if (err instanceof LaneFull || err instanceof LaneTimeout)
+			return finish(env, row, 'skipped', err.message);
 		if (err instanceof GameError && err.code === 'unreachable')
 			await finish(env, row, 'unknown', `No answer from the server (${err.message})`);
 		else if (err instanceof GameError || err instanceof ApiError)
@@ -185,7 +212,7 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 			tx
 				.update(outbox)
 				.set({ state, outcome: outcome.slice(0, 300), doneAt: new Date(), leaseUntil: null })
-				.where(and(eq(outbox.id, row.id), eq(outbox.state, 'pending')))
+				.where(and(eq(outbox.id, row.id), eq(outbox.state, 'sending')))
 		);
 	} catch (err) {
 		if (err instanceof LostOwnership) throw err;
@@ -236,7 +263,7 @@ export async function recentOutbox(env: Env, serverId: string, limit = 30): Prom
 
 export async function outboxDepth(env: Env): Promise<{ pending: number; oldestMs: number | null }> {
 	const [row] = await env.db.execute<{ n: string; oldest: Date | null }>(sql`
-		SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM outbox WHERE state = 'pending'`);
+		SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM outbox WHERE state IN ('pending', 'sending')`);
 	const n = Number(row?.n ?? 0);
 	return { pending: n, oldestMs: row?.oldest ? Date.now() - new Date(row.oldest).getTime() : null };
 }

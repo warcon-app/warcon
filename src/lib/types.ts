@@ -84,7 +84,7 @@ export interface OutboxView {
 	triggerKind: string;
 	action: string;
 	target: string;
-	state: 'pending' | 'delivered' | 'failed' | 'skipped' | 'unknown';
+	state: 'pending' | 'sending' | 'delivered' | 'failed' | 'skipped' | 'unknown';
 	attempts: number;
 	outcome: string;
 	createdAt: string;

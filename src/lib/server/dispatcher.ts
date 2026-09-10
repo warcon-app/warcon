@@ -7,9 +7,26 @@
 export type Priority = 0 | 1 | 2;
 export const PRIORITY = { command: 0 as const, delivery: 1 as const, observe: 2 as const };
 
+/** How many jobs may wait for one server's lane before new ones are refused. */
+export const MAX_QUEUED = 32;
+/** A queued job that has waited longer than this is dropped instead of run late. */
+export const DEFAULT_DEADLINE_MS = 30_000;
+
+export class LaneFull extends Error {
+	constructor(serverId: string) {
+		super(`Too many requests are waiting for server ${serverId}; try again in a moment.`);
+	}
+}
+export class LaneTimeout extends Error {
+	constructor() {
+		super('The request waited too long for the server and was dropped.');
+	}
+}
+
 interface Job {
 	priority: Priority;
 	seq: number;
+	deadline: number;
 	run: () => Promise<unknown>;
 	resolve: (v: unknown) => void;
 	reject: (e: unknown) => void;
@@ -22,11 +39,16 @@ interface Lane {
 const lanes = new Map<string, Lane>();
 let seq = 0;
 
-/** Runs fn when the server's lane is free, ahead of anything with a lower priority. */
+/**
+ * Runs fn when the server's lane is free, ahead of anything with a lower priority. Refuses when
+ * the lane is already full, and drops the job (rejecting with LaneTimeout) if it has waited past
+ * its deadline by the time its turn comes, so a caller that gave up never has its command run late.
+ */
 export function withServer<T>(
 	serverId: string,
 	priority: Priority,
-	fn: () => Promise<T>
+	fn: () => Promise<T>,
+	deadlineMs = DEFAULT_DEADLINE_MS
 ): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		let lane = lanes.get(serverId);
@@ -34,9 +56,14 @@ export function withServer<T>(
 			lane = { running: false, jobs: [] };
 			lanes.set(serverId, lane);
 		}
+		if (lane.jobs.length >= MAX_QUEUED) {
+			reject(new LaneFull(serverId));
+			return;
+		}
 		lane.jobs.push({
 			priority,
 			seq: seq++,
+			deadline: Date.now() + deadlineMs,
 			run: fn,
 			resolve: resolve as (v: unknown) => void,
 			reject
@@ -58,6 +85,11 @@ function pump(serverId: string, lane: Lane): void {
 		if (a.priority < b.priority || (a.priority === b.priority && a.seq < b.seq)) best = i;
 	}
 	const [job] = lane.jobs.splice(best, 1);
+	if (job.deadline < Date.now()) {
+		job.reject(new LaneTimeout());
+		pump(serverId, lane);
+		return;
+	}
 	lane.running = true;
 	job
 		.run()
