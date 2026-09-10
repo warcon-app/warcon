@@ -37,11 +37,13 @@ export async function acquireOrRenew(env: Env, label: string): Promise<boolean> 
 			},
 			setWhere: sql`${workerOwnership.token} = ${token} OR ${workerOwnership.leaseUntil} < now()`
 		})
-		.returning({ token: workerOwnership.token });
+		.returning({ token: workerOwnership.token, acquiredAt: workerOwnership.acquiredAt });
 	const now = !!rows.length && rows[0].token === token;
-	if (now && !owner) {
-		since = Date.now();
-		console.log(`[warcon] this process owns the worker (${label})`);
+	if (now) {
+		// acquired_at is reset whenever the token changed hands, even if we never saw the loss.
+		const period = rows[0].acquiredAt.getTime();
+		if (!owner || period !== since) console.log(`[warcon] this process owns the worker (${label})`);
+		since = period;
 	}
 	if (!now && owner) console.warn('[warcon] lost the worker lease; another process owns it');
 	owner = now;

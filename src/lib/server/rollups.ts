@@ -24,10 +24,11 @@ export async function rollupSamples(env: Env): Promise<void> {
 		SELECT server_id, ts, ok, player_count, max_players, map,
 		       LEAST(${MAX_COVER_S},
 		             EXTRACT(EPOCH FROM (COALESCE(LEAD(ts) OVER (PARTITION BY server_id ORDER BY ts), now()) - ts)),
-		             EXTRACT(EPOCH FROM (${b.until}::timestamptz - ts))) AS dur
+		             EXTRACT(EPOCH FROM (date_trunc('hour', ts) + interval '1 hour' - ts))) AS dur
 		  FROM samples WHERE ts >= ${b.since}`;
 	const inWindow = sql`ts < ${b.until}`;
-	await env.db.execute(sql`
+	await env.db.transaction(async (tx) => {
+		await tx.execute(sql`
 		WITH s AS (${covered})
 		INSERT INTO sample_rollups (server_id, bucket, samples, ok_samples, up_s, down_s, player_s, max_players, max_cap)
 		SELECT server_id, date_trunc('hour', ts), COUNT(*), COUNT(*) FILTER (WHERE ok),
@@ -38,13 +39,14 @@ export async function rollupSamples(env: Env): Promise<void> {
 		ON CONFLICT (server_id, bucket) DO UPDATE SET samples = EXCLUDED.samples, ok_samples = EXCLUDED.ok_samples,
 		       up_s = EXCLUDED.up_s, down_s = EXCLUDED.down_s, player_s = EXCLUDED.player_s,
 		       max_players = EXCLUDED.max_players, max_cap = EXCLUDED.max_cap`);
-	await env.db.execute(sql`
+		await tx.execute(sql`
 		WITH s AS (${covered})
 		INSERT INTO sample_map_rollups (server_id, bucket, map, secs)
 		SELECT server_id, date_trunc('hour', ts), map, SUM(dur)
 		  FROM s WHERE ${inWindow} AND ok AND map IS NOT NULL AND map <> ''
 		 GROUP BY server_id, date_trunc('hour', ts), map
 		ON CONFLICT (server_id, bucket, map) DO UPDATE SET secs = EXCLUDED.secs`);
+	});
 	const keep = settings().sessionRetentionDays;
 	await env.db.execute(
 		sql`DELETE FROM sample_rollups WHERE bucket < now() - (${keep} || ' days')::interval`

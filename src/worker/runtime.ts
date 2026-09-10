@@ -116,7 +116,7 @@ async function relay(env: Env, path: string, url: URL, req: Request): Promise<Re
 				start(controller) {
 					const send = (s: string) => {
 						// A web process that stopped reading is cut off rather than buffered without end.
-						if ((controller.desiredSize ?? 1) < -256) {
+						if ((controller.desiredSize ?? 1) < -4096) {
 							unsubscribe();
 							clearInterval(ping);
 							try {

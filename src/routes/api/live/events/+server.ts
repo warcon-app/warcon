@@ -11,8 +11,8 @@ import { gateway } from '$lib/server/gateway';
 const INTEREST_MS = 5000;
 const PING_MS = 15_000;
 const LIFETIME_MS = 5 * 60_000;
-/** Close a consumer that has this many events buffered and unread (a stalled tab, a broken proxy). */
-const MAX_BACKLOG = 64;
+/** Close a consumer with this many events buffered and unread (a stalled tab, a broken proxy). */
+const MAX_BACKLOG = 2000;
 
 export const GET = async (event) => {
 	const env = getEnv();
@@ -54,6 +54,7 @@ export const GET = async (event) => {
 			const initial = await gateway().live(env, ids);
 			if (closed) return; // cancelled while the first read was pending
 			for (const v of initial.values()) send('live', v);
+			if (closed) return;
 			unsubscribe = gateway().subscribe((e) => {
 				if (e.type === 'live' && wanted.has(e.live.serverId)) send('live', e.live);
 				else if (e.type === 'outbox' && wanted.has(e.serverId)) send('outbox', e);

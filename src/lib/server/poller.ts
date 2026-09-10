@@ -50,8 +50,9 @@ const OFFLINE_SHARE = 0.5;
 const STUCK_AFTER_MS = 120_000;
 
 declare global {
-	// Survives Vite HMR re-evaluation in dev so we never run two loops.
+	// Survive Vite HMR re-evaluation in dev so we never run two loops or two renewal timers.
 	var __warconPoller: ReturnType<typeof setInterval> | undefined;
+	var __warconRenew: ReturnType<typeof setInterval> | undefined;
 }
 
 interface Scheduler {
@@ -79,6 +80,7 @@ let envRef: Env | null = null;
 export function startPoller(env: Env, label = 'worker'): void {
 	envRef = env;
 	if (globalThis.__warconPoller) clearInterval(globalThis.__warconPoller);
+	if (globalThis.__warconRenew) clearInterval(globalThis.__warconRenew);
 	scheduler = {
 		label,
 		roster: [],
@@ -102,6 +104,7 @@ export function startPoller(env: Env, label = 'worker'): void {
 			void acquireOrRenew(env, label).catch((err) => console.error('[warcon] worker lease', err)),
 		RENEW_MS
 	);
+	globalThis.__warconRenew = scheduler.renewTimer;
 	startDelivery(env);
 	globalThis.__warconPoller = setInterval(() => void beat(env), BEAT_MS);
 	console.log('[warcon] worker scheduler started');
@@ -111,7 +114,8 @@ export function startPoller(env: Env, label = 'worker'): void {
 export async function stopPoller(): Promise<void> {
 	if (globalThis.__warconPoller) clearInterval(globalThis.__warconPoller);
 	globalThis.__warconPoller = undefined;
-	if (scheduler?.renewTimer) clearInterval(scheduler.renewTimer);
+	if (globalThis.__warconRenew) clearInterval(globalThis.__warconRenew);
+	globalThis.__warconRenew = undefined;
 	stopDelivery();
 	scheduler = null;
 	if (envRef) await releaseOwnership(envRef);

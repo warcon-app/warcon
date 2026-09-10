@@ -515,7 +515,6 @@ async function reconcileMatch(
 	// A new match: the map changed, or the clock went backwards (restart / rotation advance).
 	const restarted = secs !== null && m.lastMatchSeconds !== null && secs < m.lastMatchSeconds - 30;
 	const mapChanged = !!current && current.map !== status.map;
-	m.lastMatchSeconds = secs;
 	if (current && (restarted || mapChanged)) {
 		const last = (m.lastScores as { name: string; score: number }[] | null) ?? scores;
 		const winner = [...last].sort((a, b) => b.score - a.score)[0]?.name ?? null;
@@ -540,5 +539,7 @@ async function reconcileMatch(
 			.set({ peakPlayers: status.playerCount })
 			.where(eq(matches.id, current.id));
 	}
+	// Only once every write above is in: a rollback must not advance what we remember.
+	m.lastMatchSeconds = secs;
 	m.lastScores = scores;
 }
