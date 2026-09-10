@@ -16,6 +16,7 @@
 
 	const TABS = [
 		['', 'Overview', true],
+		['/access', 'Access', true],
 		['/bans', 'Ban list', false],
 		['/reserved', 'Reserved slots', false]
 	] as const;

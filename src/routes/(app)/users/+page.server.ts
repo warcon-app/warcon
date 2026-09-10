@@ -1,10 +1,13 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
+import { accessibleServers } from '$lib/server/access';
 import { listUsers } from '$lib/server/users';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const env = getEnv();
 	if (locals.user?.role !== 'owner') error(403, 'Owner access required.');
-	return { users: await listUsers(env) };
+	// Every server, not the header scope's: a user's grants are replaced as a whole when saved.
+	const [users, servers] = await Promise.all([listUsers(env), accessibleServers(env, locals.user)]);
+	return { users, servers };
 };

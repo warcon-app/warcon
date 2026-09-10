@@ -116,7 +116,8 @@ function build(env: Env) {
 		},
 		user: {
 			additionalFields: {
-				mustChangePassword: { type: 'boolean', defaultValue: false, input: false }
+				mustChangePassword: { type: 'boolean', defaultValue: false, input: false },
+				defaultOrgId: { type: 'string', required: false, input: false }
 			},
 			// Self-service deletion from the account page (right to erasure). The endpoint checks the
 			// password when one is given; erasure.ts refuses to orphan the panel or an organisation and

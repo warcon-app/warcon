@@ -3,13 +3,15 @@ import type { Actions, PageServerLoad } from './$types';
 import { discordEnabled, getEnv } from '$lib/server/env';
 import { normalizeError, str } from '$lib/server/http';
 import { writeAudit } from '$lib/server/audit';
-import { requireUser } from '$lib/server/access';
+import { requireUser, userOrgs } from '$lib/server/access';
+import { clearScopeCookie } from '$lib/server/scope';
 import { auditSelfDelete } from '$lib/server/erasure';
 import {
 	getUser,
 	linkedProviders,
 	listSessions,
 	revokeSession,
+	setDefaultOrg,
 	setMustChangePassword,
 	setSteamId,
 	unlinkDiscord,
@@ -31,11 +33,34 @@ export const load: PageServerLoad = async ({ locals }) => {
 		providers,
 		/** false for accounts created through Discord: they set a password rather than change one */
 		hasPassword: providers.includes('credential'),
-		steamId: row?.steamId ?? ''
+		steamId: row?.steamId ?? '',
+		defaultOrgId: row?.defaultOrgId ?? ''
 	};
 };
 
 export const actions: Actions = {
+	/** Pick the organisation the panel opens scoped to; blank means every org. */
+	defaultOrg: async ({ request, locals, cookies }) => {
+		const env = getEnv();
+		const user = requireUser(locals);
+		const raw = str((await request.formData()).get('orgId'), 64);
+		const orgs = await userOrgs(env, user);
+		const org = raw ? orgs.find((o) => o.id === raw) : null;
+		if (raw && !org) return fail(404, { error: 'Organisation not found.' });
+		await setDefaultOrg(env, user.id, org?.id ?? null);
+		// The new default should take effect at once, so any browser-level override is dropped.
+		clearScopeCookie(cookies);
+		await writeAudit(env, request, {
+			actor: user,
+			category: 'user',
+			action: 'account.default_org',
+			outcome: 'ok',
+			target: org?.name ?? '',
+			message: org ? `Default organisation: ${org.name}` : 'Default organisation cleared'
+		});
+		return { defaultOrg: true, orgName: org?.name ?? '' };
+	},
+
 	/** Link (or clear) the SteamID64 an organisation may hand a reserved slot to. */
 	steam: async ({ request, locals }) => {
 		const env = getEnv();

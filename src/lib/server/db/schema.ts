@@ -57,7 +57,9 @@ export const user = pgTable('user', {
 	// warcon
 	mustChangePassword: boolean('must_change_password').notNull().default(false),
 	/** the member's own SteamID64, so an org can hand its members a reserved slot */
-	steamId: text('steam_id').unique()
+	steamId: text('steam_id').unique(),
+	/** the organisation the panel opens on (dashboard, switcher, Servers); null = every org */
+	defaultOrgId: text('default_org_id').references(() => organizations.id, { onDelete: 'set null' })
 });
 
 export const session = pgTable(

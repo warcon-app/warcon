@@ -29,6 +29,8 @@ export interface SessionUser {
 	role: GlobalRole;
 	mustChangePassword: boolean;
 	image: string | null;
+	/** the org the panel opens scoped to, unless a session scope overrides it; null = all */
+	defaultOrgId: string | null;
 }
 
 export const ROLE_RANK: Record<ServerRole, number> = { viewer: 1, operator: 2, admin: 3 };
@@ -46,7 +48,8 @@ export function toSessionUser(u: Record<string, unknown>): SessionUser {
 		name: String(u.name ?? '') || String(u.displayUsername ?? u.username ?? ''),
 		role: u.role === 'owner' ? 'owner' : 'member',
 		mustChangePassword: Boolean(u.mustChangePassword),
-		image: typeof u.image === 'string' ? u.image : null
+		image: typeof u.image === 'string' ? u.image : null,
+		defaultOrgId: typeof u.defaultOrgId === 'string' && u.defaultOrgId ? u.defaultOrgId : null
 	};
 }
 
@@ -319,14 +322,23 @@ export function shapeServer(
 	};
 }
 
-/** Every server the user can open: all of them for the site owner, else owned-org servers plus grants. */
-export async function accessibleServers(env: Env, user: SessionUser): Promise<ServerSummary[]> {
+/**
+ * Every server the user can open: all of them for the site owner, else owned-org servers plus
+ * grants. `orgId` narrows the list to one organisation (the header scope, or an org page).
+ */
+export async function accessibleServers(
+	env: Env,
+	user: SessionUser,
+	orgId: string | null = null
+): Promise<ServerSummary[]> {
 	const order = [asc(organizations.name), asc(servers.sortOrder), asc(servers.name)];
+	const inOrg = orgId ? eq(servers.orgId, orgId) : undefined;
 	if (user.role === 'owner') {
 		const rowsAll = await env.db
 			.select({ server: servers, orgName: organizations.name })
 			.from(servers)
 			.innerJoin(organizations, eq(organizations.id, servers.orgId))
+			.where(inOrg)
 			.orderBy(...order);
 		return rowsAll.map((r) => shapeServer(env, r.server, r.orgName, 'admin', true));
 	}
@@ -346,6 +358,7 @@ export async function accessibleServers(env: Env, user: SessionUser): Promise<Se
 		.leftJoin(orgMembers, and(eq(orgMembers.orgId, servers.orgId), eq(orgMembers.userId, user.id)))
 		.where(
 			and(
+				inOrg,
 				isNull(organizations.suspendedAt),
 				or(isNotNull(serverGrants.role), eq(orgMembers.role, 'owner'))
 			)

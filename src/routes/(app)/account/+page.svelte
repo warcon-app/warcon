@@ -19,6 +19,13 @@
 		if (form?.revoked) toast('Session revoked.', 'ok');
 		if (form?.unlinked) toast('Discord unlinked.', 'ok');
 		if (form?.steam) toast(form.steamId ? 'SteamID linked.' : 'SteamID removed.', 'ok');
+		if (form?.defaultOrg)
+			toast(
+				form.orgName
+					? `The panel now opens on ${form.orgName}.`
+					: 'The panel now opens on every organisation.',
+				'ok'
+			);
 		if (form?.error) toast(form.error, 'err');
 	});
 </script>
@@ -114,6 +121,23 @@
 				hand their members a reserved slot use it; leave it blank to opt out.
 			</p>
 		</div>
+
+		{#if data.orgs.length > 1}
+			<div class="mt-6 border-t border-white/8 pt-4">
+				<span class="label-sm">Default organisation</span>
+				<form method="post" action="?/defaultOrg" use:enhance class="join w-full">
+					<select class="input" name="orgId" value={data.defaultOrgId}>
+						<option value="">Every organisation</option>
+						{#each data.orgs as o (o.id)}<option value={o.id}>{o.name}</option>{/each}
+					</select>
+					<button class="btn" type="submit">Save</button>
+				</form>
+				<p class="note">
+					The dashboard, the server switcher and the Servers page open narrowed to this
+					organisation. The picker in the header changes it for one browser at a time.
+				</p>
+			</div>
+		{/if}
 
 		{#if data.discord}
 			<div class="mt-6 border-t border-white/8 pt-4">

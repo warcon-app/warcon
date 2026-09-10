@@ -5,12 +5,12 @@
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+	import GrantList from '$lib/components/GrantList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import type { OrgMemberView, ServerInfo, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-	const ROLES = ['viewer', 'operator', 'admin'];
 
 	type TestOk = {
 		ok: true;
@@ -46,11 +46,28 @@
 	// One org column / group header only once there is more than one org to tell apart.
 	let multiOrg = $derived(data.ownedOrgs.length > 1);
 
+	let q = $state('');
+	let orgFilter = $state('');
+	let shown = $derived.by(() => {
+		const needle = q.trim().toLowerCase();
+		return data.managed.filter(
+			(s) =>
+				(!orgFilter || s.orgId === orgFilter) &&
+				(!needle ||
+					`${s.name} ${s.host}:${s.port} ${s.orgName} ${s.notes}`.toLowerCase().includes(needle))
+		);
+	});
+	let filtering = $derived(!!q.trim() || !!orgFilter);
+	/** where a new server goes by default: the header scope when it is an owned org, else the first */
+	let preferredOrg = $derived(
+		data.ownedOrgs.find((o) => o.id === data.scope?.id)?.id ?? data.ownedOrgs[0]?.id ?? ''
+	);
+
 	const openEdit = (s: ServerInfo | null) => {
 		dialog = {
 			kind: 'edit',
 			server: s,
-			orgId: s?.orgId ?? data.ownedOrgs[0]?.id ?? '',
+			orgId: s?.orgId ?? (orgFilter || preferredOrg),
 			name: s?.name ?? '',
 			host: s?.host ?? '',
 			port: s ? String(s.port) : '',
@@ -169,6 +186,27 @@
 		one under <a href="/orgs" class="font-semibold text-accent underline">Orgs</a> first.{/if}
 </div>
 
+{#if data.managed.length > 5 || multiOrg}
+	<div class="mb-3 flex flex-wrap items-center gap-2">
+		<input
+			class="input sm:w-72"
+			type="search"
+			placeholder="Search name, host, notes…"
+			bind:value={q}
+			aria-label="Search servers"
+		/>
+		{#if multiOrg}
+			<select class="input sm:w-56" bind:value={orgFilter} aria-label="Organisation">
+				<option value="">All organisations</option>
+				{#each data.ownedOrgs as o (o.id)}<option value={o.id}>{o.name}</option>{/each}
+			</select>
+		{/if}
+		{#if filtering}
+			<span class="text-[12.5px] text-mist-400">{shown.length} of {data.managed.length}</span>
+		{/if}
+	</div>
+{/if}
+
 <div class="table-wrap">
 	<table>
 		<thead
@@ -179,7 +217,7 @@
 			></thead
 		>
 		<tbody>
-			{#each data.managed as s (s.id)}
+			{#each shown as s (s.id)}
 				<tr>
 					<td>
 						<a
@@ -206,7 +244,8 @@
 				</tr>
 			{:else}
 				<tr
-					><td colspan={multiOrg ? 5 : 4} class="py-8 text-center text-mist-600">No servers yet.</td
+					><td colspan={multiOrg ? 5 : 4} class="py-8 text-center text-mist-600"
+						>{filtering ? 'No server matches.' : 'No servers yet.'}</td
 					></tr
 				>
 			{/each}
@@ -349,17 +388,21 @@
 {:else if dialog?.kind === 'access'}
 	{@const d = dialog}
 	<Modal title="Access to {d.server.name}" onclose={() => (dialog = null)}>
-		{#each d.members as u (u.userId)}
-			<div class="kv items-center">
-				<span
-					>{u.name || u.username}
-					<span class="font-mono text-[12px] text-mist-600">@{u.username}</span></span
-				>
-				<select class="input w-40" bind:value={d.grants[u.userId]}>
-					<option value="">no access</option>
-					{#each ROLES as r (r)}<option value={r}>{r}</option>{/each}
-				</select>
-			</div>
+		{#if d.members.length}
+			<GrantList
+				rows={d.members.map((u) => ({
+					id: u.userId,
+					label: u.name || u.username,
+					sub: `@${u.username}`
+				}))}
+				bind:grants={d.grants}
+			/>
+			<p class="note">
+				Owners of {d.server.orgName} are admin regardless. The whole organisation at once:
+				<a href="/orgs/{encodeURIComponent(d.server.orgId)}/access" class="text-accent underline"
+					>access matrix</a
+				>.
+			</p>
 		{:else}
 			<p class="text-mist-400">
 				No members besides owners yet. Share an invite link from <a
@@ -367,7 +410,7 @@
 					class="text-accent underline">{d.server.orgName}</a
 				>. Owners always have access.
 			</p>
-		{/each}
+		{/if}
 		{#snippet actions()}
 			<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>
 			<button type="button" class="btn btn-primary" onclick={saveAccess} disabled={busy}

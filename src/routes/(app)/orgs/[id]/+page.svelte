@@ -23,7 +23,6 @@
 				maxUses: string;
 		  }
 		| { kind: 'created'; invite: InviteView }
-		| { kind: 'grants'; member: OrgMemberView; grants: Record<string, string> }
 		| {
 				kind: 'webhook';
 				id: string | null;
@@ -109,23 +108,12 @@
 			`@${m.username} is now ${role}.`
 		);
 	}
-	const openGrants = (m: OrgMemberView) => {
-		const grants: Record<string, string> = {};
-		for (const s of data.orgServers)
-			grants[s.id] = m.grants.find((g) => g.serverId === s.id)?.role ?? '';
-		dialog = { kind: 'grants', member: m, grants };
-	};
-	function saveGrants() {
-		const d = dialog;
-		if (!d || d.kind !== 'grants') return;
-		const grants = Object.entries(d.grants)
-			.filter(([, role]) => role)
-			.map(([serverId, role]) => ({ serverId, role }));
-		void run(
-			() => api('PUT', `${orgPath}/members/${d.member.userId}/grants`, { grants }),
-			'Access updated.'
-		);
-	}
+	let accessHref = $derived(`/orgs/${encodeURIComponent(data.org.id)}/access`);
+	/** "admin 2 · viewer 3": one number per role rather than one chip per server */
+	const grantSummary = (m: OrgMemberView) =>
+		ROLES.filter((r) => m.grants.some((g) => g.role === r))
+			.map((r) => `${r} ${m.grants.filter((g) => g.role === r).length}`)
+			.join(' · ');
 	async function remove(m: OrgMemberView) {
 		if (
 			!(await confirmDialog(
@@ -346,14 +334,19 @@
 									{#if m.role === 'owner'}
 										<span class="text-mist-400">all servers (owner)</span>
 									{:else if m.grants.length}
-										<div class="flex flex-wrap gap-1.5 max-md:max-w-[240px]">
-											{#each m.grants as g (g.serverId)}
-												<span
-													class="inline-flex items-center gap-1.5 rounded-[2px] border border-black bg-ink-950 py-0.5 pr-1 pl-2 text-[12px]"
-													>{g.serverName} <RoleBadge role={g.role} /></span
-												>
-											{/each}
-										</div>
+										<a
+											href={accessHref}
+											class="block whitespace-nowrap hover:underline"
+											title={m.grants.map((g) => `${g.serverName}: ${g.role}`).join('\n')}
+										>
+											<div>
+												{m.grants.length} of {data.orgServers.length} server{data.orgServers
+													.length === 1
+													? ''
+													: 's'}
+											</div>
+											<div class="text-[12px] text-mist-400">{grantSummary(m)}</div>
+										</a>
 									{:else}
 										<span class="text-mist-600">none</span>
 									{/if}
@@ -362,7 +355,7 @@
 								<td class="text-right whitespace-nowrap">
 									<span class="inline-flex gap-1.5">
 										{#if m.role !== 'owner'}
-											<button class="btn btn-sm" onclick={() => openGrants(m)}>Access</button>
+											<a class="btn btn-sm" href={accessHref}>Access</a>
 										{/if}
 										{#if m.userId !== data.user.id}
 											<button class="btn btn-sm btn-danger" onclick={() => remove(m)}>Remove</button
@@ -683,28 +676,5 @@
 				>
 			</div>
 		</form>
-	</Modal>
-{:else if dialog?.kind === 'grants'}
-	{@const d = dialog}
-	<Modal title="Server access for @{d.member.username}" onclose={() => (dialog = null)}>
-		{#each data.orgServers as s (s.id)}
-			<div class="kv items-center">
-				<span
-					>{s.name} <span class="font-mono text-[12px] text-mist-600">{s.host}:{s.port}</span></span
-				>
-				<select class="input w-40" bind:value={d.grants[s.id]}>
-					<option value="">no access</option>
-					{#each ROLES as r (r)}<option value={r}>{r}</option>{/each}
-				</select>
-			</div>
-		{:else}
-			<p class="text-mist-400">This organisation has no servers yet.</p>
-		{/each}
-		{#snippet actions()}
-			<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>
-			<button type="button" class="btn btn-primary" onclick={saveGrants} disabled={busy}
-				>Save access</button
-			>
-		{/snippet}
 	</Modal>
 {/if}

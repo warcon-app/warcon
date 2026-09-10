@@ -33,7 +33,10 @@
 
 {#if !data.servers.length}
 	<div class="callout">
-		{#if data.canManage}
+		{#if data.scope}
+			No servers in {data.scope.name}{data.canManage ? ' yet' : ' are shared with you'}. Pick
+			another organisation, or all of them, from the header.
+		{:else if data.canManage}
 			No servers yet. <a href="/servers" class="font-semibold text-accent underline"
 				>Add your first server</a
 			>{#if data.demoAllowed}

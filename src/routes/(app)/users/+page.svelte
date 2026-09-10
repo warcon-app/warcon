@@ -6,12 +6,12 @@
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
+	import GrantList from '$lib/components/GrantList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import type { UserView } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-	const ROLES = ['viewer', 'operator', 'admin'];
 
 	type Dialog =
 		| {
@@ -41,6 +41,12 @@
 			mustChange: u ? u.mustChangePassword : true
 		};
 	};
+	/** "admin 2 · viewer 3": one number per role rather than one chip per server */
+	const grantSummary = (u: UserView) =>
+		['viewer', 'operator', 'admin']
+			.filter((r) => u.grants.some((g) => g.role === r))
+			.map((r) => `${r} ${u.grants.filter((g) => g.role === r).length}`)
+			.join(' · ');
 	const openGrants = (u: UserView) => {
 		const grants: Record<string, string> = {};
 		for (const s of data.servers)
@@ -184,14 +190,19 @@
 						{#if u.role === 'owner'}
 							<span class="text-mist-400">all servers (site owner)</span>
 						{:else if u.grants.length}
-							<div class="flex flex-wrap gap-1.5 max-md:max-w-[280px]">
-								{#each u.grants as g (g.serverId)}
-									<span
-										class="inline-flex items-center gap-1.5 rounded-[2px] border border-black bg-ink-950 py-0.5 pr-1 pl-2 text-[12px]"
-										>{g.serverName} <RoleBadge role={g.role} /></span
-									>
-								{/each}
-							</div>
+							<button
+								type="button"
+								class="block text-left whitespace-nowrap hover:underline"
+								title={u.grants.map((g) => `${g.serverName}: ${g.role}`).join('\n')}
+								onclick={() => openGrants(u)}
+							>
+								<div>
+									{u.grants.length} of {data.servers.length} server{data.servers.length === 1
+										? ''
+										: 's'}
+								</div>
+								<div class="text-[12px] text-mist-400">{grantSummary(u)}</div>
+							</button>
 						{:else}
 							<span class="text-mist-600">none</span>
 						{/if}
@@ -281,19 +292,15 @@
 {:else if dialog?.kind === 'grants'}
 	{@const d = dialog}
 	<Modal title="Server access for @{d.user.username}" onclose={() => (dialog = null)}>
-		{#each data.servers as s (s.id)}
-			<div class="kv items-center">
-				<span
-					>{s.name} <span class="font-mono text-[12px] text-mist-600">{s.host}:{s.port}</span></span
-				>
-				<select class="input w-40" bind:value={d.grants[s.id]}>
-					<option value="">no access</option>
-					{#each ROLES as r (r)}<option value={r}>{r}</option>{/each}
-				</select>
-			</div>
-		{:else}
-			<p class="text-mist-400">No servers exist yet.</p>
-		{/each}
+		<GrantList
+			rows={data.servers.map((s) => ({
+				id: s.id,
+				label: s.name,
+				sub: data.orgs.length > 1 ? `${s.orgName} · ${s.host}:${s.port}` : `${s.host}:${s.port}`
+			}))}
+			bind:grants={d.grants}
+			empty="No servers exist yet."
+		/>
 		{#snippet actions()}
 			<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>
 			<button type="button" class="btn btn-primary" onclick={saveGrants} disabled={busy}

@@ -391,6 +391,11 @@ export async function unlinkDiscord(env: Env, userId: string): Promise<void> {
  * Links a SteamID64 to the account (or clears it). One SteamID per account: an org that hands its
  * members reserved slots must know whose slot it is.
  */
+/** The organisation the panel opens scoped to; null clears it (every org). */
+export async function setDefaultOrg(env: Env, userId: string, orgId: string | null): Promise<void> {
+	await env.db.update(user).set({ defaultOrgId: orgId }).where(eq(user.id, userId));
+}
+
 export async function setSteamId(env: Env, userId: string, steamId: string | null): Promise<void> {
 	if (steamId) {
 		const [taken] = await env.db
