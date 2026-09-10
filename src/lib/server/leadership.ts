@@ -62,7 +62,8 @@ export async function releaseOwnership(env: Env): Promise<void> {
 		.catch(() => {});
 }
 
-export const isOwner = (): boolean => owner;
+/** Owner, and the last renewal landed within the lease: a stalled renewal is a lost lease. */
+export const isOwner = (): boolean => owner && Date.now() - lastRenewAt < LEASE_MS;
 export const ownershipStats = () => ({ owner, token: token.slice(0, 8), since, lastRenewAt });
 
 /** A transaction that aborts unless this process still holds the lease at commit time. */

@@ -294,7 +294,18 @@ function launchDue(env: Env, s: Scheduler, now: number): void {
  * Hourly: rollups first, and only if they succeeded the prune and the retention policy, so raw
  * history is never dropped before its rollup exists.
  */
+let housekeeping = false;
 async function housekeep(env: Env): Promise<void> {
+	if (housekeeping) return;
+	housekeeping = true;
+	try {
+		await housekeepOnce(env);
+	} finally {
+		housekeeping = false;
+	}
+}
+
+async function housekeepOnce(env: Env): Promise<void> {
 	try {
 		await rollupSamples(env);
 	} catch (err) {

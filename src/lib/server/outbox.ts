@@ -65,7 +65,10 @@ export async function applyTriggerUpdates(db: DbOrTx, updates: TriggerUpdate[]):
 
 // ---- the loop -----------------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setInterval> | null = null;
+declare global {
+	// Survives Vite HMR re-evaluation in dev so an old delivery loop never keeps running.
+	var __warconDelivery: ReturnType<typeof setInterval> | undefined;
+}
 let running = false;
 let wanted = false;
 let envRef: Env | null = null;
@@ -73,13 +76,13 @@ const stats = { delivered: 0, failed: 0, skipped: 0, unknown: 0, lastPassAt: 0, 
 
 export function startDelivery(env: Env): void {
 	envRef = env;
-	if (timer) clearInterval(timer);
-	timer = setInterval(() => void pass(), PASS_MS);
+	if (globalThis.__warconDelivery) clearInterval(globalThis.__warconDelivery);
+	globalThis.__warconDelivery = setInterval(() => void pass(), PASS_MS);
 }
 
 export function stopDelivery(): void {
-	if (timer) clearInterval(timer);
-	timer = null;
+	if (globalThis.__warconDelivery) clearInterval(globalThis.__warconDelivery);
+	globalThis.__warconDelivery = undefined;
 }
 
 /** Runs a pass now (after intents were written) instead of waiting for the next tick. */
@@ -98,12 +101,13 @@ async function pass(): Promise<void> {
 	try {
 		stats.lastPassAt = Date.now();
 		const lease = settings().outboxLeaseMs;
-		// A send whose lease lapsed may have reached the game: it is unknown, never sent again.
-		await env.db.execute(sql`
+		const claimed = await withOwnedTransaction(env, async (tx) => {
+			// A send whose lease lapsed may have reached the game: it is unknown, never sent again.
+			await tx.execute(sql`
 			UPDATE outbox SET state = 'unknown', outcome = 'The worker stopped while sending; the game may have acted.', done_at = now(), lease_until = NULL
 			 WHERE state = 'sending' AND lease_until < now()`);
-		// Claiming moves the row to "sending" durably before anything is sent.
-		const claimed = (await env.db.execute(sql`
+			// Claiming moves the row to "sending" durably before anything is sent.
+			return (await tx.execute(sql`
 			UPDATE outbox SET state = 'sending', lease_until = now() + (${lease} || ' milliseconds')::interval, attempts = attempts + 1
 			 WHERE id IN (SELECT id FROM outbox
 			               WHERE state = 'pending' AND not_before <= now()
@@ -112,6 +116,7 @@ async function pass(): Promise<void> {
 			           trigger_kind AS "triggerKind", action, params, target, detail, steam_id AS "steamId",
 			           ok_message AS "okMessage", dedupe_key AS "dedupeKey", state, attempts, not_before AS "notBefore",
 			           lease_until AS "leaseUntil", outcome, created_at AS "createdAt", done_at AS "doneAt"`)) as unknown as OutboxRow[];
+		});
 		if (!claimed.length) return;
 		// One chain per server (its lane serialises them anyway), servers in parallel.
 		const byServer = new Map<string, OutboxRow[]>();
