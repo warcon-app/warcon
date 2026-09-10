@@ -136,6 +136,9 @@ export function connectRemoteGateway(env: Env): Gateway {
 		async settingsChanged(env) {
 			await call(env, '/settings-changed', {});
 		},
+		triggersChanged(serverId) {
+			void call(env, '/triggers-changed', { serverId }).catch(() => {});
+		},
 		subscribe,
 		health(env) {
 			return call<PollerStats>(env, '/health', undefined, 'GET');

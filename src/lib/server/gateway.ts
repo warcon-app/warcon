@@ -34,6 +34,8 @@ export interface Gateway {
 	syncServer(env: Env, server: ServerRow, org: OrgRow, waitMs: number): Promise<SyncResult>;
 	/** Settings were saved: the worker should re-read them. */
 	settingsChanged(env: Env): Promise<void>;
+	/** A trigger on this server was created, changed or deleted: drop the worker's cached rule set. */
+	triggersChanged(serverId: string): void;
 	/** Live events (observations, deliveries). */
 	subscribe(fn: (e: WarconEvent) => void): () => void;
 	/** The worker's scheduler stats (for /api/health and the settings page). */

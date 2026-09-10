@@ -22,6 +22,7 @@ import {
 } from './db/schema';
 import { getProfiles, steamEnabled } from './steam';
 import { localSignals, orgServers, type LocalSignals } from './players';
+import { gateway } from './gateway';
 import type { SessionUser } from './access';
 import type { DryRunResult, Player, Status, TriggerKind, TriggerView } from '$lib/types';
 import {
@@ -98,7 +99,7 @@ export async function createTrigger(
 			createdBy: user.id
 		})
 		.returning();
-	invalidateTriggers(server.id);
+	gateway().triggersChanged(server.id);
 	await writeAudit(env, req, {
 		actor: user,
 		server: { id: server.id, name: server.name },
@@ -132,7 +133,7 @@ export async function updateTrigger(
 		.set(set)
 		.where(eq(triggers.id, row.id))
 		.returning();
-	invalidateTriggers(server.id);
+	gateway().triggersChanged(server.id);
 	await writeAudit(env, req, {
 		actor: user,
 		server: { id: server.id, name: server.name },
@@ -155,7 +156,7 @@ export async function deleteTrigger(
 ): Promise<void> {
 	const row = await triggerOf(env, server.id, id);
 	await env.db.delete(triggers).where(eq(triggers.id, row.id));
-	invalidateTriggers(server.id);
+	gateway().triggersChanged(server.id);
 	await writeAudit(env, req, {
 		actor: user,
 		server: { id: server.id, name: server.name },

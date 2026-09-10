@@ -414,6 +414,16 @@ function tick(s: State): void {
 		}
 		p.pingMs = Math.max(5, p.pingMs + Math.floor(Math.random() * 9) - 4);
 	}
+	// One of the drifters leaves now and then once the server is busy, so a full demo server keeps
+	// turning over (the seeded regulars stay, so tests can rely on them).
+	if (s.players.length > 8 && Math.random() < 0.03) {
+		const drifters = s.players.filter((p) => BigInt(p.steamId) >= 76561198100000401n);
+		if (drifters.length) {
+			const gone = drifters[Math.floor(Math.random() * drifters.length)];
+			s.players.splice(s.players.indexOf(gone), 1);
+			log(s, 'CLOSE', `${gone.name} disconnected`);
+		}
+	}
 	// Someone new drifts in now and then; quicker while the server is quiet, so joins (and the
 	// triggers that watch for them) are easy to see on the demo.
 	if (s.players.length < 16 && Math.random() < (s.players.length < 12 ? 0.2 : 0.04)) {

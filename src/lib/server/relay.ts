@@ -16,16 +16,15 @@ export interface RelayError {
 }
 
 export function serializeError(err: unknown): RelayError {
-	const e = err as Partial<GameError> & { name?: string };
-	if (err instanceof Error && err.name === 'GameError')
+	if (err instanceof GameError)
 		return {
 			kind: 'game',
-			status: e.status ?? 502,
+			status: err.status,
 			message: err.message,
-			code: e.code,
-			body: e.body
+			code: err.code,
+			body: err.body
 		};
-	if (err instanceof Error && err.name === 'ApiError')
-		return { kind: 'api', status: e.status ?? 500, message: err.message, code: e.code };
+	if (err instanceof ApiError)
+		return { kind: 'api', status: err.status, message: err.message, code: err.code };
 	return { kind: 'other', status: 500, message: err instanceof Error ? err.message : String(err) };
 }

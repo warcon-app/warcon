@@ -12,6 +12,7 @@ import { liveView, readLiveRows } from './live';
 import { memoryOf } from './observe';
 import { observeNow, observeSoon, pollerStats } from './poller';
 import { loadSettings, settings } from './settings';
+import { invalidateTriggers } from './triggers';
 import type { Gateway } from './gateway';
 import type { LiveView } from '$lib/types';
 
@@ -63,6 +64,9 @@ export const localGateway: Gateway = {
 	},
 	async settingsChanged(env: Env) {
 		await loadSettings(env);
+	},
+	triggersChanged(serverId: string) {
+		invalidateTriggers(serverId);
 	},
 	subscribe,
 	health() {
