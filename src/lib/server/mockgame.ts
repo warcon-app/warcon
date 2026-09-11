@@ -143,7 +143,6 @@ const CAPABILITY_ROUTES = [
 	'POST /v1/reserved-slots',
 	'DELETE /v1/reserved-slots/{steamId}',
 	'GET /v1/sponsor',
-	'PUT /v1/sponsor',
 	'GET /v1/audit',
 	'GET /v1/config',
 	'POST /v1/config/validate',
@@ -800,9 +799,8 @@ export function mockHandle(
 		return ok({ imageUrl: s.sponsorUrl });
 	}
 	if (route === 'PUT sponsor') {
-		s.sponsorUrl = String(b.imageUrl || '');
-		log(s, 'COMMAND', `setsponsor ${s.sponsorUrl}`);
-		return ok({ message: 'Sponsor image URL submitted for validation.' });
+		// Real listeners no longer have this route; ServerImageURL goes through PUT /v1/config.
+		return fail(405, 'PUT is not supported on this endpoint', 'method_not_allowed');
 	}
 	if (route === 'GET audit') {
 		const limit = Math.min(500, Math.max(1, Number(qs.get('limit')) || 50));

@@ -486,7 +486,7 @@ GET  /api/steam/profiles?ids=a,b      GET /api/health
 Actions: `capabilities status players maps lightings experiences alternators catalog rotation bans
 reserved sponsor serverLog config` (viewer) · `broadcast whisper kick kill changeTeam endMatch
 restartMatch changeMap setWeather setNextMap rotationAdd rotationRemove rotationMove rotationReorder`
-(operator) · `ban unban reservedAdd reservedRemove rotationSave settings setSponsor configValidate
+(operator) · `ban unban reservedAdd reservedRemove rotationSave settings configValidate
 configApply raw` (admin).
 
 ## Notes and limits

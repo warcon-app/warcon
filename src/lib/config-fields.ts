@@ -100,8 +100,7 @@ export const FIELDS: ConfigField[] = [
 		ini: 'ServerImageURL',
 		def: '',
 		group: 'Server',
-		live: 'the Sponsor image panel above',
-		help: 'Server browser banner: a 1024×256 PNG/JPEG on the server’s image allow-list. The server fetches and checks it before advertising it, so it reports as pending until that finishes.'
+		help: 'Server browser banner: a 1024×256 PNG/JPEG on the server’s image allow-list. Only settable through the config document (the Sponsor image panel above applies it the same way). The server fetches and checks it before advertising it, so it reports as pending until that finishes.'
 	},
 	{
 		key: 'minPlayerCash',
@@ -177,7 +176,7 @@ export const FIELDS: ConfigField[] = [
 		ini: 'MinimumRequiredPlayers',
 		def: 60,
 		group: 'Slots and start',
-		help: 'Players required before pre-match becomes a live match.'
+		help: 'Players required before pre-match becomes a live match. The loaded experience sets its own floor and the higher of the two wins, so a value below that floor changes nothing.'
 	},
 	{
 		key: 'scorePeriod',

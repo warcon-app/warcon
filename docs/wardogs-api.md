@@ -1,6 +1,7 @@
 # WARDOGS dedicated-server RCON API (WDRCON)
 
-Reverse-engineered on 2026-09-08 from the official web console at `http://rcon.wardogs.com`
+Reverse-engineered on 2026-09-08 from the official web console at `http://rcon.wardogs.com`, re-checked
+against the 2026-09-10 redeploy of the site
 (`js/api.js`, `js/mock-server.js`, `js/config-editor.js`, `ServerSettings.ini`). The console is a
 static, plain-HTTP-only site that talks to the game server **directly from the browser**, which is
 why it cannot be served over HTTPS. Warcon moves that traffic server-side: browsers talk HTTPS to
@@ -28,7 +29,7 @@ Warcon, and Warcon's own process talks plain HTTP to the listener.
 | POST | `/v1/players/{steamId}/kick` | `{ reason }` | `{ message }` | |
 | POST | `/v1/players/{steamId}/kill` | | `{ message }` | |
 | POST | `/v1/players/{steamId}/message` | `{ message }` | `{ message }` | Whisper. |
-| PATCH | `/v1/players/{steamId}` | `{ faction }` | `{ message }` | Faction **name** (e.g. `Valkyra`), resolved via `factionScores[].colorHex`. Optional route. |
+| PATCH | `/v1/players/{steamId}` | `{ faction }` | `{ message }` | Faction **name** (e.g. `Valkyra`), resolved via `factionScores[].colorHex`. Optional route. The console follows it with `POST .../kill` so the player respawns on the new side; a failed kill (no living character) is ignored. Warcon does the same. |
 | POST | `/v1/broadcast` | `{ message }` | `{ message }` | ≤200 chars in the console. |
 | GET | `/v1/bans` | | `{ bans:[{steamId, bannedAtUtc, bannedBy, reason}] }` | |
 | POST | `/v1/bans` | `{ steamId, reason? }` | `{ message }` | Persists to `+DefaultBannedPlayerIds`. |
@@ -52,7 +53,7 @@ Warcon, and Warcon's own process talks plain HTTP to the listener.
 | POST | `/v1/rotation/save` | | `{ message }` | Writes rotation to the config; needs `-StandaloneConfig=<path>`. |
 | PATCH | `/v1/settings` | `{ scoreTick?, rotationEnabled?, rotationMode? }` | `{ message }` | The only live settings routes. |
 | GET | `/v1/sponsor` | | `{ imageUrl }` | |
-| PUT | `/v1/sponsor` | `{ imageUrl }` | `{ message }` | 1024×256 PNG/JPEG on an allow-listed host. |
+| ~~PUT~~ | ~~`/v1/sponsor`~~ | | `405 PUT is not supported on this endpoint` | **Removed.** `api.js` still defines `setSponsor` but nothing calls it; the console's "Server Image" card is the `ServerImageURL` config field applied through `PUT /v1/config` (reported `pending` while the server fetches and checks the image). No live route exists without a config document. |
 | GET | `/v1/audit?limit=N` | | `{ entries:[{timestampUtc, peer, sessionId, event, detail}] }` | Listener log. Events: `ACCEPT`, `AUTH_OK`, `AUTH_FAIL`, `REJECT`, `COMMAND`, `CLOSE`. N ≤ 500. |
 | GET | `/v1/config` | | `{ revision, writable, text, sections:[{section, appliesWhen, description, keyOverrides[]}], warnings[] }` | Whole `ServerSettings.ini`. |
 | POST | `/v1/config/validate` | text/plain ini | apply result | Dry run. |

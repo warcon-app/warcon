@@ -329,16 +329,33 @@ export const ACTIONS: Record<string, ActionDef> = {
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) => c.json('POST', `/v1/players/${steamId(p.steamId)}/kill`)
 	},
+	// As the official console does it: move the faction, then kill the player so they respawn on the
+	// new side. A failed kill (no living character) is not an error; the move already happened.
 	changeTeam: {
 		level: 'operator',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
-		run: (c, p) => {
+		run: async (c, p) => {
 			const faction = str(p.faction, 100);
 			if (!faction) {
 				throw new ApiError(400, 'faction is required.');
 			}
-			return c.json('PATCH', `/v1/players/${steamId(p.steamId)}`, { faction });
+			const id = steamId(p.steamId);
+			const moved = await c.json('PATCH', `/v1/players/${id}`, { faction });
+			let respawned = true;
+			try {
+				await c.json('POST', `/v1/players/${id}/kill`);
+			} catch (err) {
+				if (!(err instanceof GameError)) throw err;
+				respawned = false;
+			}
+			return {
+				...moved,
+				respawned,
+				message: respawned
+					? `Moved to ${faction} and killed, so they respawn on the new side.`
+					: `Moved to ${faction}. No living character to kill, so they spawn on the new side.`
+			};
 		}
 	},
 	endMatch: { level: 'operator', mutating: true, run: (c) => c.json('POST', '/v1/match/end') },
@@ -491,12 +508,9 @@ export const ACTIONS: Record<string, ActionDef> = {
 			return c.json('PATCH', '/v1/settings', body);
 		}
 	},
-	setSponsor: {
-		level: 'admin',
-		mutating: true,
-		target: (p) => str(p.imageUrl, 300),
-		run: (c, p) => c.json('PUT', '/v1/sponsor', { imageUrl: str(p.imageUrl, 1000) })
-	},
+	// There is no live route for the sponsor image any more: real listeners answer PUT /v1/sponsor
+	// with "PUT is not supported on this endpoint", and the official console only ever writes
+	// ServerImageURL through the config document (PUT /v1/config). Warcon does the same.
 	configValidate: {
 		level: 'admin',
 		mutating: false,

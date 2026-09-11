@@ -4,6 +4,8 @@
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import ConfigForm from '$lib/components/ConfigForm.svelte';
+	import { setScalarInText } from '$lib/config-doc';
+	import { S_SESSION } from '$lib/config-fields';
 	import type { ConfigDoc, ConfigResult, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
@@ -23,7 +25,9 @@
 	let docError = $state('');
 	let result = $state<ConfigResult | null>(null);
 	let failure = $state('');
-	let lineErrors = $state<{ line?: number; message?: string }[]>([]);
+	let lineErrors = $state<{ line?: number; section?: string; key?: string; message?: string }[]>(
+		[]
+	);
 	let busy = $state(false);
 	let mode = $state<'form' | 'raw'>('form');
 
@@ -107,16 +111,25 @@
 			toast(errorMessage(err), 'err');
 		}
 	}
+	// The game has no live route for the banner (real listeners answer PUT /v1/sponsor with
+	// "PUT is not supported"), so, like the official console, this writes ServerImageURL into the
+	// config document and applies it. Any other unapplied form edits go with it, as they would
+	// from the Apply button below.
 	async function saveSponsor() {
-		try {
-			const r = await rconPost<{ message?: string }>(id, 'setSponsor', {
-				imageUrl: sponsor.trim()
-			});
-			toast(r?.message || 'Sponsor image saved.', 'ok');
-			await loadSponsor();
-		} catch (err) {
-			toast(errorMessage(err), 'err');
-		}
+		if (readOnly) return;
+		if (
+			dirty &&
+			!(await confirmDialog(
+				'You have other unapplied config edits. Apply them to the server together with the sponsor image?'
+			))
+		)
+			return;
+		text = setScalarInText(text, S_SESSION, 'ServerImageURL', sponsor.trim());
+		await runConfig('configApply');
+		// On a refusal (for example a host that is not on the server's image allow-list) runConfig
+		// has already shown the reason; keep what was typed so it can be corrected.
+		if (failure) return;
+		await loadSponsor();
 	}
 	async function runConfig(action: 'configValidate' | 'configApply') {
 		busy = true;
@@ -157,6 +170,7 @@
 			lineErrors = body?.errors || [];
 		} finally {
 			busy = false;
+			if (failure) toast(lineErrors[0]?.message || failure, 'err');
 		}
 	}
 	const PIP: Record<string, string> = {
@@ -205,9 +219,9 @@
 				type="url"
 				placeholder="https://…/banner.png (1024×256)"
 				bind:value={sponsor}
-				disabled={!admin}
+				disabled={readOnly}
 			/>
-			<button class="btn btn-primary" type="submit" disabled={!admin}>Save</button>
+			<button class="btn btn-primary" type="submit" disabled={readOnly || busy}>Apply</button>
 		</form>
 		{#if sponsorShown}<img
 				src={sponsorShown}
@@ -217,7 +231,11 @@
 			/>{/if}
 		<p class="note">
 			The banner beside this server in the browser. Direct link to a 1024×256 PNG/JPEG on the
-			server's image allow-list (catbox.moe, imgbb.com, postimg.cc).
+			server's image allow-list (catbox.moe, imgbb.com, postimg.cc). Written to the config document
+			as ServerImageURL and applied like any other setting; the server fetches and checks the image
+			before advertising it, so the result reads as pending until that finishes.
+			{#if docError}No config document on this server, so the banner cannot be changed from here.{:else if doc && !doc.writable}The
+				config document is read-only, so the banner cannot be changed from here.{/if}
 		</p>
 	</div>
 </div>
@@ -263,6 +281,20 @@
 			><input type="checkbox" bind:checked={force} /> Force (ignore revision conflict)</label
 		>
 	</div>
+	{#if failure}
+		<div class="callout mb-4 border-danger/30 bg-danger/12">
+			<div>{failure}</div>
+			{#each lineErrors as e, i (i)}
+				<div class="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+					<span class="pip {PIP['next-restart']}"
+						>{e.line !== undefined ? `line ${e.line}` : 'rejected'}</span
+					>{#if e.key}<span class="font-mono">{e.key}</span>{/if}<span
+						>{e.message || String(e)}</span
+					>
+				</div>
+			{/each}
+		</div>
+	{/if}
 	{#if mode === 'form' && doc}
 		<ConfigForm
 			bind:text
@@ -302,14 +334,6 @@
 			{typeof w === 'object' && w && 'message' in w
 				? String((w as { message: unknown }).message)
 				: String(w)}
-		</div>
-	{/each}
-	{#if failure}<div class="mt-3 callout mb-0 border-danger/30 bg-danger/12">{failure}</div>{/if}
-	{#each lineErrors as e, i (i)}
-		<div class="mt-2 flex items-center gap-2 text-[13px]">
-			<span class="pip {PIP['next-restart']}">line {e.line ?? '?'}</span><span
-				>{e.message || String(e)}</span
-			>
 		</div>
 	{/each}
 	{#if result}

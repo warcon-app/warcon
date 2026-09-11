@@ -54,6 +54,12 @@
 		lighting: e.lighting,
 		zoneAlternator: e.zoneAlternator
 	});
+	// Long rotations scroll inside the table, so keep the row being worked on in view.
+	let tableWrap = $state<HTMLDivElement>();
+	$effect(() => {
+		const row = tableWrap?.querySelector(selected >= 0 ? 'tr.selected' : 'tr.now');
+		row?.scrollIntoView({ block: 'nearest' });
+	});
 	function withSel(fn: (i: number) => unknown) {
 		if (selected < 0 || !rotation?.entries[selected]) {
 			toast('Select a rotation entry first.', 'err');
@@ -88,45 +94,7 @@
 			</select>
 		{/if}
 	</div>
-	<div class="table-wrap">
-		<table>
-			<thead
-				><tr
-					><th class="num">#</th><th>Map</th><th>Game mode &amp; mods</th><th
-						>Time of day &amp; weather</th
-					><th>Control zone</th></tr
-				></thead
-			>
-			<tbody>
-				{#each rotation?.entries ?? [] as e, i (i)}
-					<tr
-						class="clickable {selected === i ? 'selected' : ''}"
-						onclick={() => (selected = selected === i ? -1 : i)}
-					>
-						<td class="num">{i + 1}</td>
-						<td>
-							{mapLabel(data.catalog, e.map)}
-							{#if rotation && i === rotation.nowIndex}<Badge tone="accent" class="ml-1">now</Badge
-								>{:else if rotation && i === rotation.nextIndex}<Badge tone="info" class="ml-1"
-									>next</Badge
-								>{/if}
-							{#if e.denied}<Badge tone="err" class="ml-1">denied</Badge>{/if}
-						</td>
-						<td>{expSetLabel(data.catalog, e.experiences)}</td>
-						<td>{lightingLabel(data.catalog, e.lighting)}</td>
-						<td>{zoneLabel(e.zoneAlternator)}</td>
-					</tr>
-				{:else}
-					<tr
-						><td colspan="5" class="py-6 text-center text-mist-600"
-							>{rotation ? 'The rotation is empty.' : 'Loading…'}</td
-						></tr
-					>
-				{/each}
-			</tbody>
-		</table>
-	</div>
-	<div class="mt-3 flex flex-wrap items-end gap-x-4 gap-y-3">
+	<div class="mb-3 flex flex-wrap items-end gap-x-4 gap-y-3">
 		<div class="field-group">
 			<span class="field-label">Selected entry</span>
 			<div class="join join-stack w-full">
@@ -198,6 +166,46 @@
 			disabled={!admin}
 			onclick={() => act('rotationSave', {})}>Save rotation</button
 		>
+	</div>
+	<div class="max-h-[55vh] table-wrap overflow-y-auto" bind:this={tableWrap}>
+		<table>
+			<thead
+				><tr
+					><th class="num">#</th><th>Map</th><th>Game mode &amp; mods</th><th
+						>Time of day &amp; weather</th
+					><th>Control zone</th></tr
+				></thead
+			>
+			<tbody>
+				{#each rotation?.entries ?? [] as e, i (i)}
+					<tr
+						class="clickable {selected === i ? 'selected' : ''} {rotation && i === rotation.nowIndex
+							? 'now'
+							: ''}"
+						onclick={() => (selected = selected === i ? -1 : i)}
+					>
+						<td class="num">{i + 1}</td>
+						<td>
+							{mapLabel(data.catalog, e.map)}
+							{#if rotation && i === rotation.nowIndex}<Badge tone="accent" class="ml-1">now</Badge
+								>{:else if rotation && i === rotation.nextIndex}<Badge tone="info" class="ml-1"
+									>next</Badge
+								>{/if}
+							{#if e.denied}<Badge tone="err" class="ml-1">denied</Badge>{/if}
+						</td>
+						<td>{expSetLabel(data.catalog, e.experiences)}</td>
+						<td>{lightingLabel(data.catalog, e.lighting)}</td>
+						<td>{zoneLabel(e.zoneAlternator)}</td>
+					</tr>
+				{:else}
+					<tr
+						><td colspan="5" class="py-6 text-center text-mist-600"
+							>{rotation ? 'The rotation is empty.' : 'Loading…'}</td
+						></tr
+					>
+				{/each}
+			</tbody>
+		</table>
 	</div>
 	<p class="note">
 		Edits apply to the running server's rotation immediately. Save rotation writes them to the
