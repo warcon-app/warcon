@@ -107,6 +107,71 @@ export function getScalar(doc: ParsedIni, section: string, key: string): string 
 	return e && e.values.length ? unquote(e.values[0]) : null;
 }
 
+/** The array values of `key` in `section` (quotes stripped, in file order); [] when absent. */
+export function getArray(doc: ParsedIni, section: string, key: string): string[] {
+	const s = doc.sections.find((x) => sameName(x.name, section));
+	const e = s?.keys.find((k) => sameName(k.key, key));
+	return e ? e.values.map(unquote) : [];
+}
+
+/**
+ * Replaces every array line for `key` in `section` with `!key=ClearArray` followed by one `.key=`
+ * line per value, the way the server itself serialises arrays. The block goes where the first old
+ * line was (or at the end of the section); everything else in the file is untouched.
+ */
+export function setArrayInText(
+	text: string,
+	section: string,
+	key: string,
+	values: string[]
+): string {
+	const eol = text.includes('\r\n') ? '\r\n' : '\n';
+	const lines = text ? text.split(/\r\n|\n|\r/) : [];
+	const block = [`!${key}=ClearArray`, ...values.map((v) => `.${key}=${quoteIfNeeded(v)}`)];
+
+	let start = -1;
+	let end = lines.length;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i].trim();
+		if (!isHeader(line)) continue;
+		if (start >= 0) {
+			end = i;
+			break;
+		}
+		if (sameName(line.slice(1, -1).trim(), section)) start = i;
+	}
+	if (start < 0) {
+		const out = lines.slice();
+		while (out.length && out[out.length - 1].trim() === '') out.pop();
+		if (out.length) out.push('');
+		out.push(`[${section}]`, ...block, '');
+		return out.join(eol);
+	}
+
+	const isOurs = (raw: string) => {
+		const line = raw.trim();
+		if (!/^[+.!-]/.test(line)) return false;
+		const eq = line.indexOf('=');
+		return eq > 0 && sameName(line.slice(1, eq).trim(), key);
+	};
+	let at = -1;
+	const kept: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		if (i > start && i < end && isOurs(lines[i])) {
+			if (at < 0) at = kept.length;
+			continue;
+		}
+		kept.push(lines[i]);
+	}
+	if (at < 0) {
+		// Not present: before the section's trailing blank lines (the section shrank by nothing).
+		at = end;
+		while (at > start + 1 && kept[at - 1].trim() === '') at--;
+	}
+	kept.splice(at, 0, ...block);
+	return kept.join(eol);
+}
+
 export const unquote = (v: string): string =>
 	v.length >= 2 && v.startsWith('"') && v.endsWith('"') ? v.slice(1, -1) : v;
 

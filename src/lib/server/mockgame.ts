@@ -7,6 +7,7 @@
 
 import type { GameResponse } from './transport';
 import { parseMaxReservedSlots } from './lists-plan';
+import { rotationFromText } from '../rotation-doc';
 
 export const MOCK_PASSWORD = 'demo';
 
@@ -111,6 +112,21 @@ const JOINERS = [
 	'Whistler',
 	'Junkrat Jane'
 ];
+
+// Routes live build CL-499480 (2026-09-11) does not serve. With MOCK_LIVE_BUILD=true the demo
+// servers drop them too, so that build's behaviour can be exercised without a real server.
+const LIVE_BUILD_MISSING = new Set([
+	'POST /v1/reserved-slots',
+	'DELETE /v1/reserved-slots/{steamId}',
+	'POST /v1/rotation/entries',
+	'DELETE /v1/rotation/entries/{index}',
+	'POST /v1/rotation/entries/{index}/move',
+	'POST /v1/rotation/save',
+	'PATCH /v1/settings'
+]);
+const liveBuild = () => /^(1|true|yes)$/i.test(process.env.MOCK_LIVE_BUILD || '');
+const servedRoutes = () =>
+	liveBuild() ? CAPABILITY_ROUTES.filter((r) => !LIVE_BUILD_MISSING.has(r)) : CAPABILITY_ROUTES;
 
 const CAPABILITY_ROUTES = [
 	'GET /v1/capabilities',
@@ -584,8 +600,16 @@ export function mockHandle(
 	const route = `${m} ${p.join('/')}`;
 	tick(s);
 
+	if (liveBuild()) {
+		const pattern = `${m} /v1/${p
+			.map((seg, i) =>
+				i > 0 && /^\d{17}$/.test(seg) ? '{steamId}' : i > 0 && /^\d+$/.test(seg) ? '{index}' : seg
+			)
+			.join('/')}`;
+		if (LIVE_BUILD_MISSING.has(pattern)) return fail(404, 'No such endpoint.', 'not_found');
+	}
 	if (route === 'GET capabilities') {
-		return ok({ routes: CAPABILITY_ROUTES, config: { writable: true } });
+		return ok({ routes: servedRoutes(), config: { writable: true } });
 	}
 	if (route === 'GET status') {
 		return ok({
@@ -908,12 +932,28 @@ export function mockHandle(
 			if (img) {
 				s.sponsorUrl = img[1].trim().replace(/^"|"$/g, '');
 			}
-			const en = /^bEnabled=(true|false)$/im.exec(
-				text.split('[/Script/WDGame.WDServerMapRotationSettings]')[1] || ''
-			);
-			if (en) {
-				s.rotation.enabled = en[1].toLowerCase() === 'true';
-			}
+			// Like the live build: the rotation section is "rebuilt immediately; used from the next
+			// map change". The entry now playing keeps its place by identity, or the pointer resets.
+			const rot = rotationFromText(text);
+			s.rotation.enabled = rot.enabled;
+			s.rotation.mode = rot.mode;
+			const playing = s.rotation.entries[s.rotation.nowIndex];
+			s.rotation.entries = rot.entries.map((e) => ({
+				...e,
+				denied: e.experiences.some((id) => !EXPERIENCES.some((x) => x.id === id))
+			}));
+			const keep = playing
+				? s.rotation.entries.findIndex(
+						(e) =>
+							e.map === playing.map &&
+							e.lighting === playing.lighting &&
+							e.experiences.join('+') === playing.experiences.join('+')
+					)
+				: -1;
+			s.rotation.nowIndex = keep >= 0 ? keep : 0;
+			s.rotation.nextIndex = s.rotation.entries.length
+				? (s.rotation.nowIndex + 1) % s.rotation.entries.length
+				: -1;
 			log(s, 'COMMAND', `config -> demo${String(s.configRevision).padStart(8, '0')}`);
 		}
 		return ok({

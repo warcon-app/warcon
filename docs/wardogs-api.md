@@ -81,8 +81,10 @@ and `PUT /v1/sponsor`, plus one the console does not know, `GET /v1/health`. Its
 spelled `{id}` rather than `{steamId}`. The document also carries `apiVersion`, `build`,
 `auth:{scheme:"bearer",header:"Authorization"}`, `limits:{maxBodyBytes,maxRequestsPerMinutePerIp}`
 and `config:{writable,document:"/v1/config"}`. Warcon reads the flags it needs into `Features`
-(`reservedSlots`, `rotationEdit`, `rotationSave`, `liveSettings`) and disables the matching
-controls, pointing at the config document instead. The authoritative list for any server is its own
+(`reservedSlots`, `rotationEdit`, `rotationSave`, `liveSettings`). Without `rotationEdit` the Map
+rotation tab keeps its table and buttons but stages edits and writes the rotation section of the
+config document in one apply (`src/lib/rotation-doc.ts`); the other controls disable and point at
+the document. Set `MOCK_LIVE_BUILD=true` to make the demo servers behave like this build. The authoritative list for any server is its own
 `routes` array; Warcon shows it under Servers, Test, "Routes this build serves".
 
 ## ServerSettings.ini keys the server honours
