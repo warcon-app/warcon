@@ -18,6 +18,13 @@ Warcon, and Warcon's own process talks plain HTTP to the listener.
 * Errors: non-2xx with JSON `{ "error": { "code", "message" } }`. Success bodies for mutations are
   usually `{ "message": "..." }`.
 * Config routes use `text/plain` bodies and `If-Match: "<revision>"`; `412` means revision mismatch.
+* Limits reported by a live build on 2026-09-11 (`capabilities` via a third-party CLI, build
+  `++Wardogs+Live-CL-499480`, "API version 1"): **600 requests/min per client IP** and a
+  **65,536-byte body cap**; that build served 28 routes, so real servers lack some of the routes
+  below (the web console feature-detects). Warcon's worker at the tightest allowed cadence (players
+  every 500 ms, status every 1 s) sends 180/min per server, under the cap with room for page reads;
+  the browser console alone would add about 47/min. Config documents over 64 KiB will be refused by
+  the listener; the TLR document with 78 rotation entries is about 10 KB.
 
 ## Routes
 
@@ -61,6 +68,15 @@ Warcon, and Warcon's own process talks plain HTTP to the listener.
 
 "Set as next map" is not a route: the console finds (or adds) the selection in the rotation and
 moves it into the slot after the `now` entry with repeated `/move` calls. Warcon does the same server-side.
+
+### Seen elsewhere, not yet verified
+
+A third-party command-line client (2026-09-11) lists a `health` command ("Shows RCON health and the
+game thread queue"), which implies a `GET /v1/health` route the web console never calls. The same
+client hides 9 commands on the TLR server because "this WARDOGS build does not serve the routes they
+need", so real builds can lack routes the console knows. The authoritative list for a given server is
+its own `GET /v1/capabilities` `routes` array; Warcon shows it under Servers, Test, "Routes this
+build serves".
 
 ## ServerSettings.ini keys the server honours
 

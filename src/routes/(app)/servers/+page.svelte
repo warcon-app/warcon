@@ -18,6 +18,8 @@
 		capabilities: {
 			routes: string[];
 			features: { changeTeam: boolean; configDocument: boolean };
+			/** the capabilities document as the server sent it (version, build, limits…) */
+			raw?: Record<string, unknown>;
 		} | null;
 		durationMs: number;
 	};
@@ -381,6 +383,27 @@
 						: 'no'}{:else}not reported (older plugin){/if}
 			</span>
 		</div>
+		{#if d.result.capabilities?.raw}
+			{@const { routes: _routes, ...rest } = d.result.capabilities.raw}
+			{#if Object.keys(rest).length}
+				<pre
+					class="mt-2 max-h-40 overflow-auto rounded-card border border-black bg-ink-950 p-3 font-mono text-[12px] leading-relaxed">{JSON.stringify(
+						rest,
+						null,
+						2
+					)}</pre>
+			{/if}
+		{/if}
+		{#if d.result.capabilities?.routes.length}
+			<details class="mt-2">
+				<summary class="cursor-pointer text-[12.5px] text-mist-400"
+					>Routes this build serves</summary
+				>
+				<ul class="mt-2 max-h-56 overflow-y-auto font-mono text-[12px] leading-relaxed">
+					{#each d.result.capabilities.routes as r (r)}<li>{r}</li>{/each}
+				</ul>
+			</details>
+		{/if}
 		{#snippet actions()}<button type="button" class="btn" onclick={() => (dialog = null)}
 				>Close</button
 			>{/snippet}
