@@ -457,6 +457,20 @@ export interface ImportCandidate {
 	servers: { serverId: string; serverName: string; reason: string; bannedBy: string }[];
 }
 
+/** One reserved slot as the Bans & slots page shows it. */
+export interface ReservedSlotState {
+	state: ListEntryState;
+	managed: boolean;
+	/** last name seen on the org's servers, else the Steam persona, else null */
+	name: string | null;
+	/** the note on the org list entry, if any */
+	note: string;
+	/** a slot the org hands its members, not an entry someone added */
+	member: boolean;
+	/** org list priority; null for slots added on the server itself */
+	priority: number | null;
+}
+
 /** Per-server view of which bans and reserved slots the org lists manage; for the players page. */
 export interface ServerListsState {
 	canEditOrg: boolean;
@@ -464,7 +478,7 @@ export interface ServerListsState {
 	orgOwner: boolean;
 	orgId: string;
 	bans: Record<string, { state: ListEntryState; managed: boolean }>;
-	reserved: Record<string, { state: ListEntryState; managed: boolean }>;
+	reserved: Record<string, ReservedSlotState>;
 	sync: {
 		syncedAt: string | null;
 		reservedCap: number | null;

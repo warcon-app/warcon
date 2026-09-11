@@ -3,6 +3,7 @@
 	// organisation's lists contribute marked out, and the way into those lists.
 	import { invalidateAll } from '$app/navigation';
 	import { api, rconGet, rconPost, errorMessage } from '$lib/api';
+	import { watchLive } from '$lib/live';
 	import { can, fmtTime } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
@@ -28,6 +29,8 @@
 	let reservedId = $state('');
 	let busy = $state(false);
 	let banning = $state(false);
+	/** who is on the server right now, by SteamID, with the name they are playing under */
+	let online = $state<Record<string, string>>({});
 
 	let banRows = $derived.by(() => {
 		const q = banSearch.trim().toLowerCase();
@@ -49,6 +52,39 @@
 	let managedSlots = $derived(
 		Object.values(listState?.reserved ?? {}).filter((s) => s.managed).length
 	);
+	let slotCap = $derived(listState?.sync?.reservedCap ?? null);
+	let slotPct = $derived(
+		slotCap ? Math.min(100, Math.round((reserved.length / slotCap) * 100)) : 0
+	);
+	/**
+	 * The roster: everyone holding a slot on this server, plus org entries still on their way.
+	 * People playing right now come first, then the org's hand-picked entries, then slots added
+	 * on this server, then members (who rank below everyone else when the cap bites).
+	 */
+	let slots = $derived.by(() => {
+		const ids = new Set([...reserved, ...Object.keys(listState?.reserved ?? {})]);
+		const rows = [...ids].map((steamId) => {
+			const src = listState?.reserved[steamId] ?? null;
+			const here = reserved.includes(steamId);
+			return {
+				steamId,
+				src,
+				here,
+				name: online[steamId] ?? src?.name ?? null,
+				online: steamId in online,
+				rank: src?.member ? 3 : src?.managed ? 1 : 2
+			};
+		});
+		return rows.sort(
+			(a, b) =>
+				Number(b.online) - Number(a.online) ||
+				a.rank - b.rank ||
+				(b.src?.priority ?? 0) - (a.src?.priority ?? 0) ||
+				(a.name ?? '\uffff').localeCompare(b.name ?? '\uffff') ||
+				a.steamId.localeCompare(b.steamId)
+		);
+	});
+	let onlineSlots = $derived(slots.filter((s) => s.online).length);
 	let pendingCount = $derived(
 		[...Object.values(listState?.bans ?? {}), ...Object.values(listState?.reserved ?? {})].filter(
 			(s) => s.state === 'pending' || s.state === 'failed'
@@ -99,6 +135,41 @@
 		void id;
 		Promise.all([refreshReserved(), refreshBans()]).catch((err) => toast(errorMessage(err), 'err'));
 	});
+	$effect(() => {
+		void id;
+		return watchLive([id], (v) => {
+			const next: Record<string, string> = {};
+			for (const p of v.players) next[p.steamId] = p.name;
+			online = next;
+		});
+	});
+
+	const addSlot = () =>
+		act(
+			'reservedAdd',
+			{ steamId: reservedId.trim() },
+			{
+				after: async () => {
+					reservedId = '';
+					await refreshReserved();
+				}
+			}
+		);
+	async function removeSlot(steamId: string, name: string | null) {
+		const src = slotSource(steamId);
+		const who = name ? `${name} (${steamId})` : steamId;
+		await act(
+			'reservedRemove',
+			{ steamId },
+			{
+				confirm: src?.managed
+					? `${who} holds this slot through the organisation's list, so the panel will hand it back at the next sync. Withdraw it here anyway? To withdraw it everywhere, remove it from the organisation's reserved slots instead.`
+					: `Withdraw the reserved slot for ${who}?`,
+				danger: !!src?.managed,
+				after: refreshReserved
+			}
+		);
+	}
 
 	const banSource = (steamId: string) => listState?.bans[steamId] ?? null;
 	const slotSource = (steamId: string) => listState?.reserved[steamId] ?? null;
@@ -213,65 +284,130 @@
 </div>
 
 <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-	<div class="panel">
-		<span class="label-sm">Reserved slots on this server</span>
-		<div class="mb-3 flex flex-wrap gap-1.5">
-			{#each reserved as r (r)}
-				{@const src = slotSource(r)}
-				<button
-					type="button"
-					class="chip cursor-pointer hover:bg-white/12 {src?.managed ? 'text-accent' : ''}"
-					title={src?.managed ? 'From the organisation list' : 'Added on this server'}
-					onclick={() => (reservedId = r)}>{r}</button
-				>
-			{:else}
-				<span class="text-mist-600">None.</span>
-			{/each}
+	<div class="flex flex-col panel">
+		<div class="mb-3 flex flex-wrap items-center gap-2">
+			<span class="label-sm mb-0!">Reserved slots</span>
+			{#if listState?.canEditOrg}
+				<a class="ml-auto btn btn-sm" href="{orgPath}/reserved">Organisation list</a>
+			{/if}
 		</div>
-		<div class="join join-wrap w-full">
+		<div class="mb-4 rounded-card border border-black bg-ink-950 px-4 py-3">
+			<div class="flex items-baseline gap-2">
+				<span class="font-display text-[28px] leading-none font-semibold tabular"
+					>{reserved.length}{#if slotCap !== null}<span class="text-mist-600"
+							>&nbsp;/ {slotCap}</span
+						>{/if}</span
+				>
+				<span class="caps text-mist-400">slots held</span>
+				{#if onlineSlots}
+					<span class="ml-auto inline-flex items-center gap-1.5 text-[12.5px] text-ok"
+						><span class="size-1.5 rounded-full bg-ok"></span>{onlineSlots} playing now</span
+					>
+				{/if}
+			</div>
+			{#if slotCap !== null}
+				<div class="mt-2.5 progress">
+					<span class="progress-bar" style="width: {slotPct}%"></span>
+				</div>
+				<div class="mt-1.5 text-[12px] text-mist-400">
+					{#if slotCap - reserved.length > 0}
+						{slotCap - reserved.length} more can be handed out before this server's cap (MaxReservedSlots).
+					{:else}
+						The cap is full: higher-priority org entries push out lower ones.
+					{/if}
+				</div>
+			{/if}
+		</div>
+
+		{#if slots.length}
+			<ul class="mb-4 divide-y divide-white/[0.06] rounded-card border border-black bg-ink-950">
+				{#each slots as s (s.steamId)}
+					<li
+						class="group flex items-center gap-3 px-3 py-2 {s.src?.managed && !s.here
+							? 'opacity-70'
+							: ''}"
+					>
+						<span
+							class="size-2 shrink-0 rounded-full {s.online
+								? 'bg-ok ring-[3px] ring-ok/25'
+								: 'bg-ink-700'}"
+							title={s.online ? 'Playing now' : 'Not on the server right now'}
+						></span>
+						<div class="min-w-0 flex-1">
+							<div class="flex min-w-0 items-center gap-2">
+								<a
+									href="/server/{encodeURIComponent(id)}/players/{s.steamId}"
+									class="truncate text-[13.5px] font-medium hover:text-accent hover:underline {s.name
+										? ''
+										: 'text-mist-400 italic'}"
+									title="Open dossier">{s.name ?? 'Not seen here yet'}</a
+								>
+								{#if s.src?.member}
+									<Badge tone="accent">member</Badge>
+								{:else if s.src?.managed}
+									<Badge tone={STATE_TONE[s.src.state]}
+										>org{s.src.state === 'applied' ? '' : ` · ${s.src.state}`}</Badge
+									>
+								{:else}
+									<Badge>local</Badge>
+								{/if}
+							</div>
+							<div class="flex flex-wrap gap-x-1.5 text-[11.5px] text-mist-600">
+								<span class="font-mono">{s.steamId}</span>
+								{#if s.src?.note}<span class="text-mist-400">{s.src.note}</span>{/if}
+							</div>
+						</div>
+						{#if admin && data.features.reservedSlots && s.here}
+							<button
+								type="button"
+								class="btn btn-sm btn-ghost opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
+								title="Withdraw this slot"
+								onclick={() => removeSlot(s.steamId, s.name)}>Withdraw</button
+							>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{:else}
+			<div class="callout mb-4">
+				<b>Nobody holds a reserved slot here yet.</b>
+				<span class="block text-mist-400"
+					>A reserved slot lets your admins, donors and clan members join even when the server is
+					full. Reserve one below{#if listState?.canEditOrg}, or hand them out across every server
+						from the organisation's list{/if}.</span
+				>
+			</div>
+		{/if}
+
+		<form
+			class="join join-wrap mt-auto w-full"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void addSlot();
+			}}
+		>
 			<input
 				class="input font-mono"
 				type="text"
-				placeholder="SteamID64…"
+				inputmode="numeric"
+				placeholder="SteamID64 to reserve…"
 				maxlength="17"
+				required
 				bind:value={reservedId}
 			/>
 			<button
-				class="btn"
-				disabled={!admin || !data.features.reservedSlots}
-				onclick={() =>
-					act(
-						'reservedAdd',
-						{ steamId: reservedId.trim() },
-						{
-							after: async () => {
-								reservedId = '';
-								await refreshReserved();
-							}
-						}
-					)}>Add</button
+				type="submit"
+				class="btn btn-primary"
+				disabled={!admin || !data.features.reservedSlots || !reservedId.trim()}>Reserve</button
 			>
-			<button
-				class="btn btn-danger"
-				disabled={!admin || !data.features.reservedSlots}
-				onclick={() =>
-					act(
-						'reservedRemove',
-						{ steamId: reservedId.trim() },
-						{
-							after: async () => {
-								reservedId = '';
-								await refreshReserved();
-							}
-						}
-					)}>Remove</button
-			>
-		</div>
+		</form>
 		<p class="note">
 			{#if !data.features.reservedSlots}This server build has no live reserved-slot routes; add
 				+DefaultReservedPlayerIds lines to the config document instead.{/if}
-			Click a slot to fill the field. Slots added here are written to this server's ServerSettings.ini
-			only; <span class="text-accent">highlighted</span> ones come from the organisation list.
+			Slots reserved here are written to this server's ServerSettings.ini only. <Badge tone="ok"
+				>org</Badge
+			> and <Badge tone="accent">member</Badge> slots come from the organisation and are handed back if
+			withdrawn here.
 		</p>
 	</div>
 	<div class="panel lg:col-span-2">

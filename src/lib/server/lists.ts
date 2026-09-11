@@ -36,6 +36,7 @@ import type {
 	ListServerStateView,
 	ListSyncSummary,
 	OrgListsView,
+	ReservedSlotState,
 	ServerListsState
 } from '$lib/types';
 
@@ -682,16 +683,54 @@ export async function serverListsState(
 				}
 			: null
 	};
+	const slot = (state: ListEntryState, managed: boolean): ReservedSlotState => ({
+		state,
+		managed,
+		name: null,
+		note: '',
+		member: false,
+		priority: null
+	});
 	for (const b of bans) out.bans[b.steamId] = { state: 'local', managed: false };
-	for (const r of reserved) out.reserved[r.steamId] = { state: 'local', managed: false };
+	for (const r of reserved) out.reserved[r.steamId] = slot('local', false);
 	for (const s of state) {
-		const bucket = s.kind === 'ban' ? out.bans : out.reserved;
-		bucket[s.steamId] = { state: s.state, managed: true };
+		if (s.kind === 'ban') out.bans[s.steamId] = { state: s.state, managed: true };
+		else out.reserved[s.steamId] = slot(s.state, true);
 	}
 	// wanted but not yet on the server
 	const org = (await getOrg(env, server.orgId)) ?? { membersReserved: false };
 	const desired = await desiredFor(env, server, org);
 	for (const d of desired.bans) out.bans[d.steamId] ??= { state: 'pending', managed: true };
-	for (const d of desired.reserved) out.reserved[d.steamId] ??= { state: 'pending', managed: true };
+	for (const d of desired.reserved) {
+		const s = (out.reserved[d.steamId] ??= slot('pending', true));
+		s.priority = d.priority;
+		s.member = d.priority === MEMBER_PRIORITY;
+	}
+	// what the page shows for each slot: the player's name and the note on the org entry
+	const slotIds = Object.keys(out.reserved);
+	if (slotIds.length) {
+		const listIds = [...new Set(desired.reserved.map((d) => d.listId))];
+		const [names, notes] = await Promise.all([
+			namesFor(
+				env,
+				(await orgServerRefs(env, server.orgId)).map((s) => s.id),
+				slotIds
+			),
+			listIds.length
+				? env.db
+						.select({ steamId: listEntries.steamId, reason: listEntries.reason })
+						.from(listEntries)
+						.where(
+							and(
+								inArray(listEntries.listId, listIds),
+								inArray(listEntries.steamId, slotIds),
+								isNull(listEntries.removedAt)
+							)
+						)
+				: []
+		]);
+		for (const [steamId, name] of names) out.reserved[steamId].name = name;
+		for (const n of notes) if (n.reason) out.reserved[n.steamId].note = n.reason;
+	}
 	return out;
 }
