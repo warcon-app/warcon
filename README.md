@@ -55,6 +55,10 @@ on a container host, with the database wherever you like.
 - **Demo mode**: a built-in mock game server so you can try everything before pointing it at a real one.
 
 The protocol was reverse-engineered from `rcon.wardogs.com`; see [docs/wardogs-api.md](docs/wardogs-api.md).
+The map imagery under `static/maps/` is BULKHEAD's, mirrored from the official console by
+`scripts/fetch-map-art.sh` and credited in the footer; it is not under this repository's MIT
+licence (see [static/maps/ATTRIBUTION.md](static/maps/ATTRIBUTION.md)). Warcon is a community
+tool with no affiliation to BULKHEAD or Team17.
 
 Running a public server? Add it to [wardogservers.com](https://wardogservers.com) so players can find it in
 the community server list.
@@ -236,8 +240,10 @@ aim, position or input data, so nothing here detects cheating itself.
 
 Each organisation keeps a **ban list** and a **reserved-slot list** in the panel, under the
 **Ban list** and **Reserved slots** tabs of the organisation page, and pushes them to every one of
-its servers. Each server's own **Bans & slots** tab shows what that server holds, marks the
-entries the organisation put there, and links to the organisation lists. Ban a player from the
+its servers. Each server's own **Bans** and **Reserved slots** tabs show what that server holds,
+mark the entries the organisation put there, and link to the organisation lists. The Reserved
+slots tab is a roster: who holds a slot, whether they are playing right now, the note and priority
+on their org entry, and how many slots the server's cap has left. Ban a player from the
 Players tab or a dossier and choose _every server in the organisation_ (the default, when you may
 edit the org list) or _this server only_. Org owners and
 anyone who is admin on one of the org's servers can edit the lists; a ban can carry a reason and
@@ -251,7 +257,7 @@ local ban stays until an owner imports it into the org list or unbans it on that
 
 Bans and reserved slots that your servers already hold show up on the list pages as candidates to
 **import**: an owner reviews them, and importing puts them on the org list, marks them as managed
-on the servers that have them, and applies them to the rest. On a server's Bans & slots tab a local ban can be
+on the servers that have them, and applies them to the rest. On a server's Bans tab a local ban can be
 promoted the same way (owners), or added to the org list while this server's own copy stays local
 (server admins). Every dossier shows the player's standing on the org lists and lets an editor ban
 or unban org-wide, or hand out and withdraw a reserved slot, without leaving the page.

@@ -6,6 +6,7 @@
 	import { rotationFromText, rotationIntoText, type RotationDoc } from '$lib/rotation-doc';
 	import Badge from '$lib/components/Badge.svelte';
 	import MapPicker from '$lib/components/MapPicker.svelte';
+	import MapArt from '$lib/components/MapArt.svelte';
 	import type { ConfigDoc, ConfigResult, MapSelection, Rotation, RotationEntry } from '$lib/types';
 	import type { PageProps } from './$types';
 
@@ -324,7 +325,16 @@
 					>
 						<td class="num">{i + 1}</td>
 						<td>
-							{mapLabel(data.catalog, e.map)}
+							<span class="inline-flex items-center gap-2.5">
+								<MapArt
+									map={e.map}
+									lighting={e.lighting}
+									variant="720"
+									alt=""
+									class="w-14 shrink-0"
+								/>
+								{mapLabel(data.catalog, e.map)}
+							</span>
 							{#if i === nowIndex}<Badge tone="accent" class="ml-1">now</Badge
 								>{:else if i === nextIndex}<Badge tone="info" class="ml-1">next</Badge>{/if}
 							{#if e.denied}<Badge tone="err" class="ml-1">denied</Badge>{/if}

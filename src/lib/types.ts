@@ -457,7 +457,7 @@ export interface ImportCandidate {
 	servers: { serverId: string; serverName: string; reason: string; bannedBy: string }[];
 }
 
-/** One reserved slot as the Bans & slots page shows it. */
+/** One reserved slot as the server's Reserved slots page shows it. */
 export interface ReservedSlotState {
 	state: ListEntryState;
 	managed: boolean;

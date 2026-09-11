@@ -64,6 +64,9 @@ export const isMod = (id: string) => /infantry|hardcore/i.test(id);
 
 export const mapLabel = (catalog: Catalog, id: string) =>
 	MAP_DISPLAY[id] || catalog.maps.find((m) => m.id === id)?.display || prettify(id) || '—';
+/** The map's display name where no catalog is at hand (dashboard cards). */
+export const mapName = (id: string | null | undefined) =>
+	(id && MAP_DISPLAY[id]) || prettify(id) || '—';
 
 export const lightingLabel = (catalog: Catalog, id: string) =>
 	catalog.lightings.find((l) => l.id === id)?.display || prettify(id) || '—';

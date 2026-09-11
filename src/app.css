@@ -403,3 +403,26 @@
 		@apply text-right tabular;
 	}
 }
+
+/* Map art mirrored from the official console (static/maps): framed, cropped, never stretched.
+   In the components layer so width utilities on the element win. */
+@layer components {
+	.map-art {
+		display: block;
+		width: 100%;
+		object-fit: cover;
+		border: 1px solid rgb(0 0 0 / 0.6);
+		border-radius: var(--radius-ctl);
+		background: var(--color-ink-950);
+	}
+	.map-art-720 {
+		aspect-ratio: 16 / 9;
+	}
+	.map-art-square {
+		aspect-ratio: 4 / 5;
+	}
+	.map-art-wide {
+		aspect-ratio: 1920 / 149;
+		min-height: 44px;
+	}
+}

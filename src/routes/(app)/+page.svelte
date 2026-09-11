@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { watchLive } from '$lib/live';
-	import { fmtNum } from '$lib/format';
+	import { fmtNum, mapName } from '$lib/format';
 	import { setHealth } from '$lib/health.svelte';
+	import MapArt from '$lib/components/MapArt.svelte';
 	import Pulse from '$lib/components/Pulse.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
 	import type { LiveView, Status } from '$lib/types';
@@ -75,8 +76,9 @@
 						? Math.min(100, Math.round((st.playerCount / st.maxPlayers) * 100))
 						: 0}
 					<div class="mb-1 truncate text-[13px] text-mist-400">{st.serverName || '—'}</div>
+					<MapArt map={st.map} lighting={st.lighting} variant="wide" alt="" class="mb-2" />
 					<div class="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
-						<span class="text-mist-400">Map <b class="text-mist-100">{st.map || '—'}</b></span>
+						<span class="text-mist-400">Map <b class="text-mist-100">{mapName(st.map)}</b></span>
 						{#if st.matchSeconds !== null}<span class="text-mist-400"
 								>Match <b class="text-mist-100">{Math.floor(st.matchSeconds / 60)} min</b></span
 							>{/if}

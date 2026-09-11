@@ -2,7 +2,8 @@
 	import { untrack } from 'svelte';
 	import { rconGet, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
-	import { expLabel, isMod, mapLabel, zoneLabel } from '$lib/format';
+	import { expLabel, isMod, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
+	import MapArt from './MapArt.svelte';
 	import type { Catalog, CatalogItem, MapSelection } from '$lib/types';
 
 	let {
@@ -74,6 +75,14 @@
 </script>
 
 <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+	<div class="sm:col-span-2 lg:col-span-4">
+		<MapArt
+			{map}
+			{lighting}
+			variant="wide"
+			alt="{mapLabel(catalog, map)}, {lightingLabel(catalog, lighting)}"
+		/>
+	</div>
 	<label class="block">
 		<span class="label-sm">Map</span>
 		<select class="input" bind:value={map} onchange={() => loadMap()} {disabled}>

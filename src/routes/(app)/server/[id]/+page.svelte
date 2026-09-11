@@ -15,6 +15,7 @@
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import { setHealth } from '$lib/health.svelte';
 	import MapPicker from '$lib/components/MapPicker.svelte';
+	import MapArt from '$lib/components/MapArt.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
 	import CashChart from '$lib/components/CashChart.svelte';
 	import { cashByFaction } from '$lib/cash';
@@ -184,6 +185,13 @@
 	<div class="panel">
 		<span class="label-sm">Scores</span>
 		{#if status}
+			<MapArt
+				map={status.map}
+				lighting={status.lighting}
+				variant="wide"
+				alt="{mapLabel(data.catalog, status.map)}, {lightingLabel(data.catalog, status.lighting)}"
+				class="mb-3"
+			/>
 			<div class="mb-3 space-y-2.5">
 				{#each status.scores as f (f.name)}
 					{@const pct = status.scoreCap
@@ -263,12 +271,18 @@
 		</div>
 		<div class="stat-big">
 			<span class="text-mist-400">Next map</span>
-			<span class="text-right text-lg font-semibold"
+			<span class="inline-flex items-center gap-3 text-right text-lg font-semibold"
 				>{next
 					? mapLabel(data.catalog, next.map)
 					: rotation && !rotation.enabled && status
 						? `${mapLabel(data.catalog, status.map)} again (rotation off)`
-						: '—'}</span
+						: '—'}{#if next}<MapArt
+						map={next.map}
+						lighting={next.lighting}
+						variant="720"
+						alt=""
+						class="w-16 shrink-0"
+					/>{/if}</span
 			>
 		</div>
 		{#if next && rotation}

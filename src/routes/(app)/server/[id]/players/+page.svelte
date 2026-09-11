@@ -279,9 +279,11 @@
 	{/if}
 	{#if !operator}<p class="note">You have view-only access; player actions are disabled.</p>{/if}
 	<p class="note">
-		This server's ban list and reserved slots are under
-		<a href="/server/{encodeURIComponent(id)}/bans" class="text-accent hover:underline"
-			>Bans &amp; slots</a
+		This server's ban list is under
+		<a href="/server/{encodeURIComponent(id)}/bans" class="text-accent hover:underline">Bans</a>
+		and its reserved slots under
+		<a href="/server/{encodeURIComponent(id)}/slots" class="text-accent hover:underline"
+			>Reserved slots</a
 		>.
 	</p>
 </div>
