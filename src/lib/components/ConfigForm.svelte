@@ -21,7 +21,8 @@
 		sections,
 		shadowed = [],
 		disabled = false,
-		tickRange = null
+		tickRange = null,
+		liveRoutes = true
 	}: {
 		text: string;
 		/** the document as last loaded from (or applied to) the server, for change marks */
@@ -31,6 +32,8 @@
 		disabled?: boolean;
 		/** the score tick range the server reports, when known */
 		tickRange?: { min: number; max: number } | null;
+		/** whether the build serves PATCH /v1/settings, so the "also changeable live" hints apply */
+		liveRoutes?: boolean;
 	} = $props();
 
 	let parsed = $derived(parseIni(text));
@@ -174,7 +177,7 @@
 				</div>
 				<p class="note mt-1.5">
 					{row.help}
-					{#if first.live}Also changeable at once, without a file apply, from {first.live}.{/if}
+					{#if first.live && liveRoutes}Also changeable at once, without a file apply, from {first.live}.{/if}
 				</p>
 			</div>
 		{/each}

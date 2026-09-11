@@ -9,6 +9,41 @@ import { assertReachableTarget } from './hostpolicy';
 import type { ServerRow } from './access';
 
 /** A non-2xx answer (or no answer) from the game server. Its message is meant for the operator. */
+/**
+ * Builds the error for a non-2xx answer. A route the build does not serve comes back as
+ * 404 `not_found` "No such endpoint." (live build CL-499480), the same code family a missing ban
+ * or player uses (`ban_not_found`...), so it is renamed `no_route` here and given a message that
+ * says which route is missing; callers can then tell "not served" from "not there".
+ */
+export function classifyGameError(
+	method: string,
+	path: string,
+	status: number,
+	statusText: string,
+	parsed: any
+): GameError {
+	const code = parsed?.error?.code || '';
+	const message = parsed?.error?.message || '';
+	const route = `${method.toUpperCase()} ${path.split('?')[0]}`;
+	if (status === 404 && code === 'not_found' && /no such endpoint/i.test(message)) {
+		return new GameError(404, `This server build does not serve ${route}.`, 'no_route', parsed);
+	}
+	if (status === 405) {
+		return new GameError(
+			405,
+			`This server build does not serve ${route} (${message || 'method not allowed'}).`,
+			code || 'method_not_allowed',
+			parsed
+		);
+	}
+	return new GameError(
+		status,
+		message || `Server answered ${status}${statusText ? ' ' + statusText : ''}.`,
+		code,
+		parsed
+	);
+}
+
 export class GameError extends ApiError {
 	constructor(
 		status: number,
@@ -82,13 +117,7 @@ export class WardogsClient {
 		);
 		const parsed = parseJson(res.text);
 		if (res.status < 200 || res.status >= 300) {
-			throw new GameError(
-				res.status,
-				parsed?.error?.message ||
-					`Server answered ${res.status}${res.statusText ? ' ' + res.statusText : ''}.`,
-				parsed?.error?.code || '',
-				parsed
-			);
+			throw classifyGameError(method, path, res.status, res.statusText, parsed);
 		}
 		return (parsed ?? {}) as T;
 	}

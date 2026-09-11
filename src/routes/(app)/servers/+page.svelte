@@ -372,6 +372,19 @@
 				>{fmtNum(d.result.status.playerCount)} / {fmtNum(d.result.status.maxPlayers)}</span
 			>
 		</div>
+		{#if d.result.status.raw}
+			<details class="mt-2">
+				<summary class="cursor-pointer text-[12.5px] text-mist-400"
+					>Status as the server sent it</summary
+				>
+				<pre
+					class="mt-2 max-h-56 overflow-auto rounded-card border border-black bg-ink-950 p-3 font-mono text-[12px] leading-relaxed">{JSON.stringify(
+						d.result.status.raw,
+						null,
+						2
+					)}</pre>
+			</details>
+		{/if}
 		<div class="kv">
 			<span class="text-mist-400">Capabilities</span>
 			<span class="text-right">

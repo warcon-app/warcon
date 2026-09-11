@@ -90,7 +90,7 @@ export const FIELDS: ConfigField[] = [
 			description:
 				'A slot count is deliberately not changed under a running match, so this takes effect when the server restarts.'
 		},
-		help: 'Total player slots, reserved slots included. Lowering it does not kick anyone; it stops new joins once the new capacity is in force.'
+		help: 'Total player slots, reserved slots included. The game clamps this to its own allowed range, so the live server can report fewer slots than set here (a build has been seen turning 100 into 98). Lowering it does not kick anyone; it stops new joins once the new capacity is in force.'
 	},
 	{
 		key: 'imageUrl',

@@ -15,6 +15,7 @@
 
 	const EVENT_CLASS: Record<string, string> = {
 		AUTH_OK: 'text-ok',
+		HTTP: 'text-mist-400',
 		AUTH_FAIL: 'text-danger',
 		REJECT: 'text-danger',
 		COMMAND: 'text-warn'

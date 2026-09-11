@@ -81,7 +81,7 @@ async function getRotation(client: WardogsClient) {
 	};
 }
 
-async function getStatus(client: WardogsClient) {
+async function getStatus(client: WardogsClient, raw = false) {
 	const s = await client.json('GET', '/v1/status');
 	const rot = s.rotation || {};
 	const idx = (v: unknown) => (v === null || v === undefined ? -1 : Number(v));
@@ -104,7 +104,9 @@ async function getStatus(client: WardogsClient) {
 			score: f.score
 		})),
 		rotationNow: idx(rot.nowIndex),
-		rotationNext: idx(rot.nextIndex)
+		rotationNext: idx(rot.nextIndex),
+		// Only for the connection test: fields the normaliser does not know (a build may add some).
+		...(raw ? { raw: s } : {})
 	};
 }
 
@@ -143,13 +145,21 @@ export const ACTIONS: Record<string, ActionDef> = {
 				routes: data.routes || [],
 				features: {
 					changeTeam: routes.includes('PATCH /v1/players/*'),
-					configDocument: routes.includes('PUT /v1/config') && !!data.config?.writable
+					configDocument: routes.includes('PUT /v1/config') && !!data.config?.writable,
+					reservedSlots: routes.includes('POST /v1/reserved-slots'),
+					rotationEdit:
+						routes.includes('POST /v1/rotation/entries') &&
+						routes.includes('POST /v1/rotation/entries/*/move'),
+					rotationSave: routes.includes('POST /v1/rotation/save'),
+					liveSettings: routes.includes('PATCH /v1/settings')
 				},
 				raw: data
 			};
 		}
 	},
-	status: { level: 'viewer', mutating: false, run: (c) => getStatus(c) },
+	status: { level: 'viewer', mutating: false, run: (c, p) => getStatus(c, !!p.raw) },
+	// Live build CL-499480: { status, uptimeSeconds, connections:{active}, gameThreadQueue:{inFlight,depth,rejectedTotal} }.
+	health: { level: 'viewer', mutating: false, run: (c) => c.json('GET', '/v1/health') },
 	players: {
 		level: 'viewer',
 		mutating: false,
@@ -239,7 +249,8 @@ export const ACTIONS: Record<string, ActionDef> = {
 		run: async (c) => ({
 			bans: ((await c.json('GET', '/v1/bans')).bans || []).map((b: any) => ({
 				steamId: b.steamId,
-				bannedAtUtc: b.bannedAtUtc || '',
+				// Entries loaded from +DefaultBannedPlayerIds carry year 0001 and bannedBy "config".
+				bannedAtUtc: /^0001-/.test(b.bannedAtUtc || '') ? '' : b.bannedAtUtc || '',
 				bannedBy: b.bannedBy || '',
 				reason: b.reason || ''
 			}))

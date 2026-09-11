@@ -12,6 +12,12 @@
 	let id = $derived(data.server.id);
 	let operator = $derived(can(data.server.role, 'operator'));
 	let admin = $derived(can(data.server.role, 'admin'));
+	// Live build CL-499480 serves none of the rotation edit routes: the list is read-only there
+	// and the rotation is edited through the config document instead.
+	let canEdit = $derived(operator && data.features.rotationEdit);
+	let canSave = $derived(admin && data.features.rotationSave);
+	let canToggle = $derived(admin && data.features.liveSettings);
+	let configHref = $derived(`/server/${encodeURIComponent(id)}/config`);
 
 	let rotation = $state<Rotation | null>(null);
 	let selected = $state(-1);
@@ -77,7 +83,7 @@
 				<input
 					type="checkbox"
 					checked={rotation.enabled}
-					disabled={!admin}
+					disabled={!canToggle}
 					onchange={(e) =>
 						act('settings', { rotationEnabled: e.currentTarget.checked }, { after: refresh })}
 				/> Enabled
@@ -85,7 +91,7 @@
 			<select
 				class="input w-32"
 				value={rotation.mode === 'random' ? 'random' : 'ordered'}
-				disabled={!admin}
+				disabled={!canToggle}
 				onchange={(e) =>
 					act('settings', { rotationMode: e.currentTarget.value }, { after: refresh })}
 			>
@@ -94,13 +100,22 @@
 			</select>
 		{/if}
 	</div>
+	{#if !data.features.rotationEdit || !data.features.liveSettings}
+		<div class="callout">
+			{#if !data.features.rotationEdit}This server build serves no live rotation editing, so the
+				list is read-only here.{:else}This server build cannot switch the rotation on or off, or
+				change its mode, live.{/if}
+			Edit the rotation in the <a class="link" href={configHref}>config document</a> instead; the server
+			reads it when the next map loads.
+		</div>
+	{/if}
 	<div class="mb-3 flex flex-wrap items-end gap-x-4 gap-y-3">
 		<div class="field-group">
 			<span class="field-label">Selected entry</span>
 			<div class="join join-stack w-full">
 				<button
 					class="btn"
-					disabled={!operator}
+					disabled={!canEdit}
 					onclick={() =>
 						withSel((i) =>
 							act(
@@ -117,7 +132,7 @@
 				>
 				<button
 					class="btn"
-					disabled={!operator}
+					disabled={!canEdit}
 					onclick={() =>
 						withSel((i) =>
 							act(
@@ -134,7 +149,7 @@
 				>
 				<button
 					class="btn"
-					disabled={!operator}
+					disabled={!canEdit}
 					onclick={() =>
 						withSel((i) =>
 							act('setNextMap', entryToSelection(rotation!.entries[i]), { after: refresh })
@@ -142,7 +157,7 @@
 				>
 				<button
 					class="btn btn-danger"
-					disabled={!operator}
+					disabled={!canEdit}
 					onclick={() =>
 						withSel((i) =>
 							act(
@@ -163,7 +178,7 @@
 		</div>
 		<button
 			class="btn w-full btn-primary sm:ml-auto sm:w-auto"
-			disabled={!admin}
+			disabled={!canSave}
 			onclick={() => act('rotationSave', {})}>Save rotation</button
 		>
 	</div>
@@ -215,11 +230,11 @@
 
 <div class="mt-4 panel">
 	<span class="label-sm">Add rotation entry</span>
-	<MapPicker bind:this={picker} serverId={id} catalog={data.catalog} disabled={!operator} />
+	<MapPicker bind:this={picker} serverId={id} catalog={data.catalog} disabled={!canEdit} />
 	<div class="mt-4">
 		<button
 			class="btn btn-primary"
-			disabled={!operator}
+			disabled={!canEdit}
 			onclick={() => picker && act('rotationAdd', picker.selection(), { after: refresh })}
 			>Add to rotation</button
 		>

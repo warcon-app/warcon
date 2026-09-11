@@ -32,7 +32,15 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 	]);
 	const server: ServerInfo = shapeServer(env, row, org?.name ?? '', role, orgRole === 'owner');
 	let catalog: Catalog = EMPTY;
-	let features: Features = { changeTeam: false, configDocument: false };
+	// A build too old to report capabilities predates the route removals, so assume the live routes.
+	let features: Features = {
+		changeTeam: false,
+		configDocument: false,
+		reservedSlots: true,
+		rotationEdit: true,
+		rotationSave: true,
+		liveSettings: true
+	};
 	let reachable = true;
 	let problem = '';
 	const hit = catalogs.get(row.id);

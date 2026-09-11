@@ -35,8 +35,12 @@ export interface GameFailure {
 export const isAlreadyApplied = (err: GameFailure): boolean =>
 	err.status === 409 || err.code === 'already' || /\balready\b/i.test(err.message);
 
-/** A DELETE the server refused because the entry is not there counts as removed. */
-export const isGone = (err: GameFailure): boolean => err.status === 404 || err.code === 'not_found';
+/**
+ * A DELETE the server refused because the entry is not there counts as removed. A 404 for a route
+ * the build does not serve (`no_route`, see classifyGameError) is not that.
+ */
+export const isGone = (err: GameFailure): boolean =>
+	(err.status === 404 || err.code === 'not_found') && err.code !== 'no_route';
 
 /** The server could not be reached or answered with a server-side error: stop the run, keep what succeeded. */
 export const isUnreachable = (err: GameFailure): boolean =>

@@ -194,15 +194,16 @@
 				max={tickMax}
 				step="1"
 				bind:value={tick}
-				disabled={!admin}
+				disabled={!admin || !data.features.liveSettings}
 				onchange={saveTick}
 			/>
 			<span class="text-mist-400">{tickMax}s</span>
 			<output class="w-10 font-mono">{tickKnown ? `${tick}s` : '—'}</output>
 		</div>
 		<p class="note">
-			Live route (PATCH /v1/settings). Faster ticks reduce the cash multiplier; the game clamps to
-			its allowed range.
+			{#if data.features.liveSettings}Live route (PATCH /v1/settings).{:else}This server build has
+				no live settings route; set ScorePeriod in the document below instead.{/if}
+			Faster ticks reduce the cash multiplier; the game clamps to its allowed range.
 		</p>
 	</div>
 	<div class="panel">
@@ -303,6 +304,7 @@
 			shadowed={result?.shadowed ?? []}
 			disabled={readOnly}
 			tickRange={tickKnown ? { min: tickMin, max: tickMax } : null}
+			liveRoutes={data.features.liveSettings}
 		/>
 		<p class="note mt-4">
 			Fields edit the file one line at a time, so keys the form does not know (rotation entries, ban

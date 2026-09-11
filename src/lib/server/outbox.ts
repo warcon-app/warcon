@@ -202,8 +202,19 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 		} catch {
 			/* treat as no rotation */
 		}
-		await ACTIONS[rotationOn ? 'setNextMap' : 'changeMap'].run(client, params);
-		return ACTIONS.endMatch.run(client, {});
+		if (rotationOn) {
+			try {
+				await ACTIONS.setNextMap.run(client, params);
+				return ACTIONS.endMatch.run(client, {});
+			} catch (err) {
+				// Builds without the rotation edit routes (live CL-499480) answer 404/405; the server is
+				// empty, so travelling straight there is the same outcome.
+				if (!(err instanceof GameError) || (err.code !== 'no_route' && err.status !== 405))
+					throw err;
+			}
+		}
+		await ACTIONS.changeMap.run(client, params);
+		return rotationOn ? { message: 'Map changed directly.' } : ACTIONS.endMatch.run(client, {});
 	}
 	const def = ACTIONS[row.action];
 	if (!def) throw new ApiError(400, `Unknown action '${row.action}'.`);

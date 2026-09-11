@@ -394,6 +394,7 @@ async function run(
 	let fresh = !!opts.observed;
 	let plan = planWith(observed);
 	let client = opts.client;
+	let reservedRoutes = true;
 	const wantsReserve = desired.reserved.some((d) => !observed.reserved.includes(d.steamId));
 	if (
 		!planHasWork(plan) &&
@@ -430,6 +431,18 @@ async function run(
 			capCheckedAt = now;
 		}
 		plan = planWith(observed);
+		// Live build CL-499480 has no reserved-slot routes and answers those calls 404, which would
+		// otherwise read as "already gone". Ask the build once before touching reserved slots.
+		if ([...plan.adds, ...plan.removes].some((x) => x.kind === 'reserve')) {
+			try {
+				const caps = (await ACTIONS.capabilities.run(client, {})) as {
+					features: { reservedSlots: boolean };
+				};
+				reservedRoutes = caps.features.reservedSlots;
+			} catch {
+				/* a build too old to report capabilities still has the routes */
+			}
+		}
 	} catch (err) {
 		const message = publicMessage(err, 'Could not reach the server.');
 		await bookkeep(env, server.id, {
@@ -442,7 +455,7 @@ async function run(
 		return { ...base, error: message };
 	}
 
-	const outcome = await execute(client, plan, observed);
+	const outcome = await execute(client, plan, observed, reservedRoutes);
 	await record(env, server.id, plan, outcome, now, {
 		syncedAt: now,
 		reservedCap: cap,
@@ -513,8 +526,16 @@ interface Outcome {
 	observed: Observed;
 }
 
+const NO_RESERVED_ROUTES =
+	'This server build has no reserved-slot routes; add the slot to its config document instead.';
+
 /** Removes, then adds, one call at a time; stops at the first sign the server is gone. */
-async function execute(client: WardogsClient, plan: SyncPlan, before: Observed): Promise<Outcome> {
+async function execute(
+	client: WardogsClient,
+	plan: SyncPlan,
+	before: Observed,
+	reservedRoutes = true
+): Promise<Outcome> {
 	const out: Outcome = {
 		added: [],
 		removed: [],
@@ -539,6 +560,10 @@ async function execute(client: WardogsClient, plan: SyncPlan, before: Observed):
 		} else if (!out.observed.reserved.includes(steamId)) out.observed.reserved.push(steamId);
 	};
 	for (const r of plan.removes) {
+		if (r.kind === 'reserve' && !reservedRoutes) {
+			out.failedRemoves.push({ ...r, error: `Could not remove: ${NO_RESERVED_ROUTES}` });
+			continue;
+		}
 		try {
 			await (r.kind === 'ban' ? ACTIONS.unban : ACTIONS.reservedRemove).run(client, {
 				steamId: r.steamId
@@ -557,6 +582,10 @@ async function execute(client: WardogsClient, plan: SyncPlan, before: Observed):
 		}
 	}
 	for (const a of plan.adds) {
+		if (a.kind === 'reserve' && !reservedRoutes) {
+			out.failedAdds.push({ ...a, error: `Could not add: ${NO_RESERVED_ROUTES}` });
+			continue;
+		}
 		try {
 			await (a.kind === 'ban' ? ACTIONS.ban : ACTIONS.reservedAdd).run(client, {
 				steamId: a.steamId,

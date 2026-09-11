@@ -238,7 +238,7 @@
 			/>
 			<button
 				class="btn"
-				disabled={!admin}
+				disabled={!admin || !data.features.reservedSlots}
 				onclick={() =>
 					act(
 						'reservedAdd',
@@ -253,7 +253,7 @@
 			>
 			<button
 				class="btn btn-danger"
-				disabled={!admin}
+				disabled={!admin || !data.features.reservedSlots}
 				onclick={() =>
 					act(
 						'reservedRemove',
@@ -268,9 +268,10 @@
 			>
 		</div>
 		<p class="note">
-			Click a slot to fill the field. Slots added here are written to this server's
-			ServerSettings.ini only; <span class="text-accent">highlighted</span> ones come from the organisation
-			list.
+			{#if !data.features.reservedSlots}This server build has no live reserved-slot routes; add
+				+DefaultReservedPlayerIds lines to the config document instead.{/if}
+			Click a slot to fill the field. Slots added here are written to this server's ServerSettings.ini
+			only; <span class="text-accent">highlighted</span> ones come from the organisation list.
 		</p>
 	</div>
 	<div class="panel lg:col-span-2">

@@ -371,7 +371,10 @@
 	<div class="join join-stack mt-4">
 		<button
 			class="btn btn-primary"
-			disabled={!operator}
+			disabled={!operator || !data.features.rotationEdit}
+			title={data.features.rotationEdit
+				? ''
+				: 'This server build serves no rotation edit routes, so a next map cannot be queued.'}
 			onclick={() => picker && act('setNextMap', picker.selection(), { after: refreshStatus })}
 			>Set as next map</button
 		>

@@ -235,7 +235,7 @@ export async function testServer(
 ): Promise<TestResult> {
 	const started = Date.now();
 	try {
-		const status = await gateway().run(env, server, 'status', {});
+		const status = await gateway().run(env, server, 'status', { raw: true });
 		let capabilities: unknown = null;
 		try {
 			capabilities = await gateway().run(env, server, 'capabilities', {});

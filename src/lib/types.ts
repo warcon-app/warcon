@@ -28,9 +28,18 @@ export interface Catalog {
 	lightings: CatalogItem[];
 	experiences: CatalogItem[];
 }
+/** What a server's build serves. Live build CL-499480 (2026-09-11) lacks the last four. */
 export interface Features {
 	changeTeam: boolean;
 	configDocument: boolean;
+	/** POST/DELETE /v1/reserved-slots */
+	reservedSlots: boolean;
+	/** POST /v1/rotation/entries and .../move: add, remove, move, set next map */
+	rotationEdit: boolean;
+	/** POST /v1/rotation/save */
+	rotationSave: boolean;
+	/** PATCH /v1/settings: score tick, rotation enabled and mode */
+	liveSettings: boolean;
 }
 
 export interface FactionScore {
@@ -54,6 +63,8 @@ export interface Status {
 	scores: FactionScore[];
 	rotationNow: number;
 	rotationNext: number;
+	/** the status document as the server sent it; only on a connection test */
+	raw?: Record<string, unknown>;
 }
 export interface Player {
 	name: string;
@@ -122,6 +133,8 @@ export interface ConfigSection {
 	section: string;
 	appliesWhen: string;
 	description?: string;
+	/** the keys the server's allow-list keeps for this section; anything else is stripped on apply */
+	allowedKeys?: string[];
 	keyOverrides?: { key: string; appliesWhen: string; description?: string }[];
 }
 export interface ConfigDoc {

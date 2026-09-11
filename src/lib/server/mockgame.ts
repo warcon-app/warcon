@@ -149,58 +149,100 @@ const CAPABILITY_ROUTES = [
 	'PUT /v1/config'
 ];
 
+// The schema live build CL-499480 reports from GET /v1/config (captured 2026-09-11).
 const CONFIG_SECTIONS = [
 	{
 		section: '/Script/WDGame.WDGameSession',
 		appliesWhen: 'applied',
 		description: 'Server identity, bans, reserved slots and the sponsor banner.',
+		allowedKeys: [
+			'DefaultBannedPlayerIds',
+			'DefaultReservedPlayerIds',
+			'MaxReservedSlots',
+			'PlayerIdentityEntries',
+			'ServerImageURL',
+			'ServerMaxPlayerCash',
+			'ServerMaxPlayerLevel',
+			'ServerMinPlayerCash',
+			'ServerMinPlayerLevel',
+			'ServerName',
+			'ServerPassword'
+		],
 		keyOverrides: [
 			{
 				key: 'ServerPassword',
-				appliesWhen: 'next-restart',
-				description: 'Only read when a session is created.'
+				appliesWhen: 'applied',
+				description:
+					'Sent on the session update this apply triggers, so it gates new joins at once. Players already in are not rechecked.'
 			},
+			...[
+				'ServerMinPlayerCash',
+				'ServerMaxPlayerCash',
+				'ServerMinPlayerLevel',
+				'ServerMaxPlayerLevel'
+			].map((key) => ({
+				key,
+				appliesWhen: 'applied',
+				description:
+					'Sent on the session update this apply triggers, so new joins are checked against it at once. Players already connected are not re-checked or removed.'
+			})),
 			{
 				key: 'ServerImageURL',
 				appliesWhen: 'pending',
-				description: 'Fetched and validated before it is advertised.'
+				description: 'Fetched and validated off-thread before the banner is advertised.'
 			}
 		]
 	},
 	{
 		section: '/Script/Engine.GameSession',
-		appliesWhen: 'applied',
-		description: 'Player slot count.',
+		appliesWhen: 'next-restart',
+		description:
+			'Player slot count. Not applied to a running server by choice, so a change takes effect on restart.',
+		allowedKeys: ['MaxPlayers'],
 		keyOverrides: []
 	},
 	{
 		section: '/Script/WDGame.WDGameStateSession',
 		appliesWhen: 'next-match',
-		description: 'Team balance rules.',
+		description:
+			'Team balance rules. The running match keeps its current values; the config values are read when a match starts.',
+		allowedKeys: ['bLockOverpopulatedTeamsConfig', 'OverpopulatedTeamThresholdConfig'],
 		keyOverrides: []
 	},
 	{
 		section: '/Script/WDGame.WDServerMapRotationSettings',
 		appliesWhen: 'applied',
-		description: 'Map rotation order and mode.',
+		description: 'Map rotation order and mode. Rebuilt immediately; used from the next map change.',
+		allowedKeys: ['bEnabled', 'RotationEntries', 'RotationMode'],
 		keyOverrides: []
 	},
 	{
 		section: 'MatchState.Playing.KOTH',
 		appliesWhen: 'next-match',
-		description: 'KOTH scoring cadence.',
+		description:
+			'KOTH scoring. The match in progress keeps its current values; scoring cadence never changes mid-round.',
+		allowedKeys: ['ScorePeriod'],
 		keyOverrides: []
 	},
 	{
 		section: 'MatchState.PreMatch.WaitingForPlayers.PlayerCount',
 		appliesWhen: 'next-match',
-		description: 'Minimum players before a match starts.',
+		description: 'Minimum players before a match starts. Read when the next pre-match begins.',
+		allowedKeys: ['MinimumRequiredPlayers'],
 		keyOverrides: []
 	},
 	{
 		section: '/Script/WDRCON.WDRCONSettings',
 		appliesWhen: 'next-restart',
-		description: 'RCON listener.',
+		description: 'RCON listener. Written now, read at startup.',
+		allowedKeys: ['AllowedOrigins', 'bEnabled', 'BindAddress', 'Password', 'PasswordHash', 'Port'],
+		keyOverrides: []
+	},
+	{
+		section: 'WDServerFeed',
+		appliesWhen: 'next-restart',
+		description: 'Kill-event feed endpoint and its ingest token. Written now, read at startup.',
+		allowedKeys: ['Token', 'Url'],
 		keyOverrides: []
 	}
 ];
@@ -573,7 +615,7 @@ export function mockHandle(
 	if (p[0] === 'players' && p[1]) {
 		const player = s.players.find((x) => x.steamId === p[1]);
 		if (!player) {
-			return fail(404, `Player not found: ${p[1]}`, 'not_found');
+			return fail(404, `Player not found: ${p[1]}`, 'player_not_found');
 		}
 		if (m === 'POST' && p[2] === 'kick') {
 			s.players = s.players.filter((x) => x !== player);
@@ -625,7 +667,7 @@ export function mockHandle(
 		const before = s.bans.length;
 		s.bans = s.bans.filter((x) => x.steamId !== p[1]);
 		if (s.bans.length === before) {
-			return fail(404, `${p[1]} is not banned.`, 'not_found');
+			return fail(404, `Error: SteamId ${p[1]} is not currently banned.`, 'ban_not_found');
 		}
 		log(s, 'COMMAND', `unban ${p[1]}`);
 		return ok({ message: `Unbanned ${p[1]}.` });
@@ -789,7 +831,7 @@ export function mockHandle(
 	}
 	if (m === 'DELETE' && p[0] === 'reserved-slots' && p[1]) {
 		if (!s.reserved.includes(p[1])) {
-			return fail(404, `${p[1]} has no reserved slot.`, 'not_found');
+			return fail(404, `${p[1]} has no reserved slot.`, 'reserved_slot_not_found');
 		}
 		s.reserved = s.reserved.filter((x) => x !== p[1]);
 		log(s, 'COMMAND', `reserved remove ${p[1]}`);
@@ -886,5 +928,6 @@ export function mockHandle(
 			timingsMs: { total: 3.2 }
 		});
 	}
-	return fail(404, `No route ${m} ${path}`, 'not_found');
+	// Live builds answer a missing route exactly like this; a missing item has its own code.
+	return fail(404, 'No such endpoint.', 'not_found');
 }

@@ -53,3 +53,67 @@ test('changeTeam requires a faction', async () => {
 	).rejects.toThrow('faction is required');
 	expect(calls.length).toBe(0);
 });
+
+// The route list live build ++Wardogs+Live-CL-499480 advertised on 2026-09-11: no reserved-slot or
+// rotation write routes, no PATCH /v1/settings, no PUT /v1/sponsor, but a config document.
+const LIVE_ROUTES = [
+	'DELETE /v1/bans/{steamId}',
+	'GET /v1/audit',
+	'GET /v1/bans',
+	'GET /v1/capabilities',
+	'GET /v1/catalog/experiences',
+	'GET /v1/catalog/lightings',
+	'GET /v1/catalog/maps',
+	'GET /v1/catalog/maps/{map}/alternators',
+	'GET /v1/catalog/maps/{map}/experiences',
+	'GET /v1/config',
+	'GET /v1/health',
+	'GET /v1/players',
+	'GET /v1/reserved-slots',
+	'GET /v1/rotation',
+	'GET /v1/sponsor',
+	'GET /v1/status',
+	'PATCH /v1/players/{id}',
+	'POST /v1/bans',
+	'POST /v1/broadcast',
+	'POST /v1/config/validate',
+	'POST /v1/match/end',
+	'POST /v1/match/map',
+	'POST /v1/match/restart',
+	'POST /v1/players/{id}/kick',
+	'POST /v1/players/{id}/kill',
+	'POST /v1/players/{id}/message',
+	'PUT /v1/config',
+	'PUT /v1/world/lighting'
+];
+
+test('capabilities reads the live build CL-499480 route list into feature flags', async () => {
+	const client: any = {
+		json: async () => ({ routes: LIVE_ROUTES, config: { writable: true, document: '/v1/config' } })
+	};
+	const r: any = await ACTIONS.capabilities.run(client, {});
+	expect(r.features).toEqual({
+		changeTeam: true,
+		configDocument: true,
+		reservedSlots: false,
+		rotationEdit: false,
+		rotationSave: false,
+		liveSettings: false
+	});
+});
+
+test('capabilities keeps every flag on for a build that serves the full console route set', async () => {
+	const full = [
+		...LIVE_ROUTES,
+		'POST /v1/reserved-slots',
+		'DELETE /v1/reserved-slots/{steamId}',
+		'POST /v1/rotation/entries',
+		'DELETE /v1/rotation/entries/{index}',
+		'POST /v1/rotation/entries/{index}/move',
+		'POST /v1/rotation/save',
+		'PATCH /v1/settings'
+	];
+	const client: any = { json: async () => ({ routes: full, config: { writable: true } }) };
+	const r: any = await ACTIONS.capabilities.run(client, {});
+	expect(Object.values(r.features).every(Boolean)).toBe(true);
+});

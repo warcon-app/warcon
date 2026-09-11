@@ -220,3 +220,9 @@ describe('planSync', () => {
 		expect(p.overflow).toEqual([]);
 	});
 });
+
+test('isGone: a missing entry is gone, a missing route is not', () => {
+	expect(isGone({ status: 404, code: 'ban_not_found', message: 'not banned' })).toBe(true);
+	expect(isGone({ status: 404, code: 'not_found', message: 'gone' })).toBe(true);
+	expect(isGone({ status: 404, code: 'no_route', message: 'not served' })).toBe(false);
+});
