@@ -358,6 +358,25 @@ org's server limit and **suspend** it: members lose access to its servers, owner
 servers or mint links, and invite links stop working, until it is restored. Deleting an org removes
 its servers from the panel; the accounts stay.
 
+### Bots and API keys
+
+A Discord bot or a script talks to the same `/api` routes as the panel, with an organisation
+**API key** instead of a session. An org owner mints one on the org page under **API keys**: a
+label, the capabilities it carries (the same list roles use), which servers it may touch (or every
+server the org has, now and later), and an optional expiry. The token is shown once; only its
+hash is stored. Keys can read and act on servers and edit the org lists, but never manage the
+organisation, its members or its keys, and never reach the site owner's routes.
+
+```sh
+# add a reserved slot from a bot: no cookie, no CSRF header, just the bearer
+curl -X POST "$ORIGIN/api/orgs/$ORG_ID/lists/reserve/entries" \
+  -H "Authorization: Bearer wck_…" -H "Content-Type: application/json" \
+  -d '{"steamId":"76561198000000000","reason":"donor","priority":10}'
+```
+
+Every call a key makes is audited under `<label> (API key)`. Revoking a key on the org page ends
+it at once; a suspended organisation's keys stop working with it.
+
 ### Invite links
 
 An org owner mints a link on the org page: it carries the org role joiners get (`member` or
@@ -444,6 +463,7 @@ src/lib/server/auth.ts         Better Auth config (username + admin plugins, Dri
 src/lib/capabilities.ts        the capability vocabulary and the built-in role defaults (client-safe)
 src/lib/server/access.ts       global and org roles, per-server capability access, accessible servers, login throttling
 src/lib/server/roles.ts        an organisation's editable server roles (built-ins seeded per org)
+src/lib/server/apikeys.ts / apikeys-core.ts   organisation API keys for bots: mint, resolve bearers, revoke (db) / token format and scope (pure)
 src/lib/server/users.ts        account management on top of Better Auth (create, disable, reset, grants)
 src/lib/server/orgs.ts         organisations: members, per-server roles, invite links, joining
 src/lib/server/servers.ts      server records, reachability test, per-server grants
@@ -482,7 +502,9 @@ docs/wardogs-api.md            the reverse-engineered game-server API
 
 ### API cheatsheet
 
-All `/api` calls need the session cookie; mutations also need `X-Requested-With: warcon`.
+All `/api` calls need either the session cookie (mutations then also need
+`X-Requested-With: warcon`) or an organisation API key as `Authorization: Bearer wck_…` (see
+[Bots and API keys](#bots-and-api-keys)).
 Sign-in, setup, password change and session revocation are SvelteKit form actions on their pages,
 which call Better Auth server-side behind the login lockout and the audit trail. Of Better Auth's
 own `/api/auth/*` routes only the OAuth callback is reachable over HTTP; everything else answers 404.
@@ -491,6 +513,7 @@ own `/api/auth/*` routes only the OAuth callback is reachable over HTTP; everyth
 GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id   PATCH {name} | {membersReserved} | site owner: {serverLimit, suspended, reason}
 GET  /api/orgs/:id/members  PATCH/DELETE /api/orgs/:id/members/:userId {role}  PUT .../:userId/grants {grants:[{serverId,roleId}]}
 GET/POST /api/orgs/:id/roles {name,capabilities[]}  PATCH/DELETE .../:roleId {name?,capabilities?}  POST .../:roleId/reset
+GET/POST /api/orgs/:id/keys {label,capabilities[],serverIds[]|null,expiresDays}  DELETE .../:keyId   (POST returns the token once)
 GET/POST /api/orgs/:id/invites {label,orgRole,serverRoleId,expiresDays,maxUses}  DELETE /api/orgs/:id/invites/:inviteId
 GET/POST /api/users  PATCH/DELETE /api/users/:id  PUT /api/users/:id/grants {grants:[{serverId,roleId}]}
 GET/POST /api/servers {orgId,...}  PATCH/DELETE /api/servers/:id  POST /api/servers/:id/test

@@ -4,7 +4,7 @@
 // reconnects on its own, and every reconnection is authenticated and access-checked afresh, so a
 // revoked user or grant loses the stream promptly.
 import { getEnv } from '$lib/server/env';
-import { ApiError } from '$lib/server/http';
+import { ApiError, apiError } from '$lib/server/http';
 import { accessibleServers, requireUser } from '$lib/server/access';
 import { gateway } from '$lib/server/gateway';
 import { isShuttingDown, onShutdown } from '$lib/server/shutdown';
@@ -17,13 +17,20 @@ const MAX_BACKLOG = 2000;
 
 export const GET = async (event) => {
 	const env = getEnv();
-	const user = requireUser(event.locals);
-	const mine = new Set((await accessibleServers(env, user)).map((s) => s.id));
-	const asked = (event.url.searchParams.get('ids') || '').split(',').filter(Boolean);
-	const ids = (asked.length ? asked : [...mine]).filter((id) => mine.has(id));
-	if (!ids.length) throw new ApiError(400, 'No servers to watch.');
-	// A process that is stopping must not take on a stream the browser would only lose again.
-	if (isShuttingDown()) throw new ApiError(503, 'Server restarting; retry shortly.');
+	// The checks before the stream answer like every other API route (401/400/503 as JSON); only
+	// the stream itself stays outside route(), since it is a long-lived response.
+	let ids: string[];
+	try {
+		const user = requireUser(event.locals);
+		const mine = new Set((await accessibleServers(env, user)).map((s) => s.id));
+		const asked = (event.url.searchParams.get('ids') || '').split(',').filter(Boolean);
+		ids = (asked.length ? asked : [...mine]).filter((id) => mine.has(id));
+		if (!ids.length) throw new ApiError(400, 'No servers to watch.');
+		// A process that is stopping must not take on a stream the browser would only lose again.
+		if (isShuttingDown()) throw new ApiError(503, 'Server restarting; retry shortly.');
+	} catch (err) {
+		return apiError(err);
+	}
 	const wanted = new Set(ids);
 	const encoder = new TextEncoder();
 	let closed = false;

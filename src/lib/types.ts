@@ -18,6 +18,22 @@ export interface RoleView {
 	updatedAt: string | null;
 }
 
+/** A bearer credential owned by an organisation; the token itself is only ever returned on creation. */
+export interface ApiKeyView {
+	id: string;
+	label: string;
+	/** the token's prefix and first characters, for telling keys apart */
+	hint: string;
+	capabilities: Capability[];
+	/** null = every server in the org, including ones added later */
+	serverIds: string[] | null;
+	createdBy: { username: string; name: string } | null;
+	createdAt: string | null;
+	lastUsedAt: string | null;
+	expiresAt: string | null;
+	revokedAt: string | null;
+}
+
 /** One person's role on one server, as grant lists show it. */
 export interface GrantRef {
 	serverId: string;

@@ -8,7 +8,8 @@ import type { Env } from './env';
 import { isDemoServer } from './env';
 import { ApiError } from './http';
 import { CAPABILITY_INFO, type Capability } from '../capabilities';
-import { resolveAccess, type ServerAccess } from './access-resolve';
+import { accessFromCaps, resolveAccess, type ServerAccess } from './access-resolve';
+import { keyActorId, keyActorName, keyCoversServer, type ApiKeyPrincipal } from './apikeys-core';
 import {
 	loginAttempts,
 	orgMembers,
@@ -33,7 +34,24 @@ export interface SessionUser {
 	image: string | null;
 	/** the org the panel opens scoped to, unless a session scope overrides it; null = all */
 	defaultOrgId: string | null;
+	/** set when this "user" is really an organisation API key (see apikeys.ts) */
+	apiKey?: ApiKeyPrincipal | null;
 }
+
+/** The synthetic user an API key acts as: its own actor id, so audit rows and author columns read naturally. */
+export const keyUser = (k: ApiKeyPrincipal): SessionUser => ({
+	id: keyActorId(k.id),
+	username: keyActorName(k.label),
+	name: k.label,
+	role: 'member',
+	mustChangePassword: false,
+	image: null,
+	defaultOrgId: k.orgId,
+	apiKey: k
+});
+
+const keyForbidden = () =>
+	new ApiError(403, 'API keys cannot manage an organisation or the panel.', 'api_key_forbidden');
 
 export const ORG_ROLES: OrgRole[] = ['owner', 'member'];
 
@@ -61,6 +79,7 @@ export const requireUser = (locals: App.Locals): SessionUser => {
 
 export const requireOwner = (locals: App.Locals): SessionUser => {
 	const user = requireUser(locals);
+	if (user.apiKey) throw keyForbidden();
 	if (user.role !== 'owner') throw new ApiError(403, 'Owner access required.', 'forbidden');
 	return user;
 };
@@ -83,6 +102,7 @@ export async function orgRoleFor(
 	user: SessionUser,
 	orgId: string
 ): Promise<OrgRole | null> {
+	if (user.apiKey) return null;
 	if (user.role === 'owner') return 'owner';
 	const [row] = await env.db
 		.select({ role: orgMembers.role })
@@ -99,6 +119,7 @@ export async function requireOrgRole(
 	need: OrgRole
 ): Promise<{ org: OrgRow; role: OrgRole; user: SessionUser }> {
 	const user = requireUser(locals);
+	if (user.apiKey) throw keyForbidden();
 	const org = await getOrg(env, orgId);
 	const role = org ? await orgRoleFor(env, user, orgId) : null;
 	if (!org || !role) throw new ApiError(404, 'Organisation not found.', 'not_found');
@@ -111,6 +132,7 @@ export async function requireOrgRole(
 
 /** Ids of every org the user owns (all of them for the site owner). */
 export async function ownedOrgIds(env: Env, user: SessionUser): Promise<string[]> {
+	if (user.apiKey) return [];
 	if (user.role === 'owner')
 		return (await env.db.select({ id: organizations.id }).from(organizations)).map((r) => r.id);
 	const found = await env.db
@@ -155,6 +177,12 @@ export async function userOrgs(env: Env, user: SessionUser): Promise<OrgSummary[
 		suspended: !!o.suspendedAt,
 		lists
 	});
+	if (user.apiKey) {
+		const o = await getOrg(env, user.apiKey.orgId);
+		return o && !o.suspendedAt
+			? [shape(o, 'member', user.apiKey.capabilities.includes('lists.edit'))]
+			: [];
+	}
 	if (user.role === 'owner') {
 		const all = await env.db.select().from(organizations).orderBy(asc(organizations.name));
 		return all.map((o) => shape(o, 'owner', true));
@@ -183,6 +211,10 @@ export async function listsRoleFor(
 	user: SessionUser,
 	orgId: string
 ): Promise<ListsRole | null> {
+	if (user.apiKey)
+		return user.apiKey.orgId === orgId && user.apiKey.capabilities.includes('lists.edit')
+			? 'editor'
+			: null;
 	if ((await orgRoleFor(env, user, orgId)) === 'owner') return 'owner';
 	const [row] = await env.db
 		.select({ serverId: serverGrants.serverId })
@@ -224,6 +256,18 @@ export async function serverAccessFor(
 	user: SessionUser,
 	serverId: string
 ): Promise<ServerAccess | null> {
+	if (user.apiKey) {
+		const [row] = await env.db
+			.select({ id: servers.id, orgId: servers.orgId, suspendedAt: organizations.suspendedAt })
+			.from(servers)
+			.innerJoin(organizations, eq(organizations.id, servers.orgId))
+			.where(eq(servers.id, serverId))
+			.limit(1);
+		// A key without View cannot see the server at all (a role always has View; a key may not).
+		if (!user.apiKey.capabilities.includes('server.view')) return null;
+		if (!row || row.suspendedAt || !keyCoversServer(user.apiKey, row)) return null;
+		return accessFromCaps(user.apiKey.capabilities, 'API key');
+	}
 	if (user.role === 'owner') return resolveAccess({ manager: true });
 	const [row] = await env.db
 		.select({
@@ -260,6 +304,7 @@ export async function requireServerManager(
 	serverId: string
 ): Promise<{ server: ServerRow; user: SessionUser }> {
 	const user = requireUser(locals);
+	if (user.apiKey) throw keyForbidden();
 	const server = await getServer(env, serverId);
 	const access = server ? await serverAccessFor(env, user, serverId) : null;
 	if (!server || !access) throw new ApiError(404, 'Server not found.', 'not_found');
@@ -345,6 +390,22 @@ export async function accessibleServers(
 ): Promise<ServerSummary[]> {
 	const order = [asc(organizations.name), asc(servers.sortOrder), asc(servers.name)];
 	const inOrg = orgId ? eq(servers.orgId, orgId) : undefined;
+	if (user.apiKey) {
+		const key = user.apiKey;
+		if (orgId && orgId !== key.orgId) return [];
+		if (!key.capabilities.includes('server.view')) return [];
+		const rows = await env.db
+			.select({ server: servers, orgName: organizations.name })
+			.from(servers)
+			.innerJoin(organizations, eq(organizations.id, servers.orgId))
+			.where(and(eq(servers.orgId, key.orgId), isNull(organizations.suspendedAt)))
+			.orderBy(...order);
+		return rows
+			.filter((r) => keyCoversServer(key, r.server))
+			.map((r) =>
+				shapeServer(env, r.server, r.orgName, accessFromCaps(key.capabilities, 'API key'))
+			);
+	}
 	if (user.role === 'owner') {
 		const rowsAll = await env.db
 			.select({ server: servers, orgName: organizations.name })
@@ -404,6 +465,12 @@ export async function auditVisibility(
 	env: Env,
 	user: SessionUser
 ): Promise<{ userId: string; adminServerIds: string[]; ownedOrgIds: string[] } | null> {
+	if (user.apiKey) {
+		const covered = user.apiKey.capabilities.includes('audit.read')
+			? (await accessibleServers(env, user)).map((s) => s.id)
+			: [];
+		return { userId: user.id, adminServerIds: covered, ownedOrgIds: [] };
+	}
 	if (user.role === 'owner') return null;
 	const [granted, orgIds] = await Promise.all([
 		grantedWith(env, user, 'audit.read'),

@@ -7,7 +7,9 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
-	import type { InviteView, OrgMemberView, WebhookView } from '$lib/types';
+	import CapabilityPicker from '$lib/components/CapabilityPicker.svelte';
+	import { capabilitySummary, type Capability } from '$lib/capabilities';
+	import type { ApiKeyView, InviteView, OrgMemberView, WebhookView } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -30,7 +32,16 @@
 				events: Record<string, boolean>;
 				allServers: boolean;
 				servers: Record<string, boolean>;
-		  };
+		  }
+		| {
+				kind: 'key';
+				label: string;
+				capabilities: Capability[];
+				allServers: boolean;
+				servers: Record<string, boolean>;
+				expiresDays: string;
+		  }
+		| { kind: 'keyCreated'; key: ApiKeyView; token: string };
 	let dialog = $state<Dialog | null>(null);
 	let busy = $state(false);
 
@@ -50,14 +61,61 @@
 		}
 	}
 
-	async function copy(text: string) {
+	async function copy(text: string, what = 'Invite link') {
 		try {
 			await navigator.clipboard.writeText(text);
-			toast('Invite link copied.', 'ok');
+			toast(`${what} copied.`, 'ok');
 		} catch {
-			window.prompt('Copy the invite link:', text);
+			window.prompt(`Copy the ${what.toLowerCase()}:`, text);
 		}
 	}
+
+	// --- API keys (bots) ---
+	const openKey = () => {
+		const servers: Record<string, boolean> = {};
+		for (const s of data.orgServers) servers[s.id] = true;
+		dialog = {
+			kind: 'key',
+			label: '',
+			capabilities: ['server.view'],
+			allServers: true,
+			servers,
+			expiresDays: ''
+		};
+	};
+	function createKey() {
+		const d = dialog;
+		if (!d || d.kind !== 'key') return;
+		void run(
+			async () => {
+				const res = await api<{ key: ApiKeyView; token: string }>('POST', `${orgPath}/keys`, {
+					label: d.label,
+					capabilities: d.capabilities,
+					serverIds: d.allServers
+						? null
+						: data.orgServers.filter((s) => d.servers[s.id]).map((s) => s.id),
+					expiresDays: d.expiresDays ? Number(d.expiresDays) : null
+				});
+				dialog = { kind: 'keyCreated', key: res.key, token: res.token };
+			},
+			'',
+			false
+		);
+	}
+	async function revokeKey(k: ApiKeyView) {
+		if (
+			!(await confirmDialog(`Revoke the '${k.label}' key? Anything using it stops working now.`, {
+				okLabel: 'Revoke',
+				danger: true
+			}))
+		)
+			return;
+		await run(() => api('DELETE', `${orgPath}/keys/${k.id}`), 'API key revoked.', false);
+	}
+	const keyServers = (k: ApiKeyView) =>
+		k.serverIds === null
+			? 'every server'
+			: k.serverIds.map((id) => data.orgServers.find((s) => s.id === id)?.name ?? '?').join(', ');
 
 	const openInvite = () => {
 		dialog = {
@@ -479,6 +537,46 @@
 		</div>
 
 		<div class="panel">
+			<div class="mb-3 flex items-center gap-3">
+				<span class="label-sm mb-0!">API keys</span>
+				<button class="ml-auto btn btn-sm btn-primary" onclick={openKey}>New key</button>
+			</div>
+			<p class="mb-3 text-[13px] text-mist-400">
+				For a Discord bot or a script: a bearer token for the JSON API with its own capabilities and
+				servers. It can never manage the organisation. See the README for the request shape.
+			</p>
+			{#each data.keys as k (k.id)}
+				<div class="kv items-start">
+					<div class="min-w-0">
+						<div>
+							{k.label}
+							{#if k.revokedAt}<Badge tone="err" class="ml-1">revoked</Badge
+								>{:else if k.expiresAt && new Date(k.expiresAt) < new Date()}<Badge
+									tone="err"
+									class="ml-1">expired</Badge
+								>{/if}
+						</div>
+						<div class="truncate font-mono text-[11px] text-mist-600">{k.hint}</div>
+						<div class="text-[12px] text-mist-400">
+							{capabilitySummary(k.capabilities)} · {keyServers(k)}
+							{#if k.lastUsedAt}· last used {fmtTime(k.lastUsedAt)}{:else}· never used{/if}
+							{#if k.expiresAt && !k.revokedAt}· expires {fmtTime(k.expiresAt)}{/if}
+						</div>
+					</div>
+					{#if !k.revokedAt}
+						<button
+							class="btn btn-sm shrink-0 btn-danger"
+							onclick={() => revokeKey(k)}
+							disabled={busy}>Revoke</button
+						>
+					{/if}
+				</div>
+			{:else}
+				<p class="text-[13px] text-mist-600">No keys yet.</p>
+			{/each}
+		</div>
+
+		<div class="panel">
 			<span class="label-sm">Ban list and reserved slots</span>
 			<div class="space-y-1.5">
 				{#each data.lists.lists as l (l.id)}
@@ -680,5 +778,88 @@
 				>
 			</div>
 		</form>
+	</Modal>
+{:else if dialog?.kind === 'key'}
+	{@const d = dialog}
+	<Modal title="New API key" onclose={() => (dialog = null)}>
+		<form
+			class="space-y-3"
+			onsubmit={(e) => {
+				e.preventDefault();
+				createKey();
+			}}
+		>
+			<label class="block"
+				><span class="field-label">Label</span><input
+					class="input"
+					type="text"
+					bind:value={d.label}
+					placeholder="e.g. Discord bot"
+					maxlength="60"
+					required
+				/></label
+			>
+			<div>
+				<span class="field-label">May</span>
+				<CapabilityPicker bind:value={d.capabilities} compact />
+			</div>
+			<div>
+				<span class="field-label">Servers</span>
+				<label class="flex items-center gap-2 text-[13px]"
+					><input type="checkbox" bind:checked={d.allServers} /> Every server in the organisation, including
+					ones added later</label
+				>
+				{#if !d.allServers}
+					<div class="mt-1 space-y-1 pl-5">
+						{#each data.orgServers as s (s.id)}
+							<label class="flex items-center gap-2 text-[13px]"
+								><input type="checkbox" bind:checked={d.servers[s.id]} /> {s.name}</label
+							>
+						{/each}
+					</div>
+				{/if}
+			</div>
+			<label class="block"
+				><span class="field-label">Expires</span>
+				<select class="input" bind:value={d.expiresDays}>
+					<option value="">never</option>
+					<option value="30">in 30 days</option>
+					<option value="90">in 90 days</option>
+					<option value="365">in a year</option>
+				</select>
+			</label>
+			<p class="note">
+				The org lists (bans, reserved slots) need <b>Org lists</b>; reading servers needs
+				<b>View</b>. The token is shown once and stored hashed.
+			</p>
+			<div class="flex justify-end gap-2 pt-2">
+				<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>
+				<button type="submit" class="btn btn-primary" disabled={busy || !d.capabilities.length}
+					>Create key</button
+				>
+			</div>
+		</form>
+	</Modal>
+{:else if dialog?.kind === 'keyCreated'}
+	{@const d = dialog}
+	<Modal title="API key ready" onclose={() => (dialog = null)}>
+		<p class="mb-3 text-[13.5px]">
+			Copy it now: this is the only time the token is shown. Send it as
+			<code class="font-mono text-[12.5px]">Authorization: Bearer …</code> on
+			<code class="font-mono text-[12.5px]">/api</code> calls.
+		</p>
+		<div class="join w-full">
+			<input class="input font-mono text-[12.5px]" type="text" readonly value={d.token} />
+			<button type="button" class="btn btn-primary" onclick={() => copy(d.token, 'API key')}
+				>Copy</button
+			>
+		</div>
+		<p class="note">
+			<b>{d.key.label}</b>: {capabilitySummary(d.key.capabilities)} · {keyServers(d.key)}.
+			{d.key.expiresAt ? `Expires ${fmtTime(d.key.expiresAt)}.` : 'Never expires.'}
+		</p>
+		{#snippet actions()}<button type="button" class="btn" onclick={() => (dialog = null)}
+				>Done</button
+			>{/snippet}
 	</Modal>
 {/if}

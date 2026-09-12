@@ -3,10 +3,20 @@ import { building } from '$app/environment';
 import { json, redirect } from '@sveltejs/kit';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
 import { authConfigured, getAuth, initAuth } from '$lib/server/auth';
-import { toSessionUser } from '$lib/server/access';
+import { keyUser, toSessionUser } from '$lib/server/access';
+import { resolveBearer } from '$lib/server/apikeys';
+import { looksLikeOurToken, parseBearer } from '$lib/server/apikeys-core';
+import { assertRate } from '$lib/server/ratelimit';
 import { getEnv, initEnv } from '$lib/server/env';
 import { encryptionKey } from '$lib/server/crypto';
-import { CLIENT_IP_HEADER, normalizeError, resolveClientIp } from '$lib/server/http';
+import {
+	ApiError,
+	apiError,
+	CLIENT_IP_HEADER,
+	clientIp,
+	normalizeError,
+	resolveClientIp
+} from '$lib/server/http';
 import { startPoller, stopPoller } from '$lib/server/poller';
 import { setGateway } from '$lib/server/gateway';
 import { localGateway } from '$lib/server/gateway-local';
@@ -86,6 +96,7 @@ function installShutdown(env: Awaited<ReturnType<typeof initEnv>>): void {
 export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.user = null;
 	event.locals.session = null;
+	event.locals.apiKey = null;
 
 	const secured: typeof resolve = async (ev, opts) => {
 		const res = await resolve(ev, opts);
@@ -113,9 +124,37 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// routes in Better Auth's own disabledPaths.
 	if (isAuthApi && !AUTH_PUBLIC.test(path)) return json({ error: 'Not found.' }, { status: 404 });
 
+	// Bots: an organisation API key as a bearer token, on the JSON API only. It stands in for the
+	// session (cookies are ignored) and for the CSRF header (a browser cannot attach a bearer to a
+	// cross-site request). A bad key never falls back to the cookie: it is simply refused.
+	const authorization = event.request.headers.get('authorization');
+	if (path.startsWith('/api/') && !isAuthApi && looksLikeOurToken(authorization)) {
+		try {
+			const token = parseBearer(authorization);
+			if (!token) throw new ApiError(401, 'Malformed API key.', 'invalid_api_key');
+			const principal = await resolveBearer(env, token);
+			event.locals.apiKey = principal;
+			event.locals.user = keyUser(principal);
+		} catch (err) {
+			if (err instanceof ApiError && err.status === 401) {
+				try {
+					assertRate(`apikey-bad:${clientIp(event.request)}`, 20, 60_000);
+				} catch (limited) {
+					return apiError(limited);
+				}
+			}
+			return apiError(err);
+		}
+	}
+
 	// CSRF guard for the JSON API: every mutation must carry the custom header (browsers never add
 	// it to cross-site form posts or simple requests). Better Auth checks origins for its own routes.
-	if (path.startsWith('/api/') && !isAuthApi && !SAFE_METHODS.has(event.request.method)) {
+	if (
+		path.startsWith('/api/') &&
+		!isAuthApi &&
+		!event.locals.apiKey &&
+		!SAFE_METHODS.has(event.request.method)
+	) {
 		if (event.request.headers.get('x-requested-with') !== 'warcon') {
 			return json(
 				{ ok: false, error: { message: 'Missing X-Requested-With: warcon header.', code: 'csrf' } },
@@ -124,7 +163,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	}
 
-	if (!isAuthApi) {
+	if (!isAuthApi && !event.locals.apiKey) {
 		try {
 			const session = await auth.api.getSession({ headers: event.request.headers });
 			if (session && !session.user.banned) {

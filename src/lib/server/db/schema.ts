@@ -211,6 +211,35 @@ export const orgInvites = pgTable(
 	(t) => [index('org_invites_org_idx').on(t.orgId)]
 );
 
+/**
+ * Bearer credentials for bots and scripts, owned by an organisation. A key carries its own
+ * capability set and an optional server allowlist (null = every org server, present and future);
+ * it can never manage the org. Only the SHA-256 of the token is stored; the token is shown once.
+ */
+export const apiKeys = pgTable(
+	'api_keys',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		label: text('label').notNull(),
+		keyHash: text('key_hash').notNull().unique(),
+		/** what the UI shows instead of the token: the prefix and the first few characters */
+		hint: text('hint').notNull(),
+		/** Capability[] */
+		capabilities: jsonb('capabilities').notNull(),
+		/** null = every server in the org */
+		serverIds: jsonb('server_ids'),
+		createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+		createdAt: ts('created_at').notNull().defaultNow(),
+		lastUsedAt: ts('last_used_at'),
+		expiresAt: ts('expires_at'),
+		revokedAt: ts('revoked_at')
+	},
+	(t) => [index('api_keys_org_idx').on(t.orgId)]
+);
+
 export const servers = pgTable('servers', {
 	id: text('id').primaryKey(),
 	orgId: text('org_id')
@@ -740,6 +769,7 @@ export type ServerRow = typeof servers.$inferSelect;
 export type OrgRow = typeof organizations.$inferSelect;
 export type OrgInviteRow = typeof orgInvites.$inferSelect;
 export type OrgRoleRow = typeof orgRoles.$inferSelect;
+export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
 export type SampleRow = typeof samples.$inferSelect;
 export type SteamProfileRow = typeof steamProfiles.$inferSelect;
