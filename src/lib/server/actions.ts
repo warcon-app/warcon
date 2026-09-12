@@ -1,13 +1,13 @@
 // The action registry: every game-server operation the panel can perform, with the
-// minimum per-server role it needs. Routes call `runAction` and audit the result.
+// capability it needs (see $lib/capabilities). Routes call `runAction` and audit the result.
 import { createHash } from 'node:crypto';
-import type { ServerRole } from './access';
+import type { Capability } from '../capabilities';
 import { ApiError, int, str } from './http';
 import { gamePath } from './hostpolicy';
 import { GameError, WardogsClient } from './rcon';
 
 export interface ActionDef {
-	level: ServerRole;
+	cap: Capability;
 	mutating: boolean;
 	// What the audit row's target column should hold.
 	target?: (p: any) => string;
@@ -131,7 +131,7 @@ const configResult = (status: number, body: any) => ({
 export const ACTIONS: Record<string, ActionDef> = {
 	// ---- reads (viewer) ----
 	capabilities: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => {
 			const data = await c.json('GET', '/v1/capabilities');
@@ -157,11 +157,11 @@ export const ACTIONS: Record<string, ActionDef> = {
 			};
 		}
 	},
-	status: { level: 'viewer', mutating: false, run: (c, p) => getStatus(c, !!p.raw) },
+	status: { cap: 'server.view', mutating: false, run: (c, p) => getStatus(c, !!p.raw) },
 	// Live build CL-499480: { status, uptimeSeconds, connections:{active}, gameThreadQueue:{inFlight,depth,rejectedTotal} }.
-	health: { level: 'viewer', mutating: false, run: (c) => c.json('GET', '/v1/health') },
+	health: { cap: 'server.view', mutating: false, run: (c) => c.json('GET', '/v1/health') },
 	players: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => {
 			const d = await c.json('GET', '/v1/players');
@@ -184,7 +184,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		}
 	},
 	maps: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => ({
 			maps: ((await c.json('GET', '/v1/catalog/maps')).maps || []).map((m: any) => ({
@@ -194,7 +194,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		})
 	},
 	lightings: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => ({
 			lightings: ((await c.json('GET', '/v1/catalog/lightings')).lightings || []).map((l: any) => ({
@@ -204,7 +204,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		})
 	},
 	experiences: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c, p) => {
 			const all = ((await c.json('GET', '/v1/catalog/experiences')).experiences || []).map(
@@ -221,7 +221,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		}
 	},
 	alternators: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c, p) => ({
 			alternators: (
@@ -231,7 +231,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		})
 	},
 	catalog: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => {
 			const [maps, lightings, experiences] = await Promise.all([
@@ -242,9 +242,9 @@ export const ACTIONS: Record<string, ActionDef> = {
 			return { ...(maps as object), ...(lightings as object), ...(experiences as object) };
 		}
 	},
-	rotation: { level: 'viewer', mutating: false, run: (c) => getRotation(c) },
+	rotation: { cap: 'server.view', mutating: false, run: (c) => getRotation(c) },
 	bans: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => ({
 			bans: ((await c.json('GET', '/v1/bans')).bans || []).map((b: any) => ({
@@ -257,19 +257,19 @@ export const ACTIONS: Record<string, ActionDef> = {
 		})
 	},
 	reserved: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => ({
 			reserved: (await c.json('GET', '/v1/reserved-slots')).reservedSlots || []
 		})
 	},
 	sponsor: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => ({ imageUrl: (await c.json('GET', '/v1/sponsor')).imageUrl || '' })
 	},
 	serverLog: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c, p) => {
 			const limit = int(p.limit, 50, 1, 500);
@@ -286,7 +286,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		}
 	},
 	config: {
-		level: 'viewer',
+		cap: 'server.view',
 		mutating: false,
 		run: async (c) => {
 			const d = await c.json('GET', '/v1/config');
@@ -302,7 +302,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 
 	// ---- operator ----
 	broadcast: {
-		level: 'operator',
+		cap: 'chat.send',
 		mutating: true,
 		target: (p) => str(p.message, 200),
 		run: (c, p) => {
@@ -314,7 +314,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		}
 	},
 	whisper: {
-		level: 'operator',
+		cap: 'chat.send',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) => {
@@ -326,7 +326,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		}
 	},
 	kick: {
-		level: 'operator',
+		cap: 'players.moderate',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) =>
@@ -335,7 +335,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 			})
 	},
 	kill: {
-		level: 'operator',
+		cap: 'players.moderate',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) => c.json('POST', `/v1/players/${steamId(p.steamId)}/kill`)
@@ -343,7 +343,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 	// As the official console does it: move the faction, then kill the player so they respawn on the
 	// new side. A failed kill (no living character) is not an error; the move already happened.
 	changeTeam: {
-		level: 'operator',
+		cap: 'players.moderate',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: async (c, p) => {
@@ -369,20 +369,20 @@ export const ACTIONS: Record<string, ActionDef> = {
 			};
 		}
 	},
-	endMatch: { level: 'operator', mutating: true, run: (c) => c.json('POST', '/v1/match/end') },
+	endMatch: { cap: 'match.control', mutating: true, run: (c) => c.json('POST', '/v1/match/end') },
 	restartMatch: {
-		level: 'operator',
+		cap: 'match.control',
 		mutating: true,
 		run: (c) => c.json('POST', '/v1/match/restart')
 	},
 	changeMap: {
-		level: 'operator',
+		cap: 'match.control',
 		mutating: true,
 		target: (p) => str(p.map, 100),
 		run: (c, p) => c.json('POST', '/v1/match/map', mapSelection(p))
 	},
 	setWeather: {
-		level: 'operator',
+		cap: 'match.control',
 		mutating: true,
 		target: (p) => str(p.lighting, 100),
 		run: (c, p) => {
@@ -395,7 +395,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 	},
 	// Same algorithm as the official console: move (or add) the selection into the slot after "now".
 	setNextMap: {
-		level: 'operator',
+		cap: 'match.control',
 		mutating: true,
 		target: (p) => str(p.map, 100),
 		run: async (c, p) => {
@@ -426,19 +426,19 @@ export const ACTIONS: Record<string, ActionDef> = {
 		}
 	},
 	rotationAdd: {
-		level: 'operator',
+		cap: 'rotation.edit',
 		mutating: true,
 		target: (p) => str(p.map, 100),
 		run: (c, p) => c.json('POST', '/v1/rotation/entries', mapSelection(p))
 	},
 	rotationRemove: {
-		level: 'operator',
+		cap: 'rotation.edit',
 		mutating: true,
 		target: (p) => String(p.index),
 		run: (c, p) => c.json('DELETE', `/v1/rotation/entries/${int(p.index, -1, 0, 10000)}`)
 	},
 	rotationMove: {
-		level: 'operator',
+		cap: 'rotation.edit',
 		mutating: true,
 		target: (p) => `${p.index} ${p.direction}`,
 		run: (c, p) => {
@@ -449,7 +449,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		}
 	},
 	rotationReorder: {
-		level: 'operator',
+		cap: 'rotation.edit',
 		mutating: true,
 		target: (p) => `${p.from} -> ${p.to}`,
 		run: async (c, p) => {
@@ -468,7 +468,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 
 	// ---- admin ----
 	ban: {
-		level: 'admin',
+		cap: 'bans.manage',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) =>
@@ -478,26 +478,30 @@ export const ACTIONS: Record<string, ActionDef> = {
 			})
 	},
 	unban: {
-		level: 'admin',
+		cap: 'bans.manage',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) => c.json('DELETE', `/v1/bans/${steamId(p.steamId)}`)
 	},
 	reservedAdd: {
-		level: 'admin',
+		cap: 'slots.manage',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) => c.json('POST', '/v1/reserved-slots', { steamId: steamId(p.steamId) })
 	},
 	reservedRemove: {
-		level: 'admin',
+		cap: 'slots.manage',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) => c.json('DELETE', `/v1/reserved-slots/${steamId(p.steamId)}`)
 	},
-	rotationSave: { level: 'admin', mutating: true, run: (c) => c.json('POST', '/v1/rotation/save') },
+	rotationSave: {
+		cap: 'rotation.save',
+		mutating: true,
+		run: (c) => c.json('POST', '/v1/rotation/save')
+	},
 	settings: {
-		level: 'admin',
+		cap: 'config.apply',
 		mutating: true,
 		target: (p) => Object.keys(p || {}).join(','),
 		run: (c, p) => {
@@ -523,7 +527,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 	// with "PUT is not supported on this endpoint", and the official console only ever writes
 	// ServerImageURL through the config document (PUT /v1/config). Warcon does the same.
 	configValidate: {
-		level: 'admin',
+		cap: 'config.apply',
 		mutating: false,
 		audit: (p) => ({ text: fingerprint(p.text) }),
 		run: async (c, p) => {
@@ -536,7 +540,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		}
 	},
 	configApply: {
-		level: 'admin',
+		cap: 'config.apply',
 		mutating: true,
 		target: (p) => str(p.revision, 100),
 		// The document itself holds Password= / ServerPassword= lines; the trail keeps its fingerprint.
@@ -575,7 +579,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 	},
 	// Escape hatch for routes this panel does not model yet. Admin only, /v1 only, fully audited.
 	raw: {
-		level: 'admin',
+		cap: 'rcon.raw',
 		mutating: true,
 		target: (p) => `${str(p.method, 10).toUpperCase()} ${str(p.path, 300)}`,
 		// Text bodies (config documents) are fingerprinted; JSON bodies are kept, redacted by key and line.

@@ -3,7 +3,6 @@
 	import { poll } from '$lib/poll';
 	import { watchLive } from '$lib/live';
 	import {
-		can,
 		expSetLabel,
 		fmtDuration,
 		fmtNum,
@@ -11,6 +10,7 @@
 		mapLabel,
 		zoneLabel
 	} from '$lib/format';
+	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import { setHealth } from '$lib/health.svelte';
@@ -27,7 +27,8 @@
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
-	let operator = $derived(can(data.server.role, 'operator'));
+	let chat = $derived(can(data.server.caps, 'chat.send'));
+	let match = $derived(can(data.server.caps, 'match.control'));
 
 	let status = $state<Status | null>(null);
 	let statusAt = $state(0);
@@ -294,12 +295,12 @@
 			</p>
 		{/if}
 		<div class="join join-stack mt-3">
-			<button class="btn" disabled={!operator} onclick={() => (showPicker = !showPicker)}
+			<button class="btn" disabled={!match} onclick={() => (showPicker = !showPicker)}
 				>Override map</button
 			>
 			<button
 				class="btn"
-				disabled={!operator}
+				disabled={!match}
 				onclick={() =>
 					act(
 						'restartMatch',
@@ -312,7 +313,7 @@
 			>
 			<button
 				class="btn btn-danger"
-				disabled={!operator}
+				disabled={!match}
 				onclick={() =>
 					act(
 						'endMatch',
@@ -327,7 +328,7 @@
 			>
 		</div>
 		<p class="note">
-			{operator
+			{chat || match
 				? 'Both travel when the match-end screen finishes, not when the button is pressed.'
 				: 'You have view-only access to this server.'}
 		</p>
@@ -346,9 +347,9 @@
 					maxlength="200"
 					placeholder="Message shown to everyone on the server…"
 					bind:value={broadcast}
-					disabled={!operator}
+					disabled={!chat}
 				/>
-				<button class="btn btn-primary" type="submit" disabled={!operator}>Send</button>
+				<button class="btn btn-primary" type="submit" disabled={!chat}>Send</button>
 			</div>
 		</form>
 	</div>
@@ -381,11 +382,11 @@
 
 <div class="mt-4 panel" hidden={!showPicker}>
 	<span class="label-sm">Map override</span>
-	<MapPicker bind:this={picker} serverId={id} catalog={data.catalog} disabled={!operator} />
+	<MapPicker bind:this={picker} serverId={id} catalog={data.catalog} disabled={!match} />
 	<div class="join join-stack mt-4">
 		<button
 			class="btn btn-primary"
-			disabled={!operator || !data.features.rotationEdit}
+			disabled={!match || !data.features.rotationEdit}
 			title={data.features.rotationEdit
 				? ''
 				: 'This server build serves no rotation edit routes, so a next map cannot be queued.'}
@@ -394,7 +395,7 @@
 		>
 		<button
 			class="btn btn-danger"
-			disabled={!operator}
+			disabled={!match}
 			onclick={() =>
 				picker &&
 				act('changeMap', picker.selection(), {

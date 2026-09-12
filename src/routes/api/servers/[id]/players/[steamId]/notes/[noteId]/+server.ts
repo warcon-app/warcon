@@ -1,17 +1,17 @@
 import { getEnv } from '$lib/server/env';
 import { apiJson, int, param, route } from '$lib/server/http';
-import { requireServerRole, requireUser } from '$lib/server/access';
+import { requireServerCap, requireUser } from '$lib/server/access';
 import { deleteNote, requireSteamId } from '$lib/server/players';
 
-/** The author, or an admin on this server, removes a note. */
+/** The author, or someone whose role includes "Others' notes", removes a note. */
 export const DELETE = route(async (event) => {
 	const env = getEnv();
 	const user = requireUser(event.locals);
-	const { server, role } = await requireServerRole(
+	const { server, access } = await requireServerCap(
 		env,
 		event.locals,
 		param(event, 'id'),
-		'operator'
+		'players.notes'
 	);
 	const steamId = requireSteamId(param(event, 'steamId'));
 	await deleteNote(
@@ -19,7 +19,7 @@ export const DELETE = route(async (event) => {
 		event.request,
 		user,
 		server,
-		role,
+		access,
 		steamId,
 		int(param(event, 'noteId'), 0, 1)
 	);

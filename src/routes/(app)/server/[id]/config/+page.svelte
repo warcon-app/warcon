@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { rconGet, rconPost, errorMessage, ApiError } from '$lib/api';
-	import { can } from '$lib/format';
+	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import ConfigForm from '$lib/components/ConfigForm.svelte';
@@ -11,7 +11,7 @@
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
-	let admin = $derived(can(data.server.role, 'admin'));
+	let admin = $derived(can(data.server.caps, 'config.apply'));
 
 	let tick = $state(24);
 	let tickMin = $state(18);

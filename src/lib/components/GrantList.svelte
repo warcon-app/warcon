@@ -1,15 +1,24 @@
 <script lang="ts">
-	// A list of things (servers, or people) each with a role toggle: the body of the access
+	// A list of things (servers, or people) each with a role picker: the body of the access
 	// dialogs. Grows a filter box past a handful of rows, and a "set all" row that applies to
-	// whatever the filter currently shows.
-	import RoleToggle from './RoleToggle.svelte';
+	// whatever the filter currently shows. Rows may carry their own role list (the site owner's
+	// user dialog spans organisations); "set all" only appears when every row shares one.
+	import RoleSelect from './RoleSelect.svelte';
 
-	type Row = { id: string; label: string; sub?: string };
+	type RoleOption = { id: string; name: string };
+	type Row = { id: string; label: string; sub?: string; roles?: RoleOption[] };
 	let {
 		rows,
+		roles = [],
 		grants = $bindable(),
 		empty = 'Nothing to grant yet.'
-	}: { rows: Row[]; grants: Record<string, string>; empty?: string } = $props();
+	}: {
+		rows: Row[];
+		/** the roles every row offers, unless a row brings its own */
+		roles?: RoleOption[];
+		grants: Record<string, string>;
+		empty?: string;
+	} = $props();
 
 	let q = $state('');
 	let shown = $derived.by(() => {
@@ -17,6 +26,7 @@
 		if (!needle) return rows;
 		return rows.filter((r) => `${r.label} ${r.sub ?? ''}`.toLowerCase().includes(needle));
 	});
+	let shared = $derived(roles.length > 0 && rows.every((r) => !r.roles));
 	/** the role every shown row shares, or null when they differ */
 	let common = $derived.by(() => {
 		if (!shown.length) return null;
@@ -38,13 +48,15 @@
 			aria-label="Filter"
 		/>
 	{/if}
-	<div class="kv items-center border-b border-white/10 text-mist-400">
-		<span class="caps"
-			>{#if shown.length !== rows.length}{shown.length} of {rows.length} ·
-			{/if}set all</span
-		>
-		<RoleToggle value={common} label="Set every shown row" onchange={setAll} />
-	</div>
+	{#if shared}
+		<div class="kv items-center border-b border-white/10 text-mist-400">
+			<span class="caps"
+				>{#if shown.length !== rows.length}{shown.length} of {rows.length} ·
+				{/if}set all</span
+			>
+			<RoleSelect value={common} {roles} mixed label="Set every shown row" onchange={setAll} />
+		</div>
+	{/if}
 	<div class="max-h-[55dvh] overflow-y-auto">
 		{#each shown as r (r.id)}
 			<div class="kv items-center">
@@ -52,13 +64,12 @@
 					>{r.label}
 					{#if r.sub}<span class="font-mono text-[12px] text-mist-600">{r.sub}</span>{/if}</span
 				>
-				<RoleToggle bind:value={grants[r.id]} label={r.label} />
+				<RoleSelect bind:value={grants[r.id]} roles={r.roles ?? roles} label={r.label} />
 			</div>
 		{:else}
 			<p class="py-3 text-center text-mist-600">Nothing matches.</p>
 		{/each}
 	</div>
-	<p class="note">– none · V viewer · O operator · A admin</p>
 {:else}
 	<p class="text-mist-400">{empty}</p>
 {/if}

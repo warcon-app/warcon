@@ -6,16 +6,11 @@ import { ApiError, int, newId, publicMessage, str } from './http';
 import { encryptSecret } from './crypto';
 import { writeAudit } from './audit';
 import { assertReachableTarget, normaliseHost } from './hostpolicy';
-import {
-	SERVER_ROLES,
-	type OrgRow,
-	type ServerRole,
-	type ServerRow,
-	type SessionUser
-} from './access';
+import type { OrgRow, ServerRow, SessionUser } from './access';
 import { gateway } from './gateway';
 import { GameError, WardogsClient } from './rcon';
-import { serverGrants, servers, user } from './db/schema';
+import { orgRoles, serverGrants, servers, user } from './db/schema';
+import { rolesOf } from './roles';
 import { assertCanAddServer, ensureMemberships } from './orgs';
 import { ensureServerLists } from './lists';
 
@@ -276,7 +271,8 @@ export interface GrantView {
 	userId: string;
 	username: string | null;
 	name: string;
-	role: ServerRole;
+	roleId: string;
+	roleName: string;
 	createdAt: Date;
 }
 
@@ -286,11 +282,13 @@ export const serverGrantsFor = (env: Env, serverId: string): Promise<GrantView[]
 			userId: serverGrants.userId,
 			username: user.username,
 			name: user.name,
-			role: serverGrants.role,
+			roleId: serverGrants.roleId,
+			roleName: orgRoles.name,
 			createdAt: serverGrants.createdAt
 		})
 		.from(serverGrants)
 		.innerJoin(user, eq(user.id, serverGrants.userId))
+		.innerJoin(orgRoles, eq(orgRoles.id, serverGrants.roleId))
 		.where(eq(serverGrants.serverId, serverId))
 		.orderBy(asc(user.username));
 
@@ -301,14 +299,21 @@ export async function setServerGrants(
 	server: ServerRow,
 	grants: unknown
 ) {
-	const wanted = Array.isArray(grants) ? (grants as { userId?: unknown; role?: unknown }[]) : [];
-	const users = new Set((await env.db.select({ id: user.id }).from(user)).map((u) => u.id));
-	const applied: { userId: string; role: ServerRole }[] = [];
+	const wanted = Array.isArray(grants) ? (grants as { userId?: unknown; roleId?: unknown }[]) : [];
+	const [users, roles] = await Promise.all([
+		env.db
+			.select({ id: user.id })
+			.from(user)
+			.then((rows) => new Set(rows.map((u) => u.id))),
+		rolesOf(env, server.orgId)
+	]);
+	const applied: { userId: string; roleId: string; roleName: string }[] = [];
 	for (const g of wanted) {
 		const userId = str(g.userId, 64);
-		const role = g.role as ServerRole;
-		if (!users.has(userId) || !SERVER_ROLES.includes(role)) continue;
-		if (!applied.some((a) => a.userId === userId)) applied.push({ userId, role });
+		const role = roles.get(str(g.roleId, 64));
+		if (!users.has(userId) || !role) continue;
+		if (!applied.some((a) => a.userId === userId))
+			applied.push({ userId, roleId: role.id, roleName: role.name });
 	}
 	await env.db.transaction(async (tx) => {
 		await tx.delete(serverGrants).where(eq(serverGrants.serverId, server.id));
@@ -317,7 +322,7 @@ export async function setServerGrants(
 				applied.map((a) => ({
 					serverId: server.id,
 					userId: a.userId,
-					role: a.role,
+					roleId: a.roleId,
 					grantedBy: actor.id
 				}))
 			);

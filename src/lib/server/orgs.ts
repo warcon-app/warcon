@@ -4,18 +4,20 @@ import { and, asc, count, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizz
 import { maxServersPerOrg, type Env } from './env';
 import { ApiError, int, newId, str } from './http';
 import { writeAudit } from './audit';
+import { ORG_ROLES, type OrgRole, type OrgRow, type SessionUser } from './access';
 import {
-	ORG_ROLES,
-	SERVER_ROLES,
-	type OrgRole,
-	type OrgRow,
-	type ServerRole,
-	type SessionUser
-} from './access';
-import { orgInvites, orgMembers, organizations, serverGrants, servers, user } from './db/schema';
+	orgInvites,
+	orgMembers,
+	orgRoles,
+	organizations,
+	serverGrants,
+	servers,
+	user
+} from './db/schema';
 import type { OrgInviteRow } from './db/schema';
 import type { Db } from './db';
 import { ensureOrgLists } from './lists';
+import { ensureOrgRoles, roleInOrg, rolesOf } from './roles';
 import { gateway } from './gateway';
 import type { InviteStatus, InviteView, ListSyncSummary, OrgMemberView, OrgView } from '$lib/types';
 
@@ -221,6 +223,7 @@ export async function createOrg(
 	await env.db.transaction(async (tx) => {
 		await tx.insert(organizations).values({ id, name, slug, createdBy: actor.id });
 		await tx.insert(orgMembers).values({ orgId: id, userId: actor.id, role: 'owner' });
+		await ensureOrgRoles(tx, id);
 		await ensureOrgLists(tx, id, actor.id);
 	});
 	await writeAudit(env, req, {
@@ -260,8 +263,10 @@ export async function updateOrg(
 }
 
 /**
- * Removes the org and, by cascade, its servers, grants, memberships and invites. Each server
- * gets its own 'server.delete' row so per-server audit history shows who removed it.
+ * Removes the org and, by cascade, its servers, roles, memberships and invites. Grants go first
+ * by hand: they point at the org's roles with ON DELETE RESTRICT, and Postgres may run the roles
+ * cascade before the servers cascade. Each server gets its own 'server.delete' row so per-server
+ * audit history shows who removed it.
  */
 export async function deleteOrg(
 	env: Env,
@@ -273,7 +278,17 @@ export async function deleteOrg(
 		.select({ id: servers.id, name: servers.name, host: servers.host, port: servers.port })
 		.from(servers)
 		.where(eq(servers.orgId, org.id));
-	await env.db.delete(organizations).where(eq(organizations.id, org.id));
+	await env.db.transaction(async (tx) => {
+		if (gone.length)
+			await tx.delete(serverGrants).where(
+				inArray(
+					serverGrants.serverId,
+					gone.map((s) => s.id)
+				)
+			);
+		await tx.delete(orgInvites).where(eq(orgInvites.orgId, org.id));
+		await tx.delete(organizations).where(eq(organizations.id, org.id));
+	});
 	for (const s of gone) {
 		await writeAudit(env, req, {
 			actor,
@@ -311,16 +326,23 @@ export async function listMembers(env: Env, orgId: string): Promise<OrgMemberVie
 			userId: serverGrants.userId,
 			serverId: serverGrants.serverId,
 			serverName: servers.name,
-			role: serverGrants.role
+			roleId: serverGrants.roleId,
+			roleName: orgRoles.name
 		})
 		.from(serverGrants)
 		.innerJoin(servers, eq(servers.id, serverGrants.serverId))
+		.innerJoin(orgRoles, eq(orgRoles.id, serverGrants.roleId))
 		.where(eq(servers.orgId, orgId))
 		.orderBy(asc(servers.sortOrder), asc(servers.name));
 	const byUser = new Map<string, OrgMemberView['grants']>();
 	for (const g of grants) {
 		if (!byUser.has(g.userId)) byUser.set(g.userId, []);
-		byUser.get(g.userId)!.push({ serverId: g.serverId, serverName: g.serverName, role: g.role });
+		byUser.get(g.userId)!.push({
+			serverId: g.serverId,
+			serverName: g.serverName,
+			roleId: g.roleId,
+			roleName: g.roleName
+		});
 	}
 	return rows.map(({ m, u }) => ({
 		userId: u.id,
@@ -442,7 +464,7 @@ export async function removeMember(
 	});
 }
 
-/** Replaces a member's grants on this org's servers (grants elsewhere are untouched). */
+/** Replaces a member's grants on this org's servers (grants elsewhere are untouched). Roles must be this org's. */
 export async function setMemberGrants(
 	env: Env,
 	req: Request,
@@ -457,13 +479,17 @@ export async function setMemberGrants(
 			(r) => r.id
 		)
 	);
-	const wanted = Array.isArray(grants) ? (grants as { serverId?: unknown; role?: unknown }[]) : [];
-	const applied: { serverId: string; role: ServerRole }[] = [];
+	const roles = await rolesOf(env, org.id);
+	const wanted = Array.isArray(grants)
+		? (grants as { serverId?: unknown; roleId?: unknown }[])
+		: [];
+	const applied: { serverId: string; roleId: string; roleName: string }[] = [];
 	for (const g of wanted) {
 		const serverId = str(g.serverId, 64);
-		const role = g.role as ServerRole;
-		if (!known.has(serverId) || !SERVER_ROLES.includes(role)) continue;
-		if (!applied.some((a) => a.serverId === serverId)) applied.push({ serverId, role });
+		const role = roles.get(str(g.roleId, 64));
+		if (!known.has(serverId) || !role) continue;
+		if (!applied.some((a) => a.serverId === serverId))
+			applied.push({ serverId, roleId: role.id, roleName: role.name });
 	}
 	await env.db.transaction(async (tx) => {
 		if (known.size)
@@ -471,9 +497,14 @@ export async function setMemberGrants(
 				.delete(serverGrants)
 				.where(and(eq(serverGrants.userId, userId), inArray(serverGrants.serverId, [...known])));
 		if (applied.length)
-			await tx
-				.insert(serverGrants)
-				.values(applied.map((a) => ({ ...a, userId, grantedBy: actor.id })));
+			await tx.insert(serverGrants).values(
+				applied.map((a) => ({
+					serverId: a.serverId,
+					roleId: a.roleId,
+					userId,
+					grantedBy: actor.id
+				}))
+			);
 	});
 	await writeAudit(env, req, {
 		actor,
@@ -532,13 +563,14 @@ export function inviteProblem(inv: OrgInviteRow, now = new Date()): string | nul
 	return status === 'live' ? null : STATUS_PROBLEM[status];
 }
 
-const shapeInvite = (env: Env, inv: OrgInviteRow): InviteView => {
+const shapeInvite = (env: Env, inv: OrgInviteRow, serverRoleName: string | null): InviteView => {
 	const status = inviteStatus(inv);
 	return {
 		id: inv.id,
 		label: inv.label,
 		orgRole: inv.orgRole,
-		serverRole: inv.serverRole,
+		serverRoleId: inv.serverRoleId,
+		serverRoleName,
 		maxUses: inv.maxUses,
 		uses: inv.uses,
 		expiresAt: iso(inv.expiresAt),
@@ -552,11 +584,12 @@ const shapeInvite = (env: Env, inv: OrgInviteRow): InviteView => {
 
 export async function listInvites(env: Env, orgId: string): Promise<InviteView[]> {
 	const rows = await env.db
-		.select()
+		.select({ inv: orgInvites, roleName: orgRoles.name })
 		.from(orgInvites)
+		.leftJoin(orgRoles, eq(orgRoles.id, orgInvites.serverRoleId))
 		.where(eq(orgInvites.orgId, orgId))
 		.orderBy(asc(orgInvites.createdAt));
-	return rows.map((r) => shapeInvite(env, r));
+	return rows.map((r) => shapeInvite(env, r.inv, r.roleName));
 }
 
 export async function createInvite(
@@ -569,9 +602,9 @@ export async function createInvite(
 	const suspended = suspendedProblem(org);
 	if (suspended && actor.role !== 'owner') throw new ApiError(403, suspended, 'suspended');
 	const orgRole: OrgRole = body.orgRole === 'owner' ? 'owner' : 'member';
-	const serverRole = SERVER_ROLES.includes(body.serverRole as ServerRole)
-		? (body.serverRole as ServerRole)
-		: null;
+	// A role id from another org (or a stale one) is a 404 here, never silently "no access".
+	const serverRoleId = str(body.serverRoleId, 64) || null;
+	const serverRole = serverRoleId ? await roleInOrg(env, org.id, serverRoleId) : null;
 	// Blank, 0 or anything below 0 means "no limit"; only a positive count or day span applies.
 	const maxUses = int(body.maxUses, 0, 0, 100000) || null;
 	const days = int(body.expiresDays, 0, 0, 3650);
@@ -582,7 +615,7 @@ export async function createInvite(
 		token: newToken(),
 		label: str(body.label, 60),
 		orgRole,
-		serverRole,
+		serverRoleId: serverRole?.id ?? null,
 		maxUses,
 		expiresAt,
 		createdBy: actor.id
@@ -599,12 +632,13 @@ export async function createInvite(
 			orgId: org.id,
 			inviteId: row.id,
 			orgRole,
-			serverRole,
+			serverRoleId: serverRole?.id ?? null,
+			serverRole: serverRole?.name ?? null,
 			maxUses,
 			expiresAt: iso(expiresAt)
 		}
 	});
-	return shapeInvite(env, created);
+	return shapeInvite(env, created, serverRole?.name ?? null);
 }
 
 export async function revokeInvite(
@@ -634,12 +668,13 @@ export async function revokeInvite(
 export async function findInvite(
 	env: Env,
 	token: string
-): Promise<{ invite: OrgInviteRow; org: OrgRow } | null> {
+): Promise<{ invite: OrgInviteRow; org: OrgRow; serverRoleName: string | null } | null> {
 	if (!token || token.length > 100) return null;
 	const [row] = await env.db
-		.select({ invite: orgInvites, org: organizations })
+		.select({ invite: orgInvites, org: organizations, serverRoleName: orgRoles.name })
 		.from(orgInvites)
 		.innerJoin(organizations, eq(organizations.id, orgInvites.orgId))
+		.leftJoin(orgRoles, eq(orgRoles.id, orgInvites.serverRoleId))
 		.where(eq(orgInvites.token, token))
 		.limit(1);
 	return row ?? null;
@@ -663,6 +698,7 @@ export async function joinOrg(
 	const problem = inviteProblem(invite) ?? suspendedProblem(org);
 	if (problem) throw new ApiError(410, problem, 'invite');
 	let granted = 0;
+	let grantedRole: string | null = null;
 	const joined = await env.db.transaction(async (tx) => {
 		const inserted = await tx
 			.insert(orgMembers)
@@ -685,7 +721,16 @@ export async function joinOrg(
 		// Rolls back the membership: the link ran out (or was revoked) since the page was loaded.
 		if (!claimed.length)
 			throw new ApiError(410, 'This invite link can no longer be used.', 'invite');
-		if (invite.serverRole) {
+		// The role is re-read inside the transaction: if an owner deleted it since the link was
+		// made (the FK nulls the invite), the person still joins, just without server access.
+		const [role] = invite.serverRoleId
+			? await tx
+					.select({ id: orgRoles.id, name: orgRoles.name })
+					.from(orgRoles)
+					.where(and(eq(orgRoles.id, invite.serverRoleId), eq(orgRoles.orgId, org.id)))
+					.limit(1)
+			: [];
+		if (role) {
 			const ids = await tx
 				.select({ id: servers.id })
 				.from(servers)
@@ -697,12 +742,13 @@ export async function joinOrg(
 						ids.map((s) => ({
 							serverId: s.id,
 							userId: user.id,
-							role: invite.serverRole!,
+							roleId: role.id,
 							grantedBy: invite.createdBy
 						}))
 					)
 					.onConflictDoNothing();
 				granted = ids.length;
+				grantedRole = role.name;
 			}
 		}
 		return true;
@@ -719,7 +765,8 @@ export async function joinOrg(
 			orgId: org.id,
 			inviteId: invite.id,
 			orgRole: invite.orgRole,
-			serverRole: invite.serverRole,
+			serverRoleId: invite.serverRoleId,
+			serverRole: grantedRole,
 			servers: granted
 		}
 	});

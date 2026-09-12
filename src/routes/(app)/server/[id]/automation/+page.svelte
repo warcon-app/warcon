@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { api, errorMessage } from '$lib/api';
-	import { can, fmtTime, mapLabel } from '$lib/format';
+	import { fmtTime, mapLabel } from '$lib/format';
+	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
@@ -19,7 +20,7 @@
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
-	let admin = $derived(can(data.server.role, 'admin'));
+	let admin = $derived(can(data.server.caps, 'automation.manage'));
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
 
 	/** The last actions the rules took and what became of them; refreshed as deliveries happen. */

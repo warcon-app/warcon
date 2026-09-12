@@ -7,7 +7,7 @@ export const GET = route(async ({ locals }) => {
 	return apiJson({
 		ok: true,
 		actions: Object.fromEntries(
-			Object.entries(ACTIONS).map(([k, v]) => [k, { level: v.level, mutating: v.mutating }])
+			Object.entries(ACTIONS).map(([k, v]) => [k, { cap: v.cap, mutating: v.mutating }])
 		)
 	});
 });

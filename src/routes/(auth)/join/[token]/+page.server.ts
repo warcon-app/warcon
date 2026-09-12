@@ -14,7 +14,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 	if (!found) {
 		return { valid: false as const, problem: 'This invite link is not valid.', discord: false };
 	}
-	const { invite, org } = found;
+	const { invite, org, serverRoleName } = found;
 	const problem = inviteProblem(invite) ?? suspendedProblem(org);
 	// The stored membership, not orgRoleFor: the site owner counts as owner everywhere but may
 	// still join (or already have joined) an org as a listed member.
@@ -24,7 +24,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		problem,
 		org: { id: org.id, name: org.name },
 		orgRole: invite.orgRole,
-		serverRole: invite.serverRole,
+		serverRole: serverRoleName,
 		alreadyMember,
 		discord: discordEnabled(env),
 		turnstileSiteKey: turnstileSiteKey(env)

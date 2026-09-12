@@ -3,7 +3,7 @@
 	import { api, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import RoleToggle from '$lib/components/RoleToggle.svelte';
+	import RoleSelect from '$lib/components/RoleSelect.svelte';
 	import type { OrgMemberView } from '$lib/types';
 	import type { PageProps } from './$types';
 
@@ -11,13 +11,13 @@
 	let orgPath = $derived(`/api/orgs/${encodeURIComponent(data.org.id)}`);
 
 	type Grid = Record<string, Record<string, string>>;
-	/** what the server holds: member -> server -> role ('' for none) */
+	/** what the server holds: member -> server -> role id ('' for none) */
 	let saved = $derived.by<Grid>(() => {
 		const g: Grid = {};
 		for (const m of data.members) {
 			g[m.userId] = {};
 			for (const s of data.orgServers)
-				g[m.userId][s.id] = m.grants.find((x) => x.serverId === s.id)?.role ?? '';
+				g[m.userId][s.id] = m.grants.find((x) => x.serverId === s.id)?.roleId ?? '';
 		}
 		return g;
 	});
@@ -27,7 +27,7 @@
 		grid = structuredClone($state.snapshot(saved));
 	});
 
-	// Owners (and the site owner) are admin everywhere: no cells to edit.
+	// Owners (and the site owner) hold everything everywhere: no cells to edit.
 	const fixed = (m: OrgMemberView) => m.role === 'owner' || m.siteOwner;
 	const editable = $derived(data.members.filter((m) => !fixed(m)));
 
@@ -44,7 +44,7 @@
 		data.orgServers.some((s) => (rowOf(userId)[s.id] ?? '') !== (saved[userId]?.[s.id] ?? ''));
 	let dirty = $derived(editable.filter((m) => changed(m.userId)));
 
-	/** the role shared by every shown member on this server, or null when mixed */
+	/** the role id shared by every shown member on this server, or null when mixed */
 	const columnCommon = (serverId: string): string | null => {
 		if (!shownEditable.length) return null;
 		const first = rowOf(shownEditable[0].userId)[serverId] ?? '';
@@ -71,7 +71,7 @@
 			for (const m of todo) {
 				const grants = data.orgServers
 					.filter((s) => grid[m.userId][s.id])
-					.map((s) => ({ serverId: s.id, role: grid[m.userId][s.id] }));
+					.map((s) => ({ serverId: s.id, roleId: grid[m.userId][s.id] }));
 				await api('PUT', `${orgPath}/members/${m.userId}/grants`, { grants });
 				done++;
 			}
@@ -91,12 +91,10 @@
 <div class="mb-4 flex flex-wrap items-center gap-3">
 	<div class="text-[13.5px] text-mist-400">
 		Each cell is one member's role on one server. Owners run every server and are not listed as
-		cells.
+		cells. What each role may do is set on the
+		<a href="/orgs/{encodeURIComponent(data.org.id)}/roles" class="text-accent underline">Roles</a> tab.
 	</div>
 	<div class="ml-auto flex items-center gap-2">
-		<span class="hidden text-[12px] text-mist-600 sm:inline"
-			>– none · V viewer · O operator · A admin</span
-		>
 		{#if data.members.length > 8}
 			<input
 				class="input w-48"
@@ -138,10 +136,12 @@
 								{s.name}
 							</div>
 							<div class="mt-1.5">
-								<RoleToggle
+								<RoleSelect
 									value={columnCommon(s.id)}
+									roles={data.roles}
+									mixed
 									label="Everyone on {s.name}"
-									onchange={(v) => setColumn(s.id, v)}
+									onchange={(v: string) => setColumn(s.id, v)}
 									disabled={busy || !shownEditable.length}
 								/>
 							</div>
@@ -165,14 +165,15 @@
 						</td>
 						{#if isFixed}
 							<td colspan={data.orgServers.length + 1} class="text-mist-600">
-								admin on every server{m.siteOwner ? ' (site owner)' : ' (org owner)'}
+								everything on every server{m.siteOwner ? ' (site owner)' : ' (org owner)'}
 							</td>
 						{:else}
 							{#each data.orgServers as s (s.id)}
 								<td class="text-center">
 									{#if grid[m.userId]}
-										<RoleToggle
+										<RoleSelect
 											bind:value={grid[m.userId][s.id]}
+											roles={data.roles}
 											label="{m.username} on {s.name}"
 											disabled={busy}
 										/>
@@ -180,10 +181,12 @@
 								</td>
 							{/each}
 							<td class="text-center">
-								<RoleToggle
+								<RoleSelect
 									value={rowCommon(m.userId)}
+									roles={data.roles}
+									mixed
 									label="{m.username} on every server"
-									onchange={(v) => setRow(m.userId, v)}
+									onchange={(v: string) => setRow(m.userId, v)}
 									disabled={busy}
 								/>
 							</td>

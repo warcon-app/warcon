@@ -1,9 +1,10 @@
-// The /api/servers/:id/rcon/:action handler: role check, action dispatch, audit row.
+// The /api/servers/:id/rcon/:action handler: capability check, action dispatch, audit row.
 import type { RequestEvent } from '@sveltejs/kit';
 import { flag, getEnv } from './env';
 import { ApiError, apiJson, readJson } from './http';
 import { writeAudit } from './audit';
-import { getServer, requireUser, roleAtLeast, serverRoleFor } from './access';
+import { getServer, requireUser, serverAccessFor } from './access';
+import { CAPABILITY_INFO } from '../capabilities';
 import { ACTIONS, ACTION_NAMES } from './actions';
 import { GameError } from './rcon';
 import { gateway } from './gateway';
@@ -54,8 +55,8 @@ export async function runAction(
 
 	const user = requireUser(event.locals);
 	const server = await getServer(env, serverId);
-	const role = server ? await serverRoleFor(env, user, serverId) : null;
-	if (!server || !role) throw new ApiError(404, 'Server not found.', 'not_found');
+	const access = server ? await serverAccessFor(env, user, serverId) : null;
+	if (!server || !access) throw new ApiError(404, 'Server not found.', 'not_found');
 
 	const auditReads = flag(env.AUDIT_LOG_READS, false);
 	const target = def.target ? safe(() => def.target!(params), '') : '';
@@ -71,17 +72,17 @@ export async function runAction(
 		target
 	};
 
-	if (!roleAtLeast(role, def.level)) {
+	if (!access.caps.has(def.cap)) {
 		await writeAudit(env, req, {
 			...base,
 			outcome: 'denied',
 			status: 403,
-			message: `Needs '${def.level}', has '${role}'`,
+			message: `Needs '${def.cap}', role '${access.roleName}' lacks it`,
 			detail
 		});
 		throw new ApiError(
 			403,
-			`'${name}' needs the '${def.level}' role on ${server.name}; you have '${role}'.`,
+			`'${name}' needs '${CAPABILITY_INFO[def.cap].label}' on ${server.name}; your role '${access.roleName}' does not include it.`,
 			'forbidden'
 		);
 	}
@@ -106,7 +107,7 @@ export async function runAction(
 				durationMs
 			});
 		}
-		return apiJson({ ok: true, action: name, role, result, durationMs });
+		return apiJson({ ok: true, action: name, role: access.roleName, result, durationMs });
 	} catch (err) {
 		const durationMs = Date.now() - started;
 		if (err instanceof GameError) {

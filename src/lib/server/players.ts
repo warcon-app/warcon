@@ -9,8 +9,7 @@ import {
 	auditVisibility,
 	getOrg,
 	listsRoleFor,
-	roleAtLeast,
-	type ServerRole,
+	type ServerAccess,
 	type ServerRow,
 	type SessionUser
 } from './access';
@@ -204,7 +203,7 @@ export async function dossier(
 	env: Env,
 	user: SessionUser,
 	server: ServerRow,
-	role: ServerRole,
+	access: ServerAccess,
 	steamId: string,
 	opts: { refreshSteam?: boolean } = {}
 ): Promise<DossierView> {
@@ -285,7 +284,7 @@ export async function dossier(
 			orgServers(env, server.orgId)
 		]);
 	const l = local.get(steamId);
-	const admin = roleAtLeast(role, 'admin');
+	const admin = access.caps.has('players.notes.manage');
 	const membership = org
 		? await orgListMembership(env, org, steamId)
 		: { ban: null, reserve: null };
@@ -406,7 +405,7 @@ export async function deleteNote(
 	req: Request,
 	user: SessionUser,
 	server: ServerRow,
-	role: ServerRole,
+	access: ServerAccess,
 	steamId: string,
 	noteId: number
 ): Promise<void> {
@@ -422,8 +421,12 @@ export async function deleteNote(
 		)
 		.limit(1);
 	if (!note) throw new ApiError(404, 'Note not found.');
-	if (note.authorId !== user.id && !roleAtLeast(role, 'admin'))
-		throw new ApiError(403, 'Only the author or an admin can delete this note.', 'forbidden');
+	if (note.authorId !== user.id && !access.caps.has('players.notes.manage'))
+		throw new ApiError(
+			403,
+			'Only the author, or a role with "Others\' notes", can delete this note.',
+			'forbidden'
+		);
 	await env.db.delete(playerNotes).where(eq(playerNotes.id, noteId));
 	await writeAudit(env, req, {
 		actor: user,

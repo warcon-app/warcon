@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { rconGet, rconPost, errorMessage } from '$lib/api';
-	import { can, expSetLabel, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
+	import { expSetLabel, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
+	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import { rotationFromText, rotationIntoText, type RotationDoc } from '$lib/rotation-doc';
@@ -12,8 +13,10 @@
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
-	let operator = $derived(can(data.server.role, 'operator'));
-	let admin = $derived(can(data.server.role, 'admin'));
+	let rotationEdit = $derived(can(data.server.caps, 'rotation.edit'));
+	let matchControl = $derived(can(data.server.caps, 'match.control'));
+	let rotationSave = $derived(can(data.server.caps, 'rotation.save'));
+	let configApply = $derived(can(data.server.caps, 'config.apply'));
 	let configHref = $derived(`/server/${encodeURIComponent(id)}/config`);
 
 	// Live build CL-499480 serves none of the rotation edit routes. On such a build this tab edits
@@ -35,9 +38,9 @@
 	let busy = $state(false);
 	const same = (a: RotationDoc, b: RotationDoc) => JSON.stringify(a) === JSON.stringify(b);
 	let dirty = $derived(viaDoc && !same(staged, base));
-	let canApply = $derived(admin && !!doc?.writable);
-	let canEdit = $derived(viaDoc ? canApply : operator);
-	let canToggle = $derived(viaDoc ? canApply : admin && data.features.liveSettings);
+	let canApply = $derived(configApply && !!doc?.writable);
+	let canEdit = $derived(viaDoc ? canApply : rotationEdit);
+	let canToggle = $derived(viaDoc ? canApply : rotationSave && data.features.liveSettings);
 
 	const clone = (r: RotationDoc): RotationDoc => JSON.parse(JSON.stringify(r));
 
@@ -281,7 +284,7 @@
 				{#if !viaDoc}
 					<button
 						class="btn"
-						disabled={!operator}
+						disabled={!matchControl}
 						onclick={() =>
 							withSel((i) => act('setNextMap', entryToSelection(rows[i]), { after: refresh }))}
 						>Play next</button
@@ -303,7 +306,7 @@
 		{:else}
 			<button
 				class="btn w-full btn-primary sm:ml-auto sm:w-auto"
-				disabled={!admin || !data.features.rotationSave}
+				disabled={!rotationSave || !data.features.rotationSave}
 				onclick={() => act('rotationSave', {})}>Save rotation</button
 			>
 		{/if}

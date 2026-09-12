@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { api, errorMessage, rconPost } from '$lib/api';
-	import { can, fmtNum, fmtTime } from '$lib/format';
+	import { fmtNum, fmtTime } from '$lib/format';
+	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
@@ -13,8 +14,10 @@
 	let { data }: PageProps = $props();
 	let d = $derived<DossierView>(data.dossier);
 	let id = $derived(data.server.id);
-	let operator = $derived(can(data.server.role, 'operator'));
-	let admin = $derived(can(data.server.role, 'admin'));
+	let moderate = $derived(can(data.server.caps, 'players.moderate'));
+	let chat = $derived(can(data.server.caps, 'chat.send'));
+	let bans = $derived(can(data.server.caps, 'bans.manage'));
+	let notes = $derived(can(data.server.caps, 'players.notes'));
 	let base = $derived(`/api/servers/${encodeURIComponent(id)}/players/${d.steamId}`);
 	let onThisServer = $derived(d.online?.serverId === id);
 	let orgListsPath = $derived(`/api/orgs/${encodeURIComponent(data.server.orgId)}/lists`);
@@ -277,7 +280,7 @@
 	</div>
 
 	<div class="space-y-4 self-start">
-		{#if onThisServer && operator}
+		{#if onThisServer && (moderate || chat)}
 			<div class="panel border-accent/40">
 				<span class="label-sm">Quick actions (online here)</span>
 				<div class="join w-full">
@@ -290,7 +293,7 @@
 					/>
 					<button
 						class="btn btn-primary"
-						disabled={busy || !whisper.trim()}
+						disabled={busy || !chat || !whisper.trim()}
 						onclick={async () => {
 							await act('whisper', { steamId: d.steamId, message: whisper.trim() });
 							whisper = '';
@@ -307,14 +310,14 @@
 					/>
 					<button
 						class="btn btn-danger"
-						disabled={busy}
+						disabled={busy || !moderate}
 						onclick={() =>
 							act('kick', { steamId: d.steamId, reason: reason.trim() }, `Kick ${d.name}?`)}
 						>Kick</button
 					>
 					<button
 						class="btn btn-danger"
-						disabled={busy || !admin}
+						disabled={busy || !bans}
 						onclick={() =>
 							act(
 								'ban',
@@ -496,7 +499,7 @@
 						>Added by {d.watch.updatedByName || '?'} · {fmtTime(d.watch.updatedAt)}</span
 					>
 				</p>
-				<button class="btn btn-sm" disabled={busy || !operator} onclick={() => setWatch(false)}
+				<button class="btn btn-sm" disabled={busy || !notes} onclick={() => setWatch(false)}
 					>Remove from watchlist</button
 				>
 			{:else}
@@ -508,8 +511,7 @@
 						maxlength="300"
 						bind:value={watchReason}
 					/>
-					<button class="btn" disabled={busy || !operator} onclick={() => setWatch(true)}
-						>Watch</button
+					<button class="btn" disabled={busy || !notes} onclick={() => setWatch(true)}>Watch</button
 					>
 				</div>
 			{/if}
@@ -521,7 +523,7 @@
 
 		<div class="panel">
 			<span class="label-sm">Notes</span>
-			{#if operator}
+			{#if notes}
 				<div class="mb-3">
 					<textarea
 						class="min-h-[70px] input"

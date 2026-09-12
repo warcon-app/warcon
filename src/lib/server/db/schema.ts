@@ -138,6 +138,34 @@ export const organizations = pgTable('organizations', {
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });
 
+/**
+ * An org's server roles: a name and the capabilities it carries (see $lib/capabilities). Every org
+ * starts with the three built-ins, which owners may edit but not delete; custom roles are more rows.
+ */
+export const orgRoles = pgTable(
+	'org_roles',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		name: text('name').notNull(),
+		/** Capability[] */
+		capabilities: jsonb('capabilities').notNull(),
+		/** which built-in this row started as; null for custom roles. Built-ins can be reset. */
+		builtin: text('builtin', { enum: ['viewer', 'operator', 'admin'] }),
+		sortOrder: integer('sort_order').notNull().default(0),
+		createdAt: ts('created_at').notNull().defaultNow(),
+		updatedAt: ts('updated_at').notNull().defaultNow()
+	},
+	(t) => [
+		uniqueIndex('org_roles_builtin_uidx')
+			.on(t.orgId, t.builtin)
+			.where(sql`${t.builtin} is not null`),
+		uniqueIndex('org_roles_name_uidx').on(t.orgId, sql`lower(${t.name})`)
+	]
+);
+
 export const orgMembers = pgTable(
 	'org_members',
 	{
@@ -170,7 +198,7 @@ export const orgInvites = pgTable(
 			.notNull()
 			.default('member'),
 		/** granted on every server the org has at join time; null = no server access until an owner grants it */
-		serverRole: text('server_role', { enum: ['viewer', 'operator', 'admin'] }),
+		serverRoleId: text('server_role_id').references(() => orgRoles.id, { onDelete: 'set null' }),
 		/** null = unlimited */
 		maxUses: integer('max_uses'),
 		uses: integer('uses').notNull().default(0),
@@ -214,13 +242,17 @@ export const serverGrants = pgTable(
 		userId: text('user_id')
 			.notNull()
 			.references(() => user.id, { onDelete: 'cascade' }),
-		role: text('role', { enum: ['viewer', 'operator', 'admin'] }).notNull(),
+		/** must belong to the server's org; the writers in orgs.ts / users.ts / servers.ts check this */
+		roleId: text('role_id')
+			.notNull()
+			.references(() => orgRoles.id, { onDelete: 'restrict' }),
 		grantedBy: text('granted_by'),
 		createdAt: ts('created_at').notNull().defaultNow()
 	},
 	(t) => [
 		primaryKey({ columns: [t.serverId, t.userId] }),
-		index('server_grants_user_idx').on(t.userId)
+		index('server_grants_user_idx').on(t.userId),
+		index('server_grants_role_idx').on(t.roleId)
 	]
 );
 
@@ -707,6 +739,7 @@ export const workerOwnership = pgTable('worker_ownership', {
 export type ServerRow = typeof servers.$inferSelect;
 export type OrgRow = typeof organizations.$inferSelect;
 export type OrgInviteRow = typeof orgInvites.$inferSelect;
+export type OrgRoleRow = typeof orgRoles.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
 export type SampleRow = typeof samples.$inferSelect;
 export type SteamProfileRow = typeof steamProfiles.$inferSelect;

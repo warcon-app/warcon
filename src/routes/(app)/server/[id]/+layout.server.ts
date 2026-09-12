@@ -1,14 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
-import {
-	getOrg,
-	getServer,
-	orgRoleFor,
-	requireUser,
-	serverRoleFor,
-	shapeServer
-} from '$lib/server/access';
+import { getOrg, getServer, requireUser, serverAccessFor, shapeServer } from '$lib/server/access';
 import { publicMessage } from '$lib/server/http';
 import { gateway } from '$lib/server/gateway';
 import type { Catalog, Features, ServerInfo } from '$lib/types';
@@ -24,13 +17,10 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 	// Resolved here rather than from the (app) layout's list: that list is narrowed to the header's
 	// organisation scope, and a link into a server of another org must still open.
 	const row = await getServer(env, params.id);
-	const role = row ? await serverRoleFor(env, user, row.id) : null;
-	if (!row || !role) error(404, 'Server not found, or you have no access to it.');
-	const [org, orgRole] = await Promise.all([
-		getOrg(env, row.orgId),
-		orgRoleFor(env, user, row.orgId)
-	]);
-	const server: ServerInfo = shapeServer(env, row, org?.name ?? '', role, orgRole === 'owner');
+	const access = row ? await serverAccessFor(env, user, row.id) : null;
+	if (!row || !access) error(404, 'Server not found, or you have no access to it.');
+	const org = await getOrg(env, row.orgId);
+	const server: ServerInfo = shapeServer(env, row, org?.name ?? '', access);
 	let catalog: Catalog = EMPTY;
 	// A build too old to report capabilities predates the route removals, so assume the live routes.
 	let features: Features = {

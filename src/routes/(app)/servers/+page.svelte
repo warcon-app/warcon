@@ -7,7 +7,7 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import GrantList from '$lib/components/GrantList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
-	import type { OrgMemberView, ServerInfo, Status } from '$lib/types';
+	import type { OrgMemberView, RoleView, ServerInfo, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -41,6 +41,7 @@
 				kind: 'access';
 				server: ServerInfo;
 				members: OrgMemberView[];
+				roles: { id: string; name: string }[];
 				grants: Record<string, string>;
 		  };
 	let dialog = $state<Dialog | null>(null);
@@ -129,19 +130,24 @@
 
 	async function access(s: ServerInfo) {
 		try {
-			const [res, grants] = await Promise.all([
-				api<{ members: OrgMemberView[] }>(
-					'GET',
-					`/api/orgs/${encodeURIComponent(s.orgId)}/members`
-				),
-				api<{ grants: { userId: string; role: string }[] }>('GET', `/api/servers/${s.id}/grants`)
+			const orgPath = `/api/orgs/${encodeURIComponent(s.orgId)}`;
+			const [res, grants, roles] = await Promise.all([
+				api<{ members: OrgMemberView[] }>('GET', `${orgPath}/members`),
+				api<{ grants: { userId: string; roleId: string }[] }>('GET', `/api/servers/${s.id}/grants`),
+				api<{ roles: RoleView[] }>('GET', `${orgPath}/roles`)
 			]);
-			// Org owners and the site owner are admin regardless of grants.
+			// Org owners and the site owner hold everything regardless of grants.
 			const members = res.members.filter((u) => u.role !== 'owner' && !u.siteOwner);
 			const map: Record<string, string> = {};
 			for (const u of members)
-				map[u.userId] = grants.grants.find((g) => g.userId === u.userId)?.role ?? '';
-			dialog = { kind: 'access', server: s, members, grants: map };
+				map[u.userId] = grants.grants.find((g) => g.userId === u.userId)?.roleId ?? '';
+			dialog = {
+				kind: 'access',
+				server: s,
+				members,
+				roles: roles.roles.map((r) => ({ id: r.id, name: r.name })),
+				grants: map
+			};
 		} catch (err) {
 			toast(errorMessage(err), 'err');
 		}
@@ -150,8 +156,8 @@
 		const d = dialog;
 		if (!d || d.kind !== 'access') return;
 		const grants = Object.entries(d.grants)
-			.filter(([, role]) => role)
-			.map(([userId, role]) => ({ userId, role }));
+			.filter(([, roleId]) => roleId)
+			.map(([userId, roleId]) => ({ userId, roleId }));
 		void run(() => api('PUT', `/api/servers/${d.server.id}/grants`, { grants }), 'Access updated.');
 	}
 	async function remove(s: ServerInfo) {
@@ -431,10 +437,11 @@
 					label: u.name || u.username,
 					sub: `@${u.username}`
 				}))}
+				roles={d.roles}
 				bind:grants={d.grants}
 			/>
 			<p class="note">
-				Owners of {d.server.orgName} are admin regardless. The whole organisation at once:
+				Owners of {d.server.orgName} hold everything regardless. The whole organisation at once:
 				<a href="/orgs/{encodeURIComponent(d.server.orgId)}/access" class="text-accent underline"
 					>access matrix</a
 				>.

@@ -1,7 +1,30 @@
 // Shapes shared by pages, API routes and the action registry.
-import type { OrgRole, ServerRole } from '$lib/server/access';
+import type { OrgRole } from '$lib/server/access';
+import type { BuiltinRole, Capability } from '$lib/capabilities';
 
-export type { OrgRole, ServerRole };
+export type { OrgRole, Capability, BuiltinRole };
+
+/** A server role of one organisation: a name and what it may do. */
+export interface RoleView {
+	id: string;
+	name: string;
+	capabilities: Capability[];
+	/** which shipped role it started as; null for roles the org added */
+	builtin: BuiltinRole | null;
+	sortOrder: number;
+	/** what points at it right now: deletion is refused while either is non-zero */
+	inUse: { grants: number; invites: number };
+	createdAt: string | null;
+	updatedAt: string | null;
+}
+
+/** One person's role on one server, as grant lists show it. */
+export interface GrantRef {
+	serverId: string;
+	serverName: string;
+	roleId: string;
+	roleName: string;
+}
 
 export interface ServerInfo {
 	id: string;
@@ -12,8 +35,10 @@ export interface ServerInfo {
 	port: number;
 	scheme: 'http' | 'https';
 	notes: string;
-	role: ServerRole;
-	/** true when the role comes from owning the org: may edit, delete and share the server */
+	/** the granted role's name; 'owner' when access comes from running the org */
+	roleName: string;
+	caps: Capability[];
+	/** true when access comes from owning the org: may edit, delete and share the server */
 	manager: boolean;
 	sortOrder: number;
 	demo: boolean;
@@ -178,7 +203,7 @@ export interface UserView {
 	image: string | null;
 	createdAt: string | null;
 	lastLoginAt: string | null;
-	grants: { serverId: string; serverName: string; role: ServerRole }[];
+	grants: GrantRef[];
 	orgs: { orgId: string; orgName: string; role: OrgRole }[];
 }
 
@@ -206,7 +231,7 @@ export interface OrgMemberView {
 	disabled: boolean;
 	role: OrgRole;
 	joinedAt: string | null;
-	grants: { serverId: string; serverName: string; role: ServerRole }[];
+	grants: GrantRef[];
 }
 
 /** live: usable now; revoked / expired / used (up): why it is not. */
@@ -216,7 +241,9 @@ export interface InviteView {
 	id: string;
 	label: string;
 	orgRole: OrgRole;
-	serverRole: ServerRole | null;
+	/** the role granted on every current server at join time; null = none */
+	serverRoleId: string | null;
+	serverRoleName: string | null;
 	maxUses: number | null;
 	uses: number;
 	expiresAt: string | null;

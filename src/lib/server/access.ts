@@ -2,14 +2,17 @@
 //   global role  (Better Auth user.role)  "owner" runs the whole panel: every org, every server, all users.
 //   org role     (org_members)            "owner" manages one org: its servers, members and invite links,
 //                                         and is admin on every server in it. "member" relies on grants.
-//   server role  (server_grants)          viewer / operator / admin on one server.
+//   server role  (server_grants -> org_roles) a named capability set on one server ($lib/capabilities).
 import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { isDemoServer } from './env';
 import { ApiError } from './http';
+import { CAPABILITY_INFO, type Capability } from '../capabilities';
+import { resolveAccess, type ServerAccess } from './access-resolve';
 import {
 	loginAttempts,
 	orgMembers,
+	orgRoles,
 	organizations,
 	serverGrants,
 	servers,
@@ -17,10 +20,9 @@ import {
 	type ServerRow
 } from './db/schema';
 
-export type { OrgRow, ServerRow };
+export type { OrgRow, ServerRow, ServerAccess };
 export type GlobalRole = 'owner' | 'member';
 export type OrgRole = 'owner' | 'member';
-export type ServerRole = 'viewer' | 'operator' | 'admin';
 
 export interface SessionUser {
 	id: string;
@@ -33,12 +35,11 @@ export interface SessionUser {
 	defaultOrgId: string | null;
 }
 
-export const ROLE_RANK: Record<ServerRole, number> = { viewer: 1, operator: 2, admin: 3 };
-export const SERVER_ROLES: ServerRole[] = ['viewer', 'operator', 'admin'];
 export const ORG_ROLES: OrgRole[] = ['owner', 'member'];
 
-export const roleAtLeast = (have: ServerRole | null | undefined, need: ServerRole) =>
-	!!have && ROLE_RANK[have] >= ROLE_RANK[need];
+/** jsonb containment: does this role's capability list include `cap`? */
+const hasCap = (cap: Capability) =>
+	sql`${orgRoles.capabilities} @> ${JSON.stringify([cap])}::jsonb`;
 
 /** Shape a Better Auth user (with username + admin plugin fields) into what pages need. */
 export function toSessionUser(u: Record<string, unknown>): SessionUser {
@@ -126,18 +127,22 @@ export interface OrgSummary {
 	role: OrgRole;
 	/** frozen by the site owner: members cannot open its servers, owners cannot add or invite */
 	suspended: boolean;
-	/** may open the org's ban and reserved lists: owners, and admins of any of its servers */
+	/** may open the org's ban and reserved lists: owners, and anyone whose role on one of its servers includes lists.edit */
 	lists: boolean;
 }
 
-/** Orgs where the user holds an admin grant on at least one server. */
-async function adminGrantOrgIds(env: Env, user: SessionUser): Promise<Set<string>> {
-	const rows = await env.db
-		.selectDistinct({ orgId: servers.orgId })
+/** Servers (with their orgs) where the user's granted role includes `cap`. */
+async function grantedWith(
+	env: Env,
+	user: SessionUser,
+	cap: Capability
+): Promise<{ serverId: string; orgId: string }[]> {
+	return env.db
+		.select({ serverId: serverGrants.serverId, orgId: servers.orgId })
 		.from(serverGrants)
 		.innerJoin(servers, eq(servers.id, serverGrants.serverId))
-		.where(and(eq(serverGrants.userId, user.id), eq(serverGrants.role, 'admin')));
-	return new Set(rows.map((r) => r.orgId));
+		.innerJoin(orgRoles, eq(orgRoles.id, serverGrants.roleId))
+		.where(and(eq(serverGrants.userId, user.id), hasCap(cap)));
 }
 
 /** Orgs the user belongs to, with their role; the site owner sees every org as owner. */
@@ -161,7 +166,7 @@ export async function userOrgs(env: Env, user: SessionUser): Promise<OrgSummary[
 			.innerJoin(organizations, eq(organizations.id, orgMembers.orgId))
 			.where(eq(orgMembers.userId, user.id))
 			.orderBy(asc(organizations.name)),
-		adminGrantOrgIds(env, user)
+		grantedWith(env, user, 'lists.edit').then((rows) => new Set(rows.map((r) => r.orgId)))
 	]);
 	return mine.map((r) =>
 		shape(r.org, r.role, !r.org.suspendedAt && (r.role === 'owner' || adminOrgs.has(r.org.id)))
@@ -170,7 +175,7 @@ export async function userOrgs(env: Env, user: SessionUser): Promise<OrgSummary[
 
 // --- org lists (bans and reserved slots) ---
 
-/** owner: the org's owners; editor: admin on at least one of its servers. Both may add and remove entries. */
+/** owner: the org's owners; editor: holds lists.edit on at least one of its servers. Both may add and remove entries. */
 export type ListsRole = 'owner' | 'editor';
 
 export async function listsRoleFor(
@@ -183,18 +188,13 @@ export async function listsRoleFor(
 		.select({ serverId: serverGrants.serverId })
 		.from(serverGrants)
 		.innerJoin(servers, eq(servers.id, serverGrants.serverId))
-		.where(
-			and(
-				eq(serverGrants.userId, user.id),
-				eq(serverGrants.role, 'admin'),
-				eq(servers.orgId, orgId)
-			)
-		)
+		.innerJoin(orgRoles, eq(orgRoles.id, serverGrants.roleId))
+		.where(and(eq(serverGrants.userId, user.id), eq(servers.orgId, orgId), hasCap('lists.edit')))
 		.limit(1);
 	return row ? 'editor' : null;
 }
 
-/** Like requireOrgRole, for the ban and reserved lists: server admins count as editors. */
+/** Like requireOrgRole, for the ban and reserved lists: lists.edit holders count as editors. */
 export async function requireListsRole(
 	env: Env,
 	locals: App.Locals,
@@ -218,15 +218,18 @@ export const canManage = (user: SessionUser, orgs: OrgSummary[]) =>
 
 // --- servers ---
 
-export async function serverRoleFor(
+/** What the user may do on one server: everything for the site owner and org owners, else the granted role's list. */
+export async function serverAccessFor(
 	env: Env,
 	user: SessionUser,
 	serverId: string
-): Promise<ServerRole | null> {
-	if (user.role === 'owner') return 'admin';
+): Promise<ServerAccess | null> {
+	if (user.role === 'owner') return resolveAccess({ manager: true });
 	const [row] = await env.db
 		.select({
-			grant: serverGrants.role,
+			roleId: serverGrants.roleId,
+			roleName: orgRoles.name,
+			capabilities: orgRoles.capabilities,
 			orgRole: orgMembers.role,
 			suspendedAt: organizations.suspendedAt
 		})
@@ -236,12 +239,18 @@ export async function serverRoleFor(
 			serverGrants,
 			and(eq(serverGrants.serverId, servers.id), eq(serverGrants.userId, user.id))
 		)
+		.leftJoin(orgRoles, eq(orgRoles.id, serverGrants.roleId))
 		.leftJoin(orgMembers, and(eq(orgMembers.orgId, servers.orgId), eq(orgMembers.userId, user.id)))
 		.where(eq(servers.id, serverId))
 		.limit(1);
-	if (!row || row.suspendedAt) return null;
-	if (row.orgRole === 'owner') return 'admin';
-	return row.grant ?? null;
+	if (!row) return null;
+	return resolveAccess({
+		manager: row.orgRole === 'owner',
+		suspended: !!row.suspendedAt,
+		grant: row.roleId
+			? { roleId: row.roleId, roleName: row.roleName ?? '', capabilities: row.capabilities }
+			: null
+	});
 }
 
 /** The server plus proof the user runs its org (site owner or org owner): edit, delete, grants. */
@@ -252,8 +261,8 @@ export async function requireServerManager(
 ): Promise<{ server: ServerRow; user: SessionUser }> {
 	const user = requireUser(locals);
 	const server = await getServer(env, serverId);
-	const role = server ? await serverRoleFor(env, user, serverId) : null;
-	if (!server || !role) throw new ApiError(404, 'Server not found.', 'not_found');
+	const access = server ? await serverAccessFor(env, user, serverId) : null;
+	if (!server || !access) throw new ApiError(404, 'Server not found.', 'not_found');
 	if ((await orgRoleFor(env, user, server.orgId)) !== 'owner')
 		throw new ApiError(
 			403,
@@ -263,24 +272,25 @@ export async function requireServerManager(
 	return { server, user };
 }
 
-export async function requireServerRole(
+/** The server plus proof the caller's role on it includes `cap` (404 when they cannot see it at all). */
+export async function requireServerCap(
 	env: Env,
 	locals: App.Locals,
 	serverId: string,
-	need: ServerRole
-): Promise<{ server: ServerRow; role: ServerRole }> {
+	cap: Capability
+): Promise<{ server: ServerRow; access: ServerAccess; user: SessionUser }> {
 	const user = requireUser(locals);
 	const server = await getServer(env, serverId);
-	const role = server ? await serverRoleFor(env, user, serverId) : null;
-	if (!server || !role) throw new ApiError(404, 'Server not found.', 'not_found');
-	if (!roleAtLeast(role, need)) {
+	const access = server ? await serverAccessFor(env, user, serverId) : null;
+	if (!server || !access) throw new ApiError(404, 'Server not found.', 'not_found');
+	if (!access.caps.has(cap)) {
 		throw new ApiError(
 			403,
-			`This action needs the '${need}' role on ${server.name}; you have '${role}'.`,
+			`This needs '${CAPABILITY_INFO[cap].label}' on ${server.name}; your role '${access.roleName}' does not include it.`,
 			'forbidden'
 		);
 	}
-	return { server, role };
+	return { server, access, user };
 }
 
 export type ServerSummary = {
@@ -292,8 +302,10 @@ export type ServerSummary = {
 	port: number;
 	scheme: 'http' | 'https';
 	notes: string;
-	role: ServerRole;
-	/** true when the role comes from owning the org rather than a grant */
+	/** the granted role's name; 'owner' when access comes from running the org */
+	roleName: string;
+	caps: Capability[];
+	/** true when access comes from owning the org rather than a grant */
 	manager: boolean;
 	sortOrder: number;
 	demo: boolean;
@@ -303,8 +315,7 @@ export function shapeServer(
 	env: Env,
 	s: ServerRow,
 	orgName: string,
-	role: ServerRole,
-	manager: boolean
+	access: ServerAccess
 ): ServerSummary {
 	return {
 		id: s.id,
@@ -315,8 +326,9 @@ export function shapeServer(
 		port: s.port,
 		scheme: s.scheme,
 		notes: s.notes,
-		role,
-		manager,
+		roleName: access.roleName,
+		caps: [...access.caps],
+		manager: access.manager,
 		sortOrder: s.sortOrder,
 		demo: isDemoServer(env, s)
 	};
@@ -340,13 +352,17 @@ export async function accessibleServers(
 			.innerJoin(organizations, eq(organizations.id, servers.orgId))
 			.where(inOrg)
 			.orderBy(...order);
-		return rowsAll.map((r) => shapeServer(env, r.server, r.orgName, 'admin', true));
+		return rowsAll.map((r) =>
+			shapeServer(env, r.server, r.orgName, resolveAccess({ manager: true })!)
+		);
 	}
 	const rows = await env.db
 		.select({
 			server: servers,
 			orgName: organizations.name,
-			grant: serverGrants.role,
+			roleId: serverGrants.roleId,
+			roleName: orgRoles.name,
+			capabilities: orgRoles.capabilities,
 			orgRole: orgMembers.role
 		})
 		.from(servers)
@@ -355,24 +371,34 @@ export async function accessibleServers(
 			serverGrants,
 			and(eq(serverGrants.serverId, servers.id), eq(serverGrants.userId, user.id))
 		)
+		.leftJoin(orgRoles, eq(orgRoles.id, serverGrants.roleId))
 		.leftJoin(orgMembers, and(eq(orgMembers.orgId, servers.orgId), eq(orgMembers.userId, user.id)))
 		.where(
 			and(
 				inOrg,
 				isNull(organizations.suspendedAt),
-				or(isNotNull(serverGrants.role), eq(orgMembers.role, 'owner'))
+				or(isNotNull(serverGrants.roleId), eq(orgMembers.role, 'owner'))
 			)
 		)
 		.orderBy(...order);
-	return rows.map((r) => {
-		const manager = r.orgRole === 'owner';
-		return shapeServer(env, r.server, r.orgName, manager ? 'admin' : r.grant!, manager);
-	});
+	return rows.map((r) =>
+		shapeServer(
+			env,
+			r.server,
+			r.orgName,
+			resolveAccess({
+				manager: r.orgRole === 'owner',
+				grant: r.roleId
+					? { roleId: r.roleId, roleName: r.roleName ?? '', capabilities: r.capabilities }
+					: null
+			})!
+		)
+	);
 }
 
 /**
- * What a non-site-owner may see in the audit log: their own rows, rows on servers they admin
- * (explicit admin grants plus everything in orgs they own), and rows of orgs they own.
+ * What a non-site-owner may see in the audit log: their own rows, rows on servers where their
+ * role includes audit.read (plus everything in orgs they own), and rows of orgs they own.
  */
 export async function auditVisibility(
 	env: Env,
@@ -380,10 +406,7 @@ export async function auditVisibility(
 ): Promise<{ userId: string; adminServerIds: string[]; ownedOrgIds: string[] } | null> {
 	if (user.role === 'owner') return null;
 	const [granted, orgIds] = await Promise.all([
-		env.db
-			.select({ serverId: serverGrants.serverId })
-			.from(serverGrants)
-			.where(and(eq(serverGrants.userId, user.id), eq(serverGrants.role, 'admin'))),
+		grantedWith(env, user, 'audit.read'),
 		ownedOrgIds(env, user)
 	]);
 	const ids = new Set(granted.map((r) => r.serverId));

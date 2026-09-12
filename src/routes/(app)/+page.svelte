@@ -207,7 +207,7 @@
 					<div class="mb-1 flex items-center gap-2">
 						<Pulse ok={sum ? sum.ok : undefined} />
 						<span class="truncate font-semibold">{s.name}</span>
-						<span class="ml-auto"><RoleBadge role={s.role} /></span>
+						<span class="ml-auto"><RoleBadge role={s.roleName} /></span>
 					</div>
 					<div class="mb-3 font-mono text-[12px] text-mist-400">
 						{s.host}:{s.port}{#if s.demo}&nbsp;· demo{/if}

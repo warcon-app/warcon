@@ -1,11 +1,11 @@
 import { getEnv } from '$lib/server/env';
 import { apiJson, param, readJson, route } from '$lib/server/http';
-import { requireServerRole, requireUser } from '$lib/server/access';
+import { requireServerCap, requireUser } from '$lib/server/access';
 import { createTrigger, listTriggers } from '$lib/server/triggers';
 
 export const GET = route(async (event) => {
 	const env = getEnv();
-	const { server } = await requireServerRole(env, event.locals, param(event, 'id'), 'viewer');
+	const { server } = await requireServerCap(env, event.locals, param(event, 'id'), 'server.view');
 	return apiJson({ ok: true, triggers: await listTriggers(env, server.id) });
 });
 
@@ -13,7 +13,12 @@ export const GET = route(async (event) => {
 export const POST = route(async (event) => {
 	const env = getEnv();
 	const user = requireUser(event.locals);
-	const { server } = await requireServerRole(env, event.locals, param(event, 'id'), 'admin');
+	const { server } = await requireServerCap(
+		env,
+		event.locals,
+		param(event, 'id'),
+		'automation.manage'
+	);
 	const body = await readJson(event.request);
 	const trigger = await createTrigger(env, event.request, user, server, body);
 	return apiJson({ ok: true, trigger }, 201);

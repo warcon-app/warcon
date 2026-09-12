@@ -49,7 +49,7 @@
 			<h1 class="truncate text-xl font-semibold tracking-tight">{data.server.name}</h1>
 			<div class="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-mist-400">
 				<span class="font-mono">{data.server.host}:{data.server.port}</span>
-				<RoleBadge role={data.server.role} />
+				<RoleBadge role={data.server.roleName} />
 				{#if data.server.demo}<Badge tone="info">demo</Badge>{/if}
 				{#if data.server.notes}<span class="truncate">· {data.server.notes}</span>{/if}
 			</div>

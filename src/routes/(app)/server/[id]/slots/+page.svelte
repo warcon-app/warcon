@@ -5,7 +5,8 @@
 	import { invalidateAll } from '$app/navigation';
 	import { api, rconGet, rconPost, errorMessage } from '$lib/api';
 	import { watchLive } from '$lib/live';
-	import { can, fmtTime } from '$lib/format';
+	import { fmtTime } from '$lib/format';
+	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
@@ -15,7 +16,8 @@
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
-	let admin = $derived(can(data.server.role, 'admin'));
+	let admin = $derived(can(data.server.caps, 'slots.manage'));
+	let listsEdit = $derived(can(data.server.caps, 'lists.edit'));
 	let orgPath = $derived(`/orgs/${encodeURIComponent(data.server.orgId)}`);
 	let canReserve = $derived(admin && data.features.reservedSlots);
 
@@ -215,7 +217,7 @@
 				{#if listState?.canEditOrg}
 					<a class="btn btn-sm" href="{orgPath}/reserved">Organisation list</a>
 				{/if}
-				{#if admin}
+				{#if listsEdit}
 					<button class="btn btn-sm" disabled={busy} onclick={syncNow}>Sync now</button>
 				{/if}
 			</span>

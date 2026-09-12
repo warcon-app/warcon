@@ -107,10 +107,6 @@ export function factionColor(
 	return hit?.colorHex || FACTION_FALLBACK[faction] || '#5E5E66';
 }
 
-export const ROLE_RANK: Record<string, number> = { viewer: 1, operator: 2, admin: 3 };
-export const can = (role: string | null | undefined, need: string) =>
-	(ROLE_RANK[role || ''] || 0) >= (ROLE_RANK[need] || 99);
-
 export function prettyJson(text: string): string {
 	try {
 		return JSON.stringify(JSON.parse(text), null, 2);

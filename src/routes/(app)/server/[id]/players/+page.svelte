@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { api, qs, rconPost, errorMessage } from '$lib/api';
 	import { watchLive } from '$lib/live';
-	import { can, fmtNum } from '$lib/format';
+	import { fmtNum } from '$lib/format';
+	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
@@ -12,8 +13,9 @@
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
-	let operator = $derived(can(data.server.role, 'operator'));
-	let admin = $derived(can(data.server.role, 'admin'));
+	let moderate = $derived(can(data.server.caps, 'players.moderate'));
+	let chat = $derived(can(data.server.caps, 'chat.send'));
+	let bans = $derived(can(data.server.caps, 'bans.manage'));
 	/** may the user write to the organisation's lists? Decides the ban dialog's default scope. */
 	let listState = $state<ServerListsState | null>(null);
 	let banning = $state<Player | null>(null);
@@ -208,14 +210,14 @@
 						/>
 						<button
 							class="btn"
-							disabled={!operator}
+							disabled={!moderate}
 							onclick={withPlayer((p) =>
 								act('kill', { steamId: p.steamId }, { after: refreshPlayers })
 							)}>Kill</button
 						>
 						<button
 							class="btn btn-danger"
-							disabled={!operator}
+							disabled={!moderate}
 							onclick={withPlayer((p) =>
 								act(
 									'kick',
@@ -226,7 +228,7 @@
 						>
 						<button
 							class="btn btn-danger"
-							disabled={!admin}
+							disabled={!bans}
 							onclick={withPlayer((p) => (banning = p))}>Ban</button
 						>
 					</div>
@@ -241,7 +243,7 @@
 							</select>
 							<button
 								class="btn"
-								disabled={!operator}
+								disabled={!moderate}
 								onclick={withPlayer((p) =>
 									act(
 										'changeTeam',
@@ -265,7 +267,7 @@
 						/>
 						<button
 							class="btn btn-primary"
-							disabled={!operator}
+							disabled={!chat}
 							onclick={withPlayer(async (p) => {
 								const message = whisper.trim();
 								if (!message) return;
@@ -277,7 +279,9 @@
 			</div>
 		</div>
 	{/if}
-	{#if !operator}<p class="note">You have view-only access; player actions are disabled.</p>{/if}
+	{#if !moderate && !chat}<p class="note">
+			You have view-only access; player actions are disabled.
+		</p>{/if}
 	<p class="note">
 		This server's ban list is under
 		<a href="/server/{encodeURIComponent(id)}/bans" class="text-accent hover:underline">Bans</a>

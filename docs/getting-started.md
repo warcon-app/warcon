@@ -144,8 +144,11 @@ Press **Test** before saving. If it fails, see [If Test fails](#if-test-fails) b
 | `operator` | Everyday moderation: kick, kill, whisper, broadcast, change map, end match. |
 | `admin`    | Everything on that server: bans, reserved slots, config changes.          |
 
+Those are the defaults. On the org's **Roles** tab you can change what each of them may do, or add
+roles of your own (a "Trial staff" that can kick but not ban, say).
+
 Promote trusted people to org **owner** on the same page: owners can add servers, mint links and
-manage members, and are admin on every server in the org. **Users** (site owner only) still lets
+manage members and roles, and can do everything on every server in the org. **Users** (site owner only) still lets
 you create username-and-password accounts by hand if someone cannot use Discord. Every action
 anyone takes is recorded in **Audit**.
 

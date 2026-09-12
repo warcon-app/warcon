@@ -11,14 +11,13 @@
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-	const ROLES = ['viewer', 'operator', 'admin'];
 
 	type Dialog =
 		| {
 				kind: 'invite';
 				label: string;
 				orgRole: 'owner' | 'member';
-				serverRole: string;
+				serverRoleId: string;
 				expiresDays: string;
 				maxUses: string;
 		  }
@@ -65,7 +64,7 @@
 			kind: 'invite',
 			label: '',
 			orgRole: 'member',
-			serverRole: 'viewer',
+			serverRoleId: data.roles.find((r) => r.builtin === 'viewer')?.id ?? '',
 			expiresDays: '7',
 			maxUses: ''
 		};
@@ -78,7 +77,7 @@
 				const res = await api<{ invite: InviteView }>('POST', `${orgPath}/invites`, {
 					label: d.label,
 					orgRole: d.orgRole,
-					serverRole: d.serverRole || null,
+					serverRoleId: d.serverRoleId || null,
 					expiresDays: d.expiresDays ? Number(d.expiresDays) : null,
 					maxUses: d.maxUses ? Number(d.maxUses) : null
 				});
@@ -111,9 +110,12 @@
 	let accessHref = $derived(`/orgs/${encodeURIComponent(data.org.id)}/access`);
 	/** "admin 2 · viewer 3": one number per role rather than one chip per server */
 	const grantSummary = (m: OrgMemberView) =>
-		ROLES.filter((r) => m.grants.some((g) => g.role === r))
-			.map((r) => `${r} ${m.grants.filter((g) => g.role === r).length}`)
+		data.roles
+			.filter((r) => m.grants.some((g) => g.roleId === r.id))
+			.map((r) => `${r.name} ${m.grants.filter((g) => g.roleId === r.id).length}`)
 			.join(' · ');
+	const builtinOf = (roleId: string | null) =>
+		data.roles.find((r) => r.id === roleId)?.builtin ?? null;
 	async function remove(m: OrgMemberView) {
 		if (
 			!(await confirmDialog(
@@ -267,9 +269,10 @@
 								<td>
 									<span class="inline-flex flex-wrap items-center gap-1">
 										<RoleBadge role={inv.orgRole} />
-										{#if inv.serverRole}<RoleBadge role={inv.serverRole} />{:else}<Badge
-												>no servers</Badge
-											>{/if}
+										{#if inv.serverRoleName}<RoleBadge
+												role={inv.serverRoleName}
+												builtin={builtinOf(inv.serverRoleId)}
+											/>{:else}<Badge>no servers</Badge>{/if}
 									</span>
 								</td>
 								<td class="num">{usesLabel(inv)}</td>
@@ -337,7 +340,7 @@
 										<a
 											href={accessHref}
 											class="block whitespace-nowrap hover:underline"
-											title={m.grants.map((g) => `${g.serverName}: ${g.role}`).join('\n')}
+											title={m.grants.map((g) => `${g.serverName}: ${g.roleName}`).join('\n')}
 										>
 											<div>
 												{m.grants.length} of {data.orgServers.length} server{data.orgServers
@@ -556,9 +559,9 @@
 				</label>
 				<label class="block"
 					><span class="field-label">Access to current servers</span>
-					<select class="input" bind:value={d.serverRole}>
+					<select class="input" bind:value={d.serverRoleId}>
 						<option value="">none (grant later)</option>
-						{#each ROLES as r (r)}<option value={r}>{r}</option>{/each}
+						{#each data.roles as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
 					</select>
 				</label>
 				<label class="block"
@@ -581,8 +584,8 @@
 				>
 			</div>
 			<p class="note">
-				An <b>owner</b> link makes joiners admin on every server and lets them manage the org. Keep those
-				short-lived and single-use.
+				An <b>owner</b> link lets joiners do everything on every server and manage the org. Keep those
+				short-lived and single-use. What each server role may do is set on the Roles tab.
 			</p>
 			<div class="flex justify-end gap-2 pt-2">
 				<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>
@@ -599,8 +602,9 @@
 			<button type="button" class="btn btn-primary" onclick={() => copy(d.invite.url)}>Copy</button>
 		</div>
 		<p class="note">
-			Joins as <b>{d.invite.orgRole}</b>{#if d.invite.serverRole}, <b>{d.invite.serverRole}</b> on every
-				current server{/if}. {d.invite.expiresAt
+			Joins as <b>{d.invite.orgRole}</b>{#if d.invite.serverRoleName}, <b
+					>{d.invite.serverRoleName}</b
+				> on every current server{/if}. {d.invite.expiresAt
 				? `Expires ${fmtTime(d.invite.expiresAt)}.`
 				: 'Never expires.'}
 			{d.invite.maxUses ? `${d.invite.maxUses} use${d.invite.maxUses === 1 ? '' : 's'}.` : ''}

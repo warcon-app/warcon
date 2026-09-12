@@ -41,16 +41,16 @@
 			mustChange: u ? u.mustChangePassword : true
 		};
 	};
-	/** "admin 2 · viewer 3": one number per role rather than one chip per server */
-	const grantSummary = (u: UserView) =>
-		['viewer', 'operator', 'admin']
-			.filter((r) => u.grants.some((g) => g.role === r))
-			.map((r) => `${r} ${u.grants.filter((g) => g.role === r).length}`)
-			.join(' · ');
+	/** "admin 2 · viewer 3": one number per role name rather than one chip per server */
+	const grantSummary = (u: UserView) => {
+		const counts = new Map<string, number>();
+		for (const g of u.grants) counts.set(g.roleName, (counts.get(g.roleName) ?? 0) + 1);
+		return [...counts].map(([name, n]) => `${name} ${n}`).join(' · ');
+	};
 	const openGrants = (u: UserView) => {
 		const grants: Record<string, string> = {};
 		for (const s of data.servers)
-			grants[s.id] = u.grants.find((g) => g.serverId === s.id)?.role ?? '';
+			grants[s.id] = u.grants.find((g) => g.serverId === s.id)?.roleId ?? '';
 		dialog = { kind: 'grants', user: u, grants };
 	};
 	const openReset = (u: UserView) => {
@@ -104,8 +104,8 @@
 		const d = dialog;
 		if (!d || d.kind !== 'grants') return;
 		const grants = Object.entries(d.grants)
-			.filter(([, role]) => role)
-			.map(([serverId, role]) => ({ serverId, role }));
+			.filter(([, roleId]) => roleId)
+			.map(([serverId, roleId]) => ({ serverId, roleId }));
 		void run(() => api('PUT', `/api/users/${d.user.id}/grants`, { grants }), 'Access updated.');
 	}
 	function reset() {
@@ -140,14 +140,14 @@
 </div>
 
 <div class="callout">
-	<b>Every account on this panel.</b> A site <b>owner</b> runs the whole panel and is admin on every
-	server. A <b>member</b> belongs to one or more
+	<b>Every account on this panel.</b> A site <b>owner</b> runs the whole panel and can do everything
+	on every server. A <b>member</b> belongs to one or more
 	<a href="/orgs" class="text-accent underline">organisations</a>, usually by opening an invite
-	link, and sees the servers they are granted there:
-	<b>viewer</b> (read-only), <b>operator</b> (kick, kill, whisper, broadcast, map and match control,
-	live rotation edits),
-	<b>admin</b> (plus bans, reserved slots, settings, sponsor image, saving rotation and the config document).
-	Granting a server here also makes them a member of its organisation.
+	link, and sees the servers they are granted there with one of that organisation's roles. Every org
+	starts with <b>viewer</b> (read-only), <b>operator</b> (kick, kill, whisper, broadcast, map and
+	match control, live rotation edits, notes) and <b>admin</b> (everything on the server); its owners can
+	change what those mean and add roles of their own. Granting a server here also makes them a member of
+	its organisation.
 </div>
 
 <div class="table-wrap">
@@ -193,7 +193,7 @@
 							<button
 								type="button"
 								class="block text-left whitespace-nowrap hover:underline"
-								title={u.grants.map((g) => `${g.serverName}: ${g.role}`).join('\n')}
+								title={u.grants.map((g) => `${g.serverName}: ${g.roleName}`).join('\n')}
 								onclick={() => openGrants(u)}
 							>
 								<div>
@@ -296,7 +296,8 @@
 			rows={data.servers.map((s) => ({
 				id: s.id,
 				label: s.name,
-				sub: data.orgs.length > 1 ? `${s.orgName} · ${s.host}:${s.port}` : `${s.host}:${s.port}`
+				sub: data.orgs.length > 1 ? `${s.orgName} · ${s.host}:${s.port}` : `${s.host}:${s.port}`,
+				roles: data.rolesByOrgId[s.orgId] ?? []
 			}))}
 			bind:grants={d.grants}
 			empty="No servers exist yet."

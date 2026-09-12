@@ -15,7 +15,8 @@ on a container host, with the database wherever you like.
 - **Organisations and invite links**: each clan or community is an organisation with its own
   servers, owners and members. An owner pastes an invite link into their Discord; whoever opens it
   signs in with Discord (creating their account on the spot) and joins with the roles the link
-  carries. Per-server `viewer` / `operator` / `admin` roles on top.
+  carries. Per-server roles on top: every org starts with `viewer` / `operator` / `admin`, and its
+  owners can change what those may do or add roles of their own.
 - **Account management**: Better Auth accounts; password resets, forced password change, disable,
   session revocation, login throttling.
 - **Full audit trail**: every login, user or server change, and every game-server command, with
@@ -199,16 +200,37 @@ Every server belongs to an **organisation**. People are members of organisations
 **org owner** or **member**, and members get a per-server role. The **site owner** (the account
 from first-run setup, plus anyone it promotes on the Users page) runs the whole panel.
 
-|                                                                                                                                                          | viewer | operator | admin | org owner | site owner |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----- | --------- | ---------- |
-| status, players, rotation, bans, reserved, config (read), server log, analytics, player dossiers, triggers (read)                                        | ✓      | ✓        | ✓     | ✓         | ✓          |
-| broadcast, whisper, kick, kill, change team, end/restart match, change map, next map, live rotation edits, player notes and watchlist                    |        | ✓        | ✓     | ✓         | ✓          |
-| ban/unban, reserved slots, score tick, rotation mode/enable, save rotation, sponsor image, config apply, raw /v1 calls, triggers (create, edit, dry run) |        |          | ✓     | ✓         | ✓          |
-| the organisation's ban list and reserved-slot list (add and remove entries, pushed to every server)                                                      |        |          | ✓     | ✓         | ✓          |
-| add, edit and remove the org's servers; members, per-server roles and invite links; Discord webhooks; the org's audit trail                              |        |          |       | ✓         | ✓          |
-| create and delete organisations; every account on the panel; the whole audit trail                                                                       |        |          |       |           | ✓          |
+A server role is a named set of **capabilities**. Every organisation starts with three, `viewer`,
+`operator` and `admin`, holding what the table shows. Its owners can change any of them on the
+org's **Roles** tab (a change applies at once to everyone holding the role), reset a built-in to
+what it shipped with, and add roles of their own, say a `Trial staff` that may kick but not ban.
+Org owners and the site owner hold every capability on every server in scope.
 
-Members see the audit trail for their own actions plus everything on servers where they are admin.
+| Capability        | Unlocks                                                                                                                               | viewer | operator | admin |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----- |
+| View              | status, players, rotation, bans, reserved, config (read), server log, analytics, player dossiers, triggers (read). Every role has it. | ✓      | ✓        | ✓     |
+| Chat              | broadcast, whisper                                                                                                                    |        | ✓        | ✓     |
+| Kick, kill, move  | kick, kill, change team                                                                                                               |        | ✓        | ✓     |
+| Match control     | end/restart match, change map, next map, weather                                                                                      |        | ✓        | ✓     |
+| Live rotation     | add, remove and reorder rotation entries on the running server                                                                        |        | ✓        | ✓     |
+| Notes & watchlist | player notes (delete your own), watch and unwatch                                                                                     |        | ✓        | ✓     |
+| Bans              | ban and unban on the server                                                                                                           |        |          | ✓     |
+| Reserved slots    | reserve and unreserve on the server                                                                                                   |        |          | ✓     |
+| Org lists         | the organisation's ban and reserved-slot lists, pushed to every server; sync                                                          |        |          | ✓     |
+| Others' notes     | delete anyone's note; the full dossier                                                                                                |        |          | ✓     |
+| Save rotation     | save the rotation, rotation mode on and off                                                                                           |        |          | ✓     |
+| Config & settings | score tick, sponsor image, validate and apply the config document, connection test                                                    |        |          | ✓     |
+| Automation        | create, edit, dry-run and delete triggers                                                                                             |        |          | ✓     |
+| Audit trail       | everyone's actions on the server in the audit log, not just your own                                                                  |        |          | ✓     |
+| Raw RCON          | any /v1 route on the game server directly                                                                                             |        |          | ✓     |
+
+Beyond server roles, an **org owner** adds, edits and removes the org's servers, manages members,
+roles, per-server grants and invite links and Discord webhooks, and sees the org's audit trail. The
+**site owner** creates and deletes organisations, manages every account, and sees the whole trail.
+
+Members see the audit trail for their own actions plus everything on servers where their role
+includes _Audit trail_. Existing installs keep their access on upgrade: every grant is mapped to
+the matching built-in role of its organisation.
 
 ### Self-service sign-up
 
@@ -226,8 +248,8 @@ it off for a single-clan install.
 Every player name in the panel links to a dossier: sessions, playtime, kills and deaths on each
 of the organisation's servers, the names they have used, the admin actions taken on them (kicks,
 bans, whispers, trigger actions), notes admins have left, and a watchlist flag with a reason.
-Notes and the watchlist are shared by every server in the organisation; operators and up can
-write them, and a note can be deleted by its author or an admin.
+Notes and the watchlist are shared by every server in the organisation; roles with _Notes &
+watchlist_ can write them, and a note can be deleted by its author or a role with _Others' notes_.
 
 With `STEAM_API_KEY` set, the dossier also shows the Steam persona, account age (public profiles
 only), VAC and game bans, refreshed daily and on demand. From all of that the panel derives an
@@ -246,7 +268,7 @@ slots tab is a roster: who holds a slot, whether they are playing right now, the
 on their org entry, and how many slots the server's cap has left. Ban a player from the
 Players tab or a dossier and choose _every server in the organisation_ (the default, when you may
 edit the org list) or _this server only_. Org owners and
-anyone who is admin on one of the org's servers can edit the lists; a ban can carry a reason and
+anyone whose role on one of the org's servers includes _Org lists_ can edit the lists; a ban can carry a reason and
 an expiry, a reserved slot a priority for when a server's `MaxReservedSlots` is full.
 
 Each entry shows where it stands on every server: **applied** by the panel, **pending** the next
@@ -259,7 +281,7 @@ Bans and reserved slots that your servers already hold show up on the list pages
 **import**: an owner reviews them, and importing puts them on the org list, marks them as managed
 on the servers that have them, and applies them to the rest. On a server's Bans tab a local ban can be
 promoted the same way (owners), or added to the org list while this server's own copy stays local
-(server admins). Every dossier shows the player's standing on the org lists and lets an editor ban
+(list editors). Every dossier shows the player's standing on the org lists and lets an editor ban
 or unban org-wide, or hand out and withdraw a reserved slot, without leaving the page.
 
 A ban with an **expiry** is lifted by the panel when the time comes: the entry moves to the list's
@@ -419,13 +441,15 @@ src/lib/server/db/schema.ts    every table, as Drizzle definitions (source of tr
 src/lib/server/db/index.ts     Bun SQL client + Drizzle + migration runner
 drizzle/                       generated SQL migrations (bun run db:generate) + TimescaleDB setup
 src/lib/server/auth.ts         Better Auth config (username + admin plugins, Drizzle adapter)
-src/lib/server/access.ts       global/per-server roles, accessible servers, login throttling
+src/lib/capabilities.ts        the capability vocabulary and the built-in role defaults (client-safe)
+src/lib/server/access.ts       global and org roles, per-server capability access, accessible servers, login throttling
+src/lib/server/roles.ts        an organisation's editable server roles (built-ins seeded per org)
 src/lib/server/users.ts        account management on top of Better Auth (create, disable, reset, grants)
 src/lib/server/orgs.ts         organisations: members, per-server roles, invite links, joining
 src/lib/server/servers.ts      server records, reachability test, per-server grants
 src/lib/server/lists.ts        organisation ban and reserved-slot lists: entries, per-server standing, views
 src/lib/server/lists-plan.ts / lists-sync.ts   what to add or remove on a server (pure) / the per-server sync run and API fan-out
-src/lib/server/actions.ts      every panel action -> role level + /v1 call(s)
+src/lib/server/actions.ts      every panel action -> capability + /v1 call(s)
 src/lib/server/rcon-run.ts     /api/servers/:id/rcon/:action dispatcher with audit rows
 src/lib/server/rcon.ts         WardogsClient (Bearer auth, JSON/text calls, demo routing)
 src/lib/server/transport.ts    fetch to the game server
@@ -465,11 +489,12 @@ own `/api/auth/*` routes only the OAuth callback is reachable over HTTP; everyth
 
 ```
 GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id   PATCH {name} | {membersReserved} | site owner: {serverLimit, suspended, reason}
-GET  /api/orgs/:id/members  PATCH/DELETE /api/orgs/:id/members/:userId {role}  PUT .../:userId/grants {grants:[{serverId,role}]}
-GET/POST /api/orgs/:id/invites {label,orgRole,serverRole,expiresDays,maxUses}  DELETE /api/orgs/:id/invites/:inviteId
-GET/POST /api/users  PATCH/DELETE /api/users/:id  PUT /api/users/:id/grants {grants:[{serverId,role}]}
+GET  /api/orgs/:id/members  PATCH/DELETE /api/orgs/:id/members/:userId {role}  PUT .../:userId/grants {grants:[{serverId,roleId}]}
+GET/POST /api/orgs/:id/roles {name,capabilities[]}  PATCH/DELETE .../:roleId {name?,capabilities?}  POST .../:roleId/reset
+GET/POST /api/orgs/:id/invites {label,orgRole,serverRoleId,expiresDays,maxUses}  DELETE /api/orgs/:id/invites/:inviteId
+GET/POST /api/users  PATCH/DELETE /api/users/:id  PUT /api/users/:id/grants {grants:[{serverId,roleId}]}
 GET/POST /api/servers {orgId,...}  PATCH/DELETE /api/servers/:id  POST /api/servers/:id/test
-GET/PUT /api/servers/:id/grants {grants:[{userId,role}]}   GET /api/servers/:id/summary
+GET/PUT /api/servers/:id/grants {grants:[{userId,roleId}]}   GET /api/servers/:id/summary
 GET|POST /api/servers/:id/rcon/:action   (GET for reads with query params, POST JSON for mutations)
 GET  /api/servers/:id/analytics?range=24h|7d|30d
 GET  /api/servers/:id/cash?since=<iso>                  cash-in-play samples since a moment (24 h at most), seeds the dashboard chart
@@ -483,17 +508,19 @@ GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt,priority}  
 POST /api/orgs/:id/lists/sync                            push the lists to every org server now
 GET  /api/orgs/:id/lists/import                          server entries not on the org list   POST {entries:[{kind,steamId,reason}]} adopts them (owner)
 GET  /api/servers/:id/lists/state                        which bans / reserved slots here come from the org lists   POST .../lists/sync
-GET  /api/actions                     lists actions with their role level
+GET  /api/actions                     lists actions with the capability each needs
 GET  /api/audit?server=&actor=&action=&outcome=&q=&from=&to=&before=&limit=
 GET  /api/audit/export?format=csv|json GET /api/audit/meta
 GET  /api/steam/profiles?ids=a,b      GET /api/health
 ```
 
-Actions: `capabilities status players maps lightings experiences alternators catalog rotation bans
-reserved sponsor serverLog config` (viewer) · `broadcast whisper kick kill changeTeam endMatch
-restartMatch changeMap setWeather setNextMap rotationAdd rotationRemove rotationMove rotationReorder`
-(operator) · `ban unban reservedAdd reservedRemove rotationSave settings configValidate
-configApply raw` (admin).
+Actions, by the capability each needs: `capabilities status health players maps lightings
+experiences alternators catalog rotation bans reserved sponsor serverLog config` (View) ·
+`broadcast whisper` (Chat) · `kick kill changeTeam` (Kick, kill, move) · `endMatch restartMatch
+changeMap setWeather setNextMap` (Match control) · `rotationAdd rotationRemove rotationMove
+rotationReorder` (Live rotation) · `ban unban` (Bans) · `reservedAdd reservedRemove` (Reserved
+slots) · `rotationSave` (Save rotation) · `settings configValidate configApply` (Config & settings)
+· `raw` (Raw RCON).
 
 ## Notes and limits
 

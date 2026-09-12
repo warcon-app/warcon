@@ -186,7 +186,7 @@
 						>
 							<Pulse ok={health[s.id]} />
 							<span class="truncate">{s.name}</span>
-							<span class="ml-auto text-[11px] text-mist-600">{s.role}</span>
+							<span class="ml-auto text-[11px] text-mist-600">{s.roleName}</span>
 						</a>
 					{:else}
 						<div class="px-3 py-2 text-[12.5px] text-mist-400">
