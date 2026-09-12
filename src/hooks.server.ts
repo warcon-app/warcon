@@ -7,11 +7,12 @@ import { toSessionUser } from '$lib/server/access';
 import { getEnv, initEnv } from '$lib/server/env';
 import { encryptionKey } from '$lib/server/crypto';
 import { CLIENT_IP_HEADER, normalizeError, resolveClientIp } from '$lib/server/http';
-import { startPoller } from '$lib/server/poller';
+import { startPoller, stopPoller } from '$lib/server/poller';
 import { setGateway } from '$lib/server/gateway';
 import { localGateway } from '$lib/server/gateway-local';
 import { connectRemoteGateway } from '$lib/server/gateway-remote';
 import { loadSettings } from '$lib/server/settings';
+import { beginShutdown } from '$lib/server/shutdown';
 
 const SECURITY_HEADERS: Record<string, string> = {
 	'x-content-type-options': 'nosniff',
@@ -52,7 +53,35 @@ export const init: ServerInit = async () => {
 		setGateway(localGateway);
 		startPoller(env, 'all');
 	}
+	installShutdown(env);
 };
+
+/**
+ * Lets `docker stop` (a deploy) end the process promptly. adapter-node already closes the HTTP
+ * server on SIGTERM and waits for in-flight requests; we end the long-lived event streams so that
+ * wait is short, and once it reports the server closed we release the poller and the database
+ * pool and exit, since either would otherwise keep the process alive until it is killed.
+ */
+function installShutdown(env: Awaited<ReturnType<typeof initEnv>>): void {
+	let exiting = false;
+	const onSignal = (signal: string) => {
+		console.log(`[warcon] ${signal}: web stopping, finishing in-flight requests`);
+		beginShutdown();
+	};
+	process.on('SIGTERM', () => onSignal('SIGTERM'));
+	process.on('SIGINT', () => onSignal('SIGINT'));
+	// Emitted by adapter-node after every connection has ended; not in `vite dev`.
+	process.on('sveltekit:shutdown', () => {
+		if (exiting) return;
+		exiting = true;
+		void (async () => {
+			if (env.WARCON_ROLE !== 'web') await stopPoller().catch(() => {});
+			await env.sql.end().catch(() => {});
+			console.log('[warcon] web stopped');
+			process.exit(0);
+		})();
+	});
+}
 
 export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.user = null;

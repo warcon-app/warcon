@@ -16,6 +16,7 @@ COPY drizzle ./drizzle
 COPY docker-entrypoint.sh ./
 USER bun
 EXPOSE 3000 7700
-# The web (and single-process) roles answer on 3000; the worker on WORKER_PORT (7700).
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD bun -e "const w = (process.env.WARCON_ROLE || 'all') === 'worker'; fetch(w ? 'http://127.0.0.1:' + (process.env.WORKER_PORT || 7700) + '/health' : 'http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+# The web (and single-process) roles answer on 3000; the worker on WORKER_PORT (7700). Probing every
+# 2 s while starting lets a rolling deploy switch to a new container seconds after it is ready.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s CMD bun -e "const w = (process.env.WARCON_ROLE || 'all') === 'worker'; fetch(w ? 'http://127.0.0.1:' + (process.env.WORKER_PORT || 7700) + '/health' : 'http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 CMD ["./docker-entrypoint.sh"]

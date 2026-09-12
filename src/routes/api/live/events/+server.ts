@@ -7,6 +7,7 @@ import { getEnv } from '$lib/server/env';
 import { ApiError } from '$lib/server/http';
 import { accessibleServers, requireUser } from '$lib/server/access';
 import { gateway } from '$lib/server/gateway';
+import { isShuttingDown, onShutdown } from '$lib/server/shutdown';
 
 const INTEREST_MS = 5000;
 const PING_MS = 15_000;
@@ -21,6 +22,8 @@ export const GET = async (event) => {
 	const asked = (event.url.searchParams.get('ids') || '').split(',').filter(Boolean);
 	const ids = (asked.length ? asked : [...mine]).filter((id) => mine.has(id));
 	if (!ids.length) throw new ApiError(400, 'No servers to watch.');
+	// A process that is stopping must not take on a stream the browser would only lose again.
+	if (isShuttingDown()) throw new ApiError(503, 'Server restarting; retry shortly.');
 	const wanted = new Set(ids);
 	const encoder = new TextEncoder();
 	let closed = false;
@@ -30,6 +33,7 @@ export const GET = async (event) => {
 	const cleanup = () => {
 		if (closed) return;
 		closed = true;
+		offShutdown();
 		unsubscribe();
 		for (const t of timers) clearTimeout(t);
 		try {
@@ -38,6 +42,8 @@ export const GET = async (event) => {
 			/* already closed */
 		}
 	};
+	// Ended early when the process stops, so the HTTP server can close and the deploy move on.
+	const offShutdown = onShutdown(() => cleanup());
 	const stream = new ReadableStream<Uint8Array>({
 		async start(controller) {
 			controllerRef = controller;
