@@ -13,6 +13,7 @@ import { memoryOf } from './observe';
 import { observeNow, observeSoon, pollerStats } from './poller';
 import { loadSettings, settings } from './settings';
 import { invalidateTriggers } from './triggers';
+import { invalidateBoards } from './board-delivery';
 import type { Gateway } from './gateway';
 import type { LiveView } from '$lib/types';
 
@@ -73,6 +74,9 @@ export const localGateway: Gateway = {
 	},
 	triggersChanged(serverId: string) {
 		invalidateTriggers(serverId);
+	},
+	boardsChanged() {
+		invalidateBoards();
 	},
 	subscribe,
 	health() {

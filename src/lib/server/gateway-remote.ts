@@ -161,6 +161,9 @@ export function connectRemoteGateway(env: Env): Gateway {
 		triggersChanged(serverId) {
 			void call(env, '/triggers-changed', { serverId }).catch(() => {});
 		},
+		boardsChanged() {
+			void call(env, '/boards-changed', {}).catch(() => {});
+		},
 		subscribe,
 		health(env) {
 			return call<PollerStats>(env, '/health', undefined, 'GET', HEALTH_TIMEOUT_MS);

@@ -526,6 +526,44 @@ export const webhooks = pgTable(
 	(t) => [index('webhooks_org_idx').on(t.orgId)]
 );
 
+/**
+ * Discord status boards: one channel message per board that the worker keeps editing with what it
+ * last saw on the chosen servers (status, map, scores, players). The URL is a credential like a
+ * webhook's; the message id is what lets the worker edit rather than post.
+ */
+export const statusBoards = pgTable(
+	'status_boards',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		label: text('label').notNull().default(''),
+		/** AES-GCM like RCON passwords */
+		urlEnc: text('url_enc').notNull(),
+		/** what the UI shows instead of the URL: host and webhook id */
+		urlHint: text('url_hint').notNull().default(''),
+		/** text above the embeds; '' for none */
+		heading: text('heading').notNull().default(''),
+		/** null = every server in the org (the first ten, in the panel's order) */
+		serverIds: jsonb('server_ids'),
+		/** how often the message is edited */
+		intervalMs: integer('interval_ms').notNull().default(30_000),
+		/** list connected players per faction, with kills and deaths, under each server */
+		showPlayers: boolean('show_players').notNull().default(true),
+		/** the message the board edits; null until the first post, and again after a pause */
+		messageId: text('message_id'),
+		enabled: boolean('enabled').notNull().default(true),
+		lastSentAt: ts('last_sent_at'),
+		lastStatus: integer('last_status'),
+		lastError: text('last_error').notNull().default(''),
+		createdBy: text('created_by'),
+		createdAt: ts('created_at').notNull().defaultNow(),
+		updatedAt: ts('updated_at').notNull().defaultNow()
+	},
+	(t) => [index('status_boards_org_idx').on(t.orgId)]
+);
+
 // ---- Organisation lists: bans and reserved slots kept in the panel and pushed to every server --
 
 /** A ban list or reserved-slot list an org owns. Servers subscribe through server_lists. */
@@ -775,6 +813,7 @@ export type SampleRow = typeof samples.$inferSelect;
 export type SteamProfileRow = typeof steamProfiles.$inferSelect;
 export type TriggerRow = typeof triggers.$inferSelect;
 export type WebhookRow = typeof webhooks.$inferSelect;
+export type StatusBoardRow = typeof statusBoards.$inferSelect;
 export type PlayerNoteRow = typeof playerNotes.$inferSelect;
 export type PlayerMarkRow = typeof playerMarks.$inferSelect;
 export type ListRow = typeof lists.$inferSelect;

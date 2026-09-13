@@ -38,6 +38,13 @@ export const fmtDuration = (sec: number | null | undefined): string => {
 export const fmtNum = (n: number | null | undefined): string =>
 	n === null || n === undefined ? '—' : Number(n).toLocaleString();
 
+/** A cadence for people: "30 s", "2 min", "1 h". */
+export function fmtInterval(ms: number): string {
+	if (ms >= 3_600_000 && ms % 3_600_000 === 0) return `${ms / 3_600_000} h`;
+	if (ms >= 60_000 && ms % 60_000 === 0) return `${ms / 60_000} min`;
+	return `${Math.round(ms / 1000)} s`;
+}
+
 export function prettify(id: string | null | undefined): string {
 	return String(id || '')
 		.replace(/[_-]+/g, ' ')

@@ -164,6 +164,14 @@ anyone takes is recorded in **Audit**.
 Without it, invite links still work: people create a username and password on the invite page
 instead.
 
+### A live server list in Discord
+
+Want a channel that always shows who is on which server? In Discord, open the channel's settings →
+Integrations → Webhooks, create one and copy its URL. Then go to **Orgs → your organisation →
+Discord status boards → New board**, paste the URL and pick how often to refresh. Warcon posts one
+message and keeps editing it with each server's status, map, scores and connected players, so
+nothing scrolls the channel. Pause or remove the board and the message goes away.
+
 ### Letting other clans in
 
 Running Warcon for more than your own clan? Set `ALLOW_ORG_SIGNUP=true` in `.env`. The sign-in page

@@ -46,8 +46,10 @@ on a container host, with the database wherever you like.
   at once, with a reason and an optional expiry; hand out reserved slots the same way. The worker
   keeps every server in line and shows where each entry stands; bans added outside the panel are
   left alone.
-- **Discord mirror**: an org owner points a channel webhook at the audit trail and picks what to
-  mirror (bans, commands, trigger actions, sign-ins…), per server if wanted.
+- **Discord mirror and status boards**: an org owner points a channel webhook at the audit trail
+  and picks what to mirror (bans, commands, trigger actions, sign-ins…), per server if wanted; or
+  at a status board, one message the worker keeps editing with every server's status, map, scores
+  and who is on, every 30 seconds or however often you like.
 - **Everything the official console does**: status, scoreboard, kick/ban/kill/whisper/change-team,
   broadcasts, map override, next map, end/restart match, map rotation editing and saving, reserved
   slots, bans, score tick, sponsor image, a live cash-in-play chart for the current match, and the
@@ -225,8 +227,9 @@ Org owners and the site owner hold every capability on every server in scope.
 | Raw RCON          | any /v1 route on the game server directly                                                                                             |        |          | ✓     |
 
 Beyond server roles, an **org owner** adds, edits and removes the org's servers, manages members,
-roles, per-server grants and invite links and Discord webhooks, and sees the org's audit trail. The
-**site owner** creates and deletes organisations, manages every account, and sees the whole trail.
+roles, per-server grants and invite links, Discord webhooks and status boards, and sees the org's
+audit trail. The **site owner** creates and deletes organisations, manages every account, and sees
+the whole trail.
 
 Members see the audit trail for their own actions plus everything on servers where their role
 includes _Audit trail_. Existing installs keep their access on upgrade: every grant is mapped to
@@ -326,6 +329,28 @@ actions, player notes and watchlist changes, management changes, sign-ins; for e
 subset. Events are batched into one message per burst, IP addresses are never sent, and the URL
 (which lets anyone post to the channel) is stored encrypted with `ENCRYPTION_KEY` and never shown
 again. **Test** posts a message right away; delivery failures show on the org page.
+
+### Discord status boards
+
+A status board is one message in a Discord channel that the worker keeps up to date, so a
+community can see its servers without opening the panel. An owner adds one on the organisation's
+overview (**Discord status boards → New board**) with a channel webhook URL, an optional heading,
+the servers to show (every server in the organisation, or up to ten picked by hand) and a refresh
+interval from ten seconds to an hour. The board posts once and edits that message from then on, so
+nothing scrolls the channel. Each server is one embed: its state (up, unreachable, not observed
+yet), players on and capacity, map, game mode and mods, time of day, the match clock as a live
+Discord timestamp, the faction scores against the cap and, if wanted, the connected players per
+faction with kills, deaths and cash in play.
+
+A board shows what the worker last saw, so it is as fresh as the observation cadence: a couple of
+seconds on a busy server, the empty-server cadence (30 s by default) on an empty one, and it never
+makes the game server busier. Discord rate limits webhooks, so the interval is at least ten seconds,
+a `429` moves the next edit to when Discord allows it, and any other failure (a webhook deleted in
+Discord, an outage) is retried once a minute. Pausing or removing a board takes its
+message down, enabling it again posts a fresh one, and a message someone deletes in Discord is
+posted again on the next refresh. Delivery failures show on the org page, and the URL is stored
+encrypted like a mirror webhook's. Commands go the other way, from Discord into the panel, through
+a bot holding an organisation [API key](#bots-and-api-keys).
 
 ### Accounts and personal data
 
@@ -489,6 +514,7 @@ src/lib/server/steam.ts        Steam Web API lookups cached in steam_profiles
 src/lib/server/risk.ts         advisory risk score and name resemblance (pure)
 src/lib/server/trigger-rules.ts / triggers.ts   trigger settings and verdicts (pure) / evaluation into intents, dry runs
 src/lib/server/webhooks.ts     Discord webhook records; webhook-delivery.ts batches audit rows to Discord
+src/lib/server/boards.ts       Discord status board records; board-render.ts shapes the message (pure), board-delivery.ts edits it from the worker
 src/lib/server/analytics.ts    analytics queries per server and range
 src/lib/server/audit.ts        audit writer/query with secret redaction
 src/lib/server/mockgame.ts     in-process imitation of the WDRCON API for demo/testing
@@ -526,6 +552,7 @@ GET  /api/servers/:id/players/:steamId                  dossier   POST .../steam
 POST /api/servers/:id/players/:steamId/notes {body}     DELETE .../notes/:noteId   PUT .../watch {watched,reason}
 GET/POST /api/servers/:id/triggers {kind,name,enabled,config}   PATCH/DELETE .../:triggerId   POST .../dry-run {kind,config}
 GET/POST /api/orgs/:id/webhooks {label,url,events,serverIds,enabled}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
+GET/POST /api/orgs/:id/boards {label,url,heading,serverIds|null,intervalMs,showPlayers,enabled}   PATCH/DELETE .../:boardId   (Discord status boards)
 GET  /api/orgs/:id/lists                                 the org's ban and reserved-slot lists, and the caller's role on them
 GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt,priority}   DELETE .../entries/:steamId   (kind = ban | reserve; ?includeRemoved=1)
 POST /api/orgs/:id/lists/sync                            push the lists to every org server now

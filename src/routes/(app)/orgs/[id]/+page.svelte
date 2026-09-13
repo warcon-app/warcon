@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { api, errorMessage } from '$lib/api';
-	import { fmtTime } from '$lib/format';
+	import { fmtInterval, fmtTime } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
@@ -9,7 +9,13 @@
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
 	import CapabilityPicker from '$lib/components/CapabilityPicker.svelte';
 	import { capabilitySummary, type Capability } from '$lib/capabilities';
-	import type { ApiKeyView, InviteView, OrgMemberView, WebhookView } from '$lib/types';
+	import type {
+		ApiKeyView,
+		InviteView,
+		OrgMemberView,
+		StatusBoardView,
+		WebhookView
+	} from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -30,6 +36,17 @@
 				label: string;
 				url: string;
 				events: Record<string, boolean>;
+				allServers: boolean;
+				servers: Record<string, boolean>;
+		  }
+		| {
+				kind: 'board';
+				id: string | null;
+				label: string;
+				url: string;
+				heading: string;
+				intervalMs: number;
+				showPlayers: boolean;
 				allServers: boolean;
 				servers: Record<string, boolean>;
 		  }
@@ -256,6 +273,82 @@
 	}
 	const eventLabel = (key: string) =>
 		data.webhookEvents.find((e) => e.key === key)?.label.split(' (')[0] ?? key;
+
+	// --- Discord status boards ---
+	const INTERVALS: [number, string][] = [
+		[10_000, '10 s'],
+		[15_000, '15 s'],
+		[30_000, '30 s'],
+		[60_000, '1 min'],
+		[120_000, '2 min'],
+		[300_000, '5 min'],
+		[900_000, '15 min'],
+		[3_600_000, '1 h']
+	];
+	/** The choices, plus the board's own value when the API set it to something else. */
+	const intervalChoices = (ms: number): [number, string][] =>
+		INTERVALS.some(([v]) => v === ms)
+			? INTERVALS
+			: [...INTERVALS, [ms, fmtInterval(ms)] as [number, string]].sort((a, b) => a[0] - b[0]);
+	const openBoard = (b: StatusBoardView | null) => {
+		const servers: Record<string, boolean> = {};
+		for (const s of data.orgServers) servers[s.id] = !!b?.serverIds?.includes(s.id);
+		dialog = {
+			kind: 'board',
+			id: b?.id ?? null,
+			label: b?.label ?? '',
+			url: '',
+			heading: b?.heading ?? '',
+			intervalMs: b?.intervalMs ?? 30_000,
+			showPlayers: b?.showPlayers ?? true,
+			allServers: !b?.serverIds,
+			servers
+		};
+	};
+	function saveBoard() {
+		const d = dialog;
+		if (!d || d.kind !== 'board') return;
+		const body: Record<string, unknown> = {
+			label: d.label.trim(),
+			heading: d.heading.trim(),
+			intervalMs: d.intervalMs,
+			showPlayers: d.showPlayers,
+			serverIds: d.allServers
+				? null
+				: Object.entries(d.servers)
+						.filter(([, on]) => on)
+						.map(([k]) => k)
+		};
+		if (d.url.trim()) body.url = d.url.trim();
+		void run(
+			() =>
+				d.id
+					? api('PATCH', `${orgPath}/boards/${d.id}`, body)
+					: api('POST', `${orgPath}/boards`, body),
+			d.id ? 'Board updated.' : 'Board added. Its message appears in the channel within seconds.'
+		);
+	}
+	function toggleBoard(b: StatusBoardView) {
+		void run(
+			() => api('PATCH', `${orgPath}/boards/${b.id}`, { enabled: !b.enabled }),
+			b.enabled ? 'Board paused; its message was taken down.' : 'Board enabled.',
+			false
+		);
+	}
+	async function deleteBoard(b: StatusBoardView) {
+		if (
+			!(await confirmDialog(`Remove the ${b.label} board? Its message is taken down too.`, {
+				okLabel: 'Remove',
+				danger: true
+			}))
+		)
+			return;
+		await run(() => api('DELETE', `${orgPath}/boards/${b.id}`), 'Board removed.', false);
+	}
+	const boardServers = (b: StatusBoardView) =>
+		b.serverIds === null
+			? 'every server'
+			: `${b.serverIds.length} server${b.serverIds.length === 1 ? '' : 's'}`;
 
 	// --- site owner controls ---
 	// A number input binds a number, or null when blank (blank = the instance default).
@@ -538,6 +631,49 @@
 
 		<div class="panel">
 			<div class="mb-3 flex items-center gap-3">
+				<span class="label-sm mb-0!">Discord status boards</span>
+				<button class="ml-auto btn btn-sm btn-primary" onclick={() => openBoard(null)}
+					>New board</button
+				>
+			</div>
+			<p class="mb-3 text-[13px] text-mist-400">
+				One message in a channel, kept up to date: each server's status, map, scores and who is on.
+				Uses a channel webhook URL like the mirror above; nothing scrolls the channel.
+			</p>
+			{#each data.boards as b (b.id)}
+				<div class="kv items-start">
+					<div class="min-w-0">
+						<div>
+							{b.label}
+							{#if !b.enabled}<Badge class="ml-1">paused</Badge>{/if}
+							{#if b.lastError}<Badge tone="err" class="ml-1">failing</Badge
+								>{:else if b.posted}<Badge tone="ok" class="ml-1">live</Badge>{/if}
+						</div>
+						<div class="truncate font-mono text-[11px] text-mist-600">{b.urlHint}</div>
+						<div class="text-[12px] text-mist-400">
+							{boardServers(b)} · every {fmtInterval(b.intervalMs)}{#if b.showPlayers}
+								· players listed{/if}
+							{#if b.lastError}<div class="text-danger">{b.lastError}</div>{:else if b.lastSentAt}·
+								updated {fmtTime(b.lastSentAt)}{/if}
+						</div>
+					</div>
+					<span class="inline-flex shrink-0 flex-wrap justify-end gap-1.5">
+						<button class="btn btn-sm" onclick={() => openBoard(b)}>Edit</button>
+						<button class="btn btn-sm" onclick={() => toggleBoard(b)} disabled={busy}
+							>{b.enabled ? 'Pause' : 'Enable'}</button
+						>
+						<button class="btn btn-sm btn-danger" onclick={() => deleteBoard(b)} disabled={busy}
+							>Remove</button
+						>
+					</span>
+				</div>
+			{:else}
+				<p class="text-[13px] text-mist-600">No boards yet.</p>
+			{/each}
+		</div>
+
+		<div class="panel">
+			<div class="mb-3 flex items-center gap-3">
 				<span class="label-sm mb-0!">API keys</span>
 				<button class="ml-auto btn btn-sm btn-primary" onclick={openKey}>New key</button>
 			</div>
@@ -775,6 +911,91 @@
 				<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>
 				<button type="submit" class="btn btn-primary" disabled={busy}
 					>{d.id ? 'Save' : 'Add webhook'}</button
+				>
+			</div>
+		</form>
+	</Modal>
+{:else if dialog?.kind === 'board'}
+	{@const d = dialog}
+	<Modal
+		title={d.id ? 'Edit status board' : 'New Discord status board'}
+		onclose={() => (dialog = null)}
+	>
+		<form
+			class="space-y-3"
+			onsubmit={(e) => {
+				e.preventDefault();
+				saveBoard();
+			}}
+		>
+			<label class="block"
+				><span class="field-label">Label</span><input
+					class="input"
+					type="text"
+					bind:value={d.label}
+					placeholder="e.g. #server-status"
+					maxlength="60"
+				/></label
+			>
+			<label class="block"
+				><span class="field-label">Webhook URL{d.id ? ' (leave blank to keep)' : ''}</span><input
+					class="input font-mono text-[12.5px]"
+					type="url"
+					bind:value={d.url}
+					placeholder="https://discord.com/api/webhooks/…"
+					required={!d.id}
+					autocomplete="off"
+				/></label
+			>
+			<label class="block"
+				><span class="field-label">Heading above the servers (optional)</span><input
+					class="input"
+					type="text"
+					bind:value={d.heading}
+					placeholder="e.g. **Our servers** · come and play"
+					maxlength="200"
+				/></label
+			>
+			<div class="grid grid-cols-2 gap-2">
+				<label class="block"
+					><span class="field-label">Refresh every</span>
+					<select class="input" bind:value={d.intervalMs}>
+						{#each intervalChoices(d.intervalMs) as [ms, label] (ms)}<option value={ms}
+								>{label}</option
+							>{/each}
+					</select>
+				</label>
+				<label class="flex items-center gap-2 self-end pb-2 text-[13px]"
+					><input type="checkbox" bind:checked={d.showPlayers} /> List connected players</label
+				>
+			</div>
+			{#if data.orgServers.length > 1}
+				<div>
+					<span class="field-label">Servers</span>
+					<label class="flex items-center gap-2 text-[13px]"
+						><input type="checkbox" bind:checked={d.allServers} /> Every server in the organisation</label
+					>
+					{#if !d.allServers}
+						<div class="mt-1 space-y-1 pl-5">
+							{#each data.orgServers as s (s.id)}
+								<label class="flex items-center gap-2 text-[13px]"
+									><input type="checkbox" bind:checked={d.servers[s.id]} /> {s.name}</label
+								>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
+			<p class="note">
+				The board posts one message and edits it in place; pausing or removing the board takes the
+				message down. It shows what the worker last saw, so an empty server refreshes at the
+				empty-server cadence. Discord fits ten servers in one message. The URL is stored encrypted
+				and never shown again.
+			</p>
+			<div class="flex justify-end gap-2 pt-2">
+				<button type="button" class="btn" data-close onclick={() => (dialog = null)}>Cancel</button>
+				<button type="submit" class="btn btn-primary" disabled={busy}
+					>{d.id ? 'Save' : 'Add board'}</button
 				>
 			</div>
 		</form>

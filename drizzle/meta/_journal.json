@@ -99,6 +99,13 @@
       "when": 1789179311466,
       "tag": "0013_api_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789265175193,
+      "tag": "0014_status_boards",
+      "breakpoints": true
     }
   ]
 }

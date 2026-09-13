@@ -91,9 +91,11 @@ export interface Embed {
 	color: number;
 	timestamp: string;
 	footer?: { text: string };
+	/** up to 25; a name of at most 256 characters and a value of at most 1024 */
+	fields?: { name: string; value: string; inline?: boolean }[];
 }
 
-const COLORS = { ok: 0x7bc462, error: 0xd86060, denied: 0x8a8a90 } as const;
+export const COLORS = { ok: 0x7bc462, error: 0xd86060, denied: 0x8a8a90 } as const;
 
 const ACTION_TITLES: Record<string, string> = {
 	'rcon.kick': 'Kick',
@@ -219,29 +221,54 @@ export interface PostResult {
 	status: number;
 	error: string;
 	retryAfterMs?: number;
+	/** the message Discord created (a post) or changed (an edit) */
+	messageId?: string;
 }
 
-/** One POST to the webhook. Never throws. */
-export async function postDiscord(
+export interface DiscordPayload {
+	content?: string;
+	embeds?: Embed[];
+}
+
+export interface DiscordRequest {
+	/** POST a new message (the default), or PATCH / DELETE one this webhook sent */
+	method?: 'POST' | 'PATCH' | 'DELETE';
+	messageId?: string;
+	payload?: DiscordPayload;
+}
+
+/**
+ * One request to the webhook: a post, or an edit or removal of a message it sent earlier (Discord
+ * lets a webhook change only its own messages). Never throws.
+ */
+export async function callDiscord(
 	env: Env,
 	hook: Pick<WebhookRow, 'urlEnc'>,
-	payload: { content?: string; embeds?: Embed[] }
+	req: DiscordRequest = {}
 ): Promise<PostResult> {
+	const method = req.method ?? 'POST';
 	let url: string;
 	try {
 		url = decryptSecret(env, hook.urlEnc);
 	} catch (err) {
 		return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
 	}
+	if (req.messageId) url += `/messages/${encodeURIComponent(req.messageId)}`;
+	// wait=true makes a post answer with the message it created, as an edit does anyway.
+	if (method === 'POST') url += '?wait=true';
+	const body =
+		method === 'DELETE'
+			? undefined
+			: JSON.stringify({
+					...(method === 'POST' ? { username: env.APP_NAME || 'Warcon' } : {}),
+					allowed_mentions: { parse: [] },
+					...req.payload
+				});
 	try {
-		const res = await fetch(url + '?wait=true', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({
-				username: env.APP_NAME || 'Warcon',
-				allowed_mentions: { parse: [] },
-				...payload
-			}),
+		const res = await fetch(url, {
+			method,
+			headers: body === undefined ? {} : { 'content-type': 'application/json' },
+			body,
 			signal: AbortSignal.timeout(10_000)
 		});
 		if (res.status === 429) {
@@ -262,7 +289,14 @@ export async function postDiscord(
 				error: `Discord answered ${res.status}. ${text}`.trim()
 			};
 		}
-		return { ok: true, status: res.status, error: '' };
+		const data =
+			res.status === 204 ? null : ((await res.json().catch(() => null)) as { id?: unknown } | null);
+		return {
+			ok: true,
+			status: res.status,
+			error: '',
+			...(typeof data?.id === 'string' ? { messageId: data.id } : {})
+		};
 	} catch (err) {
 		return {
 			ok: false,
@@ -274,6 +308,13 @@ export async function postDiscord(
 		};
 	}
 }
+
+/** Posts one message. */
+export const postDiscord = (
+	env: Env,
+	hook: Pick<WebhookRow, 'urlEnc'>,
+	payload: DiscordPayload
+): Promise<PostResult> => callDiscord(env, hook, { payload });
 
 export async function recordResult(env: Env, id: string, result: PostResult): Promise<void> {
 	try {

@@ -414,6 +414,26 @@ export interface WebhookView {
 	createdAt: string | null;
 }
 
+/** A Discord status board: one channel message the worker keeps up to date. */
+export interface StatusBoardView {
+	id: string;
+	label: string;
+	urlHint: string;
+	/** text shown above the servers; '' for none */
+	heading: string;
+	/** null = every server in the org */
+	serverIds: string[] | null;
+	intervalMs: number;
+	showPlayers: boolean;
+	enabled: boolean;
+	/** the board has a message in the channel */
+	posted: boolean;
+	lastSentAt: string | null;
+	lastStatus: number | null;
+	lastError: string;
+	createdAt: string | null;
+}
+
 // ---- organisation lists (bans and reserved slots pushed to every server) ------------------------
 
 export type ListKind = 'ban' | 'reserve';

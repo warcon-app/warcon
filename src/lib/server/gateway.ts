@@ -36,6 +36,8 @@ export interface Gateway {
 	settingsChanged(env: Env): Promise<void>;
 	/** A trigger on this server was created, changed or deleted: drop the worker's cached rule set. */
 	triggersChanged(serverId: string): void;
+	/** A Discord status board was created, changed, paused or removed: the worker should re-read them now. */
+	boardsChanged(): void;
 	/** Live events (observations, deliveries). */
 	subscribe(fn: (e: WarconEvent) => void): () => void;
 	/** The worker's scheduler stats (for /api/health and the settings page). */

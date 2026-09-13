@@ -20,6 +20,7 @@ import {
 import { loadSettings, settings, settingsVersion } from './settings';
 import { watchedCount } from './interest';
 import { deliveryStats, outboxDepth, startDelivery, stopDelivery } from './outbox';
+import { startBoards, stopBoards } from './board-delivery';
 import {
 	allMemory,
 	cadenceOf,
@@ -106,6 +107,7 @@ export function startPoller(env: Env, label = 'worker'): void {
 	);
 	globalThis.__warconRenew = scheduler.renewTimer;
 	startDelivery(env);
+	startBoards(env);
 	globalThis.__warconPoller = setInterval(() => void beat(env), BEAT_MS);
 	console.log('[warcon] worker scheduler started');
 }
@@ -117,6 +119,7 @@ export async function stopPoller(): Promise<void> {
 	if (globalThis.__warconRenew) clearInterval(globalThis.__warconRenew);
 	globalThis.__warconRenew = undefined;
 	stopDelivery();
+	stopBoards();
 	scheduler = null;
 	if (envRef) await releaseOwnership(envRef);
 }
