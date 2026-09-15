@@ -10,7 +10,9 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import SteamName from '$lib/components/SteamName.svelte';
+	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { steamProfiles, type SteamProfile } from '$lib/steam-profiles';
+	import { nextDir, sortRows, type SortDir, type SortValue } from '$lib/sort';
 	import { describeSync, STATE_TONE } from '$lib/lists';
 	import type { Ban, ListSyncServer, ListSyncSummary, ServerListsState } from '$lib/types';
 	import type { PageProps } from './$types';
@@ -33,9 +35,25 @@
 	let busy = $state(false);
 	let banning = $state(false);
 
+	/** what each sortable column reads off a row; an unknown field is null, so it sorts last */
+	const COLUMNS: Record<string, (b: Ban) => SortValue> = {
+		player: (b) => steam[b.steamId]?.name || b.steamId,
+		source: (b) => (banSource(b.steamId)?.managed ? 'org' : 'local'),
+		bannedAt: (b) => b.bannedAtUtc || null,
+		bannedBy: (b) => b.bannedBy || null,
+		reason: (b) => b.reason || null
+	};
+	/** text reads best A to Z; the most recent ban is the one worth seeing first */
+	const ASC_FIRST = new Set(['player', 'source', 'bannedBy', 'reason']);
+	let sort = $state<{ key: string; dir: SortDir }>({ key: '', dir: 'desc' });
+	function sortBy(key: string) {
+		const fallback = ASC_FIRST.has(key) ? 'asc' : 'desc';
+		sort = { key, dir: nextDir(sort.key, sort.dir, key, fallback) };
+	}
+
 	let banRows = $derived.by(() => {
 		const q = banSearch.trim().toLowerCase();
-		return bans.filter(
+		const found = bans.filter(
 			(b) =>
 				!q ||
 				b.steamId.includes(q) ||
@@ -43,6 +61,8 @@
 				(b.bannedBy || '').toLowerCase().includes(q) ||
 				(b.reason || '').toLowerCase().includes(q)
 		);
+		const column = COLUMNS[sort.key];
+		return column ? sortRows(found, column, sort.dir) : found;
 	});
 	let orgBanCount = $derived(
 		data.orgLists?.lists.find((l) => l.kind === 'ban')?.entryCount ?? null
@@ -233,7 +253,33 @@
 	<div class="table-wrap">
 		<table>
 			<thead
-				><tr><th>Player</th><th>Source</th><th>Banned at (UTC)</th><th>By</th><th>Reason</th></tr
+				><tr
+					><SortHeader
+						label="Player"
+						active={sort.key === 'player'}
+						dir={sort.dir}
+						onsort={() => sortBy('player')}
+					/><SortHeader
+						label="Source"
+						active={sort.key === 'source'}
+						dir={sort.dir}
+						onsort={() => sortBy('source')}
+					/><SortHeader
+						label="Banned at (UTC)"
+						active={sort.key === 'bannedAt'}
+						dir={sort.dir}
+						onsort={() => sortBy('bannedAt')}
+					/><SortHeader
+						label="By"
+						active={sort.key === 'bannedBy'}
+						dir={sort.dir}
+						onsort={() => sortBy('bannedBy')}
+					/><SortHeader
+						label="Reason"
+						active={sort.key === 'reason'}
+						dir={sort.dir}
+						onsort={() => sortBy('reason')}
+					/></tr
 				></thead
 			>
 			<tbody>

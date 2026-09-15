@@ -7,6 +7,8 @@
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import { setHealth } from '$lib/health.svelte';
+	import { nextDir, sortRows, type SortDir, type SortValue } from '$lib/sort';
+	import SortHeader from '$lib/components/SortHeader.svelte';
 	import MapPicker from '$lib/components/MapPicker.svelte';
 	import MapArt from '$lib/components/MapArt.svelte';
 	import { sponsor, loadSponsor } from '$lib/sponsor.svelte';
@@ -164,11 +166,30 @@
 		for (const p of players) m.set(p.faction || '', (m.get(p.faction || '') || 0) + 1);
 		return [...m.entries()];
 	});
-	let board = $derived(
-		players
-			.filter((p) => !teamFilter || (p.faction || 'unassigned') === teamFilter)
-			.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
-	);
+	/** what each sortable column reads off a row */
+	const COLUMNS: Record<string, (p: Player) => SortValue> = {
+		name: (p) => p.name,
+		faction: (p) => p.faction,
+		kills: (p) => p.kills,
+		deaths: (p) => p.deaths,
+		cash: (p) => p.cash,
+		ping: (p) => p.ping
+	};
+	/** a name or a faction reads best A to Z, a count from the top */
+	const ASC_FIRST = new Set(['name', 'faction']);
+	let sort = $state<{ key: string; dir: SortDir }>({ key: '', dir: 'desc' });
+	function sortBy(key: string) {
+		const fallback = ASC_FIRST.has(key) ? 'asc' : 'desc';
+		sort = { key, dir: nextDir(sort.key, sort.dir, key, fallback) };
+	}
+	let board = $derived.by(() => {
+		const shown = players.filter((p) => !teamFilter || (p.faction || 'unassigned') === teamFilter);
+		const column = COLUMNS[sort.key];
+		// Until a column is clicked, the best scoreline leads, which is how a scoreboard reads.
+		return column
+			? sortRows(shown, column, sort.dir)
+			: shown.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+	});
 
 	async function sendBroadcast() {
 		const message = broadcast.trim();
@@ -442,9 +463,41 @@
 		<table>
 			<thead
 				><tr
-					><th>Player</th><th>Faction</th><th class="num">K</th><th class="num">D</th><th
-						class="num">Cash</th
-					><th class="num">Ping</th></tr
+					><SortHeader
+						label="Player"
+						active={sort.key === 'name'}
+						dir={sort.dir}
+						onsort={() => sortBy('name')}
+					/><SortHeader
+						label="Faction"
+						active={sort.key === 'faction'}
+						dir={sort.dir}
+						onsort={() => sortBy('faction')}
+					/><SortHeader
+						label="K"
+						class="num"
+						active={sort.key === 'kills'}
+						dir={sort.dir}
+						onsort={() => sortBy('kills')}
+					/><SortHeader
+						label="D"
+						class="num"
+						active={sort.key === 'deaths'}
+						dir={sort.dir}
+						onsort={() => sortBy('deaths')}
+					/><SortHeader
+						label="Cash"
+						class="num"
+						active={sort.key === 'cash'}
+						dir={sort.dir}
+						onsort={() => sortBy('cash')}
+					/><SortHeader
+						label="Ping"
+						class="num"
+						active={sort.key === 'ping'}
+						dir={sort.dir}
+						onsort={() => sortBy('ping')}
+					/></tr
 				></thead
 			>
 			<tbody>

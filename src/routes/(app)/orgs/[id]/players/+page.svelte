@@ -7,8 +7,10 @@
 	import { fmtDuration, fmtNum, fmtTime } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
+	import { nextDir } from '$lib/sort';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
+	import SortHeader from '$lib/components/SortHeader.svelte';
 	import type { SeenPlayer, SeenSort } from '$lib/server/seen';
 	import type { PageProps } from './$types';
 
@@ -56,18 +58,11 @@
 		timer = setTimeout(() => apply(), 300);
 	}
 	function sortBy(sort: SeenSort) {
-		const same = data.filters.sort === sort;
-		const dir = same
-			? data.filters.dir === 'asc'
-				? 'desc'
-				: 'asc'
-			: sort === 'name'
-				? 'asc'
-				: 'desc';
-		apply({ sort, dir });
+		// A name reads best A to Z, a count best from the top.
+		const fallback = sort === 'name' ? 'asc' : 'desc';
+		apply({ sort, dir: nextDir(data.filters.sort, data.filters.dir, sort, fallback) });
 	}
-	const arrow = (sort: SeenSort) =>
-		data.filters.sort === sort ? (data.filters.dir === 'asc' ? ' ↑' : ' ↓') : '';
+	const sorted = (sort: SeenSort) => data.filters.sort === sort;
 
 	async function loadMore() {
 		if (loadingMore || !more) return;
@@ -189,41 +184,52 @@
 		<table>
 			<thead>
 				<tr>
-					<th
-						><button type="button" class="th-sort" onclick={() => sortBy('name')}
-							>Player{arrow('name')}</button
-						></th
-					>
-					<th
-						><button type="button" class="th-sort" onclick={() => sortBy('firstSeen')}
-							>First seen{arrow('firstSeen')}</button
-						></th
-					>
-					<th
-						><button type="button" class="th-sort" onclick={() => sortBy('lastSeen')}
-							>Last seen{arrow('lastSeen')}</button
-						></th
-					>
-					<th class="num"
-						><button type="button" class="th-sort" onclick={() => sortBy('sessions')}
-							>Sessions{arrow('sessions')}</button
-						></th
-					>
-					<th class="num"
-						><button type="button" class="th-sort" onclick={() => sortBy('minutes')}
-							>Playtime{arrow('minutes')}</button
-						></th
-					>
-					<th class="num"
-						><button type="button" class="th-sort" onclick={() => sortBy('kills')}
-							>K{arrow('kills')}</button
-						></th
-					>
-					<th class="num"
-						><button type="button" class="th-sort" onclick={() => sortBy('deaths')}
-							>D{arrow('deaths')}</button
-						></th
-					>
+					<SortHeader
+						label="Player"
+						active={sorted('name')}
+						dir={data.filters.dir}
+						onsort={() => sortBy('name')}
+					/>
+					<SortHeader
+						label="First seen"
+						active={sorted('firstSeen')}
+						dir={data.filters.dir}
+						onsort={() => sortBy('firstSeen')}
+					/>
+					<SortHeader
+						label="Last seen"
+						active={sorted('lastSeen')}
+						dir={data.filters.dir}
+						onsort={() => sortBy('lastSeen')}
+					/>
+					<SortHeader
+						label="Sessions"
+						class="num"
+						active={sorted('sessions')}
+						dir={data.filters.dir}
+						onsort={() => sortBy('sessions')}
+					/>
+					<SortHeader
+						label="Playtime"
+						class="num"
+						active={sorted('minutes')}
+						dir={data.filters.dir}
+						onsort={() => sortBy('minutes')}
+					/>
+					<SortHeader
+						label="K"
+						class="num"
+						active={sorted('kills')}
+						dir={data.filters.dir}
+						onsort={() => sortBy('kills')}
+					/>
+					<SortHeader
+						label="D"
+						class="num"
+						active={sorted('deaths')}
+						dir={data.filters.dir}
+						onsort={() => sortBy('deaths')}
+					/>
 					<th class="num">K/D</th>
 					<th>Servers</th>
 					<th></th>
@@ -340,19 +346,3 @@
 		/>
 	{/key}
 {/if}
-
-<style>
-	.th-sort {
-		cursor: pointer;
-		font: inherit;
-		color: inherit;
-		text-transform: inherit;
-		letter-spacing: inherit;
-		background: none;
-		border: 0;
-		padding: 0;
-	}
-	.th-sort:hover {
-		color: var(--color-accent, inherit);
-	}
-</style>

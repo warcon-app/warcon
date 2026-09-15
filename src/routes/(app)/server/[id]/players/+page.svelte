@@ -6,10 +6,12 @@
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import { STATE_TONE } from '$lib/lists';
+	import { nextDir, sortRows, type SortDir, type SortValue } from '$lib/sort';
 	import FactionChip from '$lib/components/FactionChip.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import SortHeader from '$lib/components/SortHeader.svelte';
 	import type { LiveView, Player, PlayerMark, ServerListsState, Status } from '$lib/types';
 	import type { PageProps, Snapshot } from './$types';
 
@@ -44,9 +46,31 @@
 	let marksAt = 0;
 	let base = $derived(`/server/${encodeURIComponent(data.server.id)}/players`);
 
+	/** what each sortable column reads off a row */
+	const COLUMNS: Record<string, (p: Player) => SortValue> = {
+		name: (p) => p.name,
+		faction: (p) => p.faction,
+		kills: (p) => p.kills,
+		deaths: (p) => p.deaths,
+		cash: (p) => p.cash,
+		ping: (p) => p.ping
+	};
+	/** a name or a faction reads best A to Z, a count from the top */
+	const ASC_FIRST = new Set(['name', 'faction']);
+	/** no column until one is clicked, which leaves the roster in the order the server sends it */
+	let sort = $state<{ key: string; dir: SortDir }>({ key: '', dir: 'desc' });
+	function sortBy(key: string) {
+		const fallback = ASC_FIRST.has(key) ? 'asc' : 'desc';
+		sort = { key, dir: nextDir(sort.key, sort.dir, key, fallback) };
+	}
+
 	let rows = $derived.by(() => {
 		const q = search.trim().toLowerCase();
-		return all.filter((p) => !q || p.name.toLowerCase().includes(q) || p.steamId.includes(q));
+		const found = all.filter(
+			(p) => !q || p.name.toLowerCase().includes(q) || p.steamId.includes(q)
+		);
+		const column = COLUMNS[sort.key];
+		return column ? sortRows(found, column, sort.dir) : found;
 	});
 	/** the dialog's player as the roster sees them now; null once they have left */
 	let live = $derived.by(() => {
@@ -187,11 +211,42 @@
 		<table>
 			<thead
 				><tr
-					><th class="max-md:sticky max-md:left-0 max-md:z-10">Player</th><th>Flags</th><th
-						>Reserved</th
-					><th>Faction</th><th class="num">K</th><th class="num">D</th><th class="num">Cash</th><th
-						class="num">Ping</th
-					>{#if anyAction}<th class="text-right">Actions</th>{/if}</tr
+					><SortHeader
+						label="Player"
+						class="max-md:sticky max-md:left-0 max-md:z-10"
+						active={sort.key === 'name'}
+						dir={sort.dir}
+						onsort={() => sortBy('name')}
+					/><th>Flags</th><th>Reserved</th><SortHeader
+						label="Faction"
+						active={sort.key === 'faction'}
+						dir={sort.dir}
+						onsort={() => sortBy('faction')}
+					/><SortHeader
+						label="K"
+						class="num"
+						active={sort.key === 'kills'}
+						dir={sort.dir}
+						onsort={() => sortBy('kills')}
+					/><SortHeader
+						label="D"
+						class="num"
+						active={sort.key === 'deaths'}
+						dir={sort.dir}
+						onsort={() => sortBy('deaths')}
+					/><SortHeader
+						label="Cash"
+						class="num"
+						active={sort.key === 'cash'}
+						dir={sort.dir}
+						onsort={() => sortBy('cash')}
+					/><SortHeader
+						label="Ping"
+						class="num"
+						active={sort.key === 'ping'}
+						dir={sort.dir}
+						onsort={() => sortBy('ping')}
+					/>{#if anyAction}<th class="text-right">Actions</th>{/if}</tr
 				></thead
 			>
 			<tbody>

@@ -7,8 +7,10 @@
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import { describeSync, STATE_TEXT, STATE_TONE } from '$lib/lists';
+	import { nextDir, sortRows, type SortDir, type SortValue } from '$lib/sort';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
+	import SortHeader from '$lib/components/SortHeader.svelte';
 	import ImportCandidates from './ImportCandidates.svelte';
 	import type { ListEntryView, ListSyncSummary, OrgListsView } from '$lib/types';
 
@@ -28,9 +30,26 @@
 	let banning = $state(false);
 	let owner = $derived(lists.role === 'owner');
 
+	/** what each sortable column reads off a row; an unknown field is null, so it sorts last */
+	const COLUMNS: Record<string, (e: ListEntryView) => SortValue> = {
+		player: (e) => e.name || e.steamId,
+		reason: (e) => e.reason || null,
+		addedBy: (e) => e.addedByName || null,
+		addedAt: (e) => e.addedAt,
+		// A ban that never expires has nothing to show here, so it sorts to the end either way.
+		expiresAt: (e) => e.expiresAt
+	};
+	/** text reads best A to Z, the newest ban first, and the soonest expiry first */
+	const ASC_FIRST = new Set(['player', 'reason', 'addedBy', 'expiresAt']);
+	let sort = $state<{ key: string; dir: SortDir }>({ key: '', dir: 'desc' });
+	function sortBy(key: string) {
+		const fallback = ASC_FIRST.has(key) ? 'asc' : 'desc';
+		sort = { key, dir: nextDir(sort.key, sort.dir, key, fallback) };
+	}
+
 	let rows = $derived.by(() => {
 		const q = search.trim().toLowerCase();
-		return entries.filter(
+		const found = entries.filter(
 			(e) =>
 				!q ||
 				e.steamId.includes(q) ||
@@ -38,6 +57,8 @@
 				e.reason.toLowerCase().includes(q) ||
 				e.addedByName.toLowerCase().includes(q)
 		);
+		const column = COLUMNS[sort.key];
+		return column ? sortRows(found, column, sort.dir) : found;
 	});
 	let dossierBase = $derived(
 		lists.servers.length ? `/server/${encodeURIComponent(lists.servers[0].id)}/players` : null
@@ -141,11 +162,36 @@
 	<table>
 		<thead>
 			<tr>
-				<th>Player</th>
-				<th>Reason</th>
-				<th>By</th>
-				<th>Added</th>
-				<th>Expires</th>
+				<SortHeader
+					label="Player"
+					active={sort.key === 'player'}
+					dir={sort.dir}
+					onsort={() => sortBy('player')}
+				/>
+				<SortHeader
+					label="Reason"
+					active={sort.key === 'reason'}
+					dir={sort.dir}
+					onsort={() => sortBy('reason')}
+				/>
+				<SortHeader
+					label="By"
+					active={sort.key === 'addedBy'}
+					dir={sort.dir}
+					onsort={() => sortBy('addedBy')}
+				/>
+				<SortHeader
+					label="Added"
+					active={sort.key === 'addedAt'}
+					dir={sort.dir}
+					onsort={() => sortBy('addedAt')}
+				/>
+				<SortHeader
+					label="Expires"
+					active={sort.key === 'expiresAt'}
+					dir={sort.dir}
+					onsort={() => sortBy('expiresAt')}
+				/>
 				<th>Servers</th>
 				<th></th>
 			</tr>
