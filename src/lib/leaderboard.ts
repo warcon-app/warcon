@@ -174,17 +174,22 @@ export function topScore(finalScores: unknown): number {
 	return top;
 }
 
+/** The game's own value for a player it has not put on a team yet -- never a competitor, so
+ *  never a winner or a loss. Same rule the public live page already applies (see its
+ *  "Unassigned" row) to keep a mid-pick player off the scoreboard. */
+export const HOLDING_TEAM = 'White';
+
 /**
  * A player's result in a match: their faction against the winner. With no winner, a match
- * somebody scored in is a draw; one nobody scored in, or a player with no faction, has no
- * result. (The board's SQL aggregates mirror this rule.)
+ * somebody scored in is a draw; one nobody scored in, a player still on the holding team, or a
+ * player with no faction, has no result. (The board's SQL aggregates mirror this rule.)
  */
 export function matchResult(
 	winner: string | null,
 	finalScores: unknown,
 	faction: string | null
 ): MatchResult {
-	if (!faction) return null;
+	if (!faction || faction === HOLDING_TEAM) return null;
 	if (winner) return winner === faction ? 'win' : 'loss';
 	return topScore(finalScores) > 0 ? 'draw' : null;
 }

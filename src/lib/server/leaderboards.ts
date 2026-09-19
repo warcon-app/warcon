@@ -102,8 +102,9 @@ const matchPairs = (ids: string[], from: Date, steamId: string | null) => sql`
 		SELECT DISTINCT ON (b.steam_id, m.id)
 		       b.steam_id, m.id AS match_id, m.server_id, m.started_at, m.ended_at, m.map, b.faction,
 		       m.winner, m.final_scores,
-		       -- the rule of matchResult() in $lib/leaderboard, for the aggregates
-		       CASE WHEN b.faction IS NULL THEN NULL
+		       -- the rule of matchResult() in $lib/leaderboard, for the aggregates: the game's
+		       -- holding team ("White", a player not yet put on a side) is never a competitor.
+		       CASE WHEN b.faction IS NULL OR b.faction = 'White' THEN NULL
 		            WHEN m.winner IS NOT NULL THEN CASE WHEN m.winner = b.faction THEN 'win' ELSE 'loss' END
 		            WHEN jsonb_typeof(m.final_scores) = 'array'
 		                 AND (SELECT MAX((e->>'score')::numeric) FROM jsonb_array_elements(m.final_scores) e) > 0 THEN 'draw'
