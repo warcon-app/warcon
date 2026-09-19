@@ -5,21 +5,23 @@
 import { ApiError } from './http';
 import { rateLimited } from './metrics';
 
-const windows = new Map<string, number[]>();
+// Each key keeps the window it was limited with: the sweep below runs on whichever call comes
+// due, and judging every key by that caller's window would drop a longer-window key early.
+const windows = new Map<string, { stamps: number[]; windowMs: number }>();
 let sweepAt = 0;
 
 /** Throws 429 once `key` has been seen more than `limit` times inside the last `windowMs`. */
 export function assertRate(key: string, limit: number, windowMs: number): void {
 	const now = Date.now();
 	if (sweepAt <= now) {
-		for (const [k, stamps] of windows)
-			if (stamps[stamps.length - 1] <= now - windowMs) windows.delete(k);
+		for (const [k, w] of windows)
+			if (w.stamps[w.stamps.length - 1] <= now - w.windowMs) windows.delete(k);
 		sweepAt = now + windowMs;
 	}
-	const stamps = (windows.get(key) ?? []).filter((t) => t > now - windowMs);
+	const stamps = (windows.get(key)?.stamps ?? []).filter((t) => t > now - windowMs);
 	if (stamps.length >= limit) {
 		const retryIn = Math.ceil((stamps[0] + windowMs - now) / 1000);
-		windows.set(key, stamps);
+		windows.set(key, { stamps, windowMs });
 		rateLimited.inc({ scope: key.slice(0, key.indexOf(':') > 0 ? key.indexOf(':') : undefined) });
 		throw new ApiError(
 			429,
@@ -28,7 +30,7 @@ export function assertRate(key: string, limit: number, windowMs: number): void {
 		);
 	}
 	stamps.push(now);
-	windows.set(key, stamps);
+	windows.set(key, { stamps, windowMs });
 }
 
 /** Test-only: forget every window. */
