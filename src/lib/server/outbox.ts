@@ -8,7 +8,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { DbOrTx } from './db';
 import { outbox, triggers, type OutboxRow } from './db/schema';
-import { ACTIONS } from './actions';
+import { actionDef, ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { ApiError } from './http';
 import { LaneFull, LaneTimeout, PRIORITY, withServer } from './dispatcher';
@@ -284,7 +284,7 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 		await ACTIONS.changeMap.run(client, params);
 		return rotationOn ? { message: 'Map changed directly.' } : ACTIONS.endMatch.run(client, {});
 	}
-	const def = ACTIONS[row.action];
+	const def = actionDef(row.action);
 	if (!def) throw new ApiError(400, `Unknown action '${row.action}'.`);
 	return def.run(client, params);
 }

@@ -261,7 +261,7 @@ export async function saveSettings(
 	const problems: string[] = [];
 	const updates: Partial<Settings> = {};
 	for (const [k, raw] of Object.entries(patch)) {
-		if (!(k in SETTINGS)) {
+		if (!Object.hasOwn(SETTINGS, k)) {
 			problems.push(`Unknown setting '${k}'.`);
 			continue;
 		}

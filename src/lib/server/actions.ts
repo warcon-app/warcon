@@ -848,3 +848,10 @@ export const ACTIONS: Record<string, ActionDef> = {
 const RAW_HEADERS = ['content-type', 'etag', 'retry-after'];
 
 export const ACTION_NAMES = Object.keys(ACTIONS);
+
+/**
+ * The action called `name`, or null. The name comes from the request path, so it is looked up as
+ * an own property: `constructor`, `toString` and the rest of Object.prototype are not actions.
+ */
+export const actionDef = (name: string): ActionDef | null =>
+	Object.hasOwn(ACTIONS, name) ? ACTIONS[name] : null;
