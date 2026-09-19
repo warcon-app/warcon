@@ -474,6 +474,22 @@ export const matches = pgTable(
 );
 
 /**
+ * A player's faction as it stood the moment a match closed, captured once by reconcileMatch and
+ * never touched again. player_sessions.faction is the session's *current* value, overwritten on
+ * every poll including with the holding team ("White") as soon as the next pick starts, so it
+ * cannot answer "what was this player's faction during a match that has since ended." This can.
+ */
+export const matchPlayers = pgTable(
+	'match_players',
+	{
+		matchId: bigint('match_id', { mode: 'number' }).notNull(),
+		steamId: text('steam_id').notNull(),
+		faction: text('faction').notNull()
+	},
+	(t) => [primaryKey({ columns: [t.matchId, t.steamId] })]
+);
+
+/**
  * One row per kill the game's feed delivered (`[WDServerFeed]`, see docs/wardogs-api.md), with
  * what Warcon knew at receipt: the open match and both players' factions. History: never pruned;
  * a TimescaleDB hypertable with compression where the extension exists (migration 0019).

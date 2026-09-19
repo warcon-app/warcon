@@ -100,16 +100,22 @@ const matchPairs = (ids: string[], from: Date, steamId: string | null) => sql`
 		                      ORDER BY m.started_at LIMIT 1) n ON true),
 	pairs AS (
 		SELECT DISTINCT ON (b.steam_id, m.id)
-		       b.steam_id, m.id AS match_id, m.server_id, m.started_at, m.ended_at, m.map, b.faction,
+		       b.steam_id, m.id AS match_id, m.server_id, m.started_at, m.ended_at, m.map,
+		       -- match_players is this match's own faction, frozen the moment it closed; fall
+		       -- back to the session's current value for a match still in progress (nothing
+		       -- frozen yet) or one that closed before this table existed.
+		       COALESCE(mp.faction, b.faction) AS faction,
 		       m.winner, m.final_scores,
-		       -- the rule of matchResult() in $lib/leaderboard, for the aggregates
-		       CASE WHEN b.faction IS NULL THEN NULL
-		            WHEN m.winner IS NOT NULL THEN CASE WHEN m.winner = b.faction THEN 'win' ELSE 'loss' END
+		       -- the rule of matchResult() in $lib/leaderboard, for the aggregates: the game's
+		       -- holding team ("White", a player not yet put on a side) is never a competitor.
+		       CASE WHEN COALESCE(mp.faction, b.faction) IS NULL OR COALESCE(mp.faction, b.faction) = 'White' THEN NULL
+		            WHEN m.winner IS NOT NULL THEN CASE WHEN m.winner = COALESCE(mp.faction, b.faction) THEN 'win' ELSE 'loss' END
 		            WHEN jsonb_typeof(m.final_scores) = 'array'
 		                 AND (SELECT MAX((e->>'score')::numeric) FROM jsonb_array_elements(m.final_scores) e) > 0 THEN 'draw'
 		            ELSE NULL END AS result
 		  FROM bounds b
 		  JOIN matches m ON m.server_id = b.server_id AND m.id BETWEEN b.first_id AND b.last_id
+		  LEFT JOIN match_players mp ON mp.match_id = m.id AND mp.steam_id = b.steam_id
 		 WHERE b.first_id <= b.last_id AND m.started_at >= ${from}
 		 ORDER BY b.steam_id, m.id, b.last_seen DESC)`;
 

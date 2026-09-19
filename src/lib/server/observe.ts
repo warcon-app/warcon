@@ -13,7 +13,7 @@ import type { OrgRow, ServerRow } from './access';
 import { ACTIONS, readConfig } from './actions';
 import { reservedSlotsHeld } from '../reserved-doc';
 import { GameError, WardogsClient } from './rcon';
-import { matches, samples, serverLive } from './db/schema';
+import { matchPlayers, matches, samples, serverLive } from './db/schema';
 import type { DbOrTx } from './db';
 import { getProfiles, steamEnabled } from './steam';
 import {
@@ -784,6 +784,14 @@ async function reconcileMatch(
 			.update(matches)
 			.set({ endedAt: ts, finalScores: end.scores, winner: end.winner })
 			.where(eq(matches.id, current.id));
+		// Freeze each present player's faction now, while it is still the one they played this
+		// match with -- player_sessions.faction is overwritten on the very next poll, including
+		// with the holding team ("White") once the next pick starts, and by then it is too late
+		// to know what this match's result was for them.
+		const rows = [...m.presence.open.values()]
+			.filter((s) => s.faction)
+			.map((s) => ({ matchId: current.id, steamId: s.steamId, faction: s.faction! }));
+		if (rows.length) await db.insert(matchPlayers).values(rows).onConflictDoNothing();
 	}
 	if (!current || end) {
 		const secs = look.matchSeconds;

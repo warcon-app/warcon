@@ -45,6 +45,10 @@ describe('matchResult', () => {
 		expect(matchResult('Valkyra', scores, null)).toBeNull();
 		expect(matchResult(null, 'garbage', 'A')).toBeNull();
 	});
+	test('a player still on the holding team ("White") has no result, win or draw', () => {
+		expect(matchResult('Valkyra', scores, 'White')).toBeNull();
+		expect(matchResult(null, [{ name: 'A', score: 50 }], 'White')).toBeNull();
+	});
 });
 
 describe('streak', () => {

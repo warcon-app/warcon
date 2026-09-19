@@ -190,6 +190,13 @@
       "when": 1789765933474,
       "tag": "0026_unreachable_text",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1789805578756,
+      "tag": "0027_match_players",
+      "breakpoints": true
     }
   ]
 }
