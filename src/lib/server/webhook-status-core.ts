@@ -264,9 +264,9 @@ function buildBody(opts: StatusOptions, server: StatusServer, live: LiveView | n
 	// The join code (GET /v1/server-id, CL-501228+) as a code block: Discord gives those a copy
 	// button on hover (desktop) and copy on long-press (mobile), the nearest thing to click-to-copy.
 	const joinCode: EmbedField[] = live?.gameServerId
-		? [{ name: 'Join code', value: '```\n' + live.gameServerId + '\n```' }]
+		? [{ name: 'ID serwera', value: '```\n' + live.gameServerId + '\n```' }]
 		: [];
-	if (!live || !live.observedAt) return { ...base, description: '⚪ Waiting for the first look.' };
+	if (!live || !live.observedAt) return { ...base, description: '⚪ Czekam na pierwsze spojrzenie.' };
 	const s = live.status;
 	const art = (variant: 'wide' | 'square') => {
 		if (!https || !s) return null;
@@ -334,11 +334,11 @@ function buildBody(opts: StatusOptions, server: StatusServer, live: LiveView | n
 	// restart note flips once, when the threshold passes.
 	const restart = restartWindow(live.startedAt, RESTART_AFTER_HOURS, opts.now);
 	const upLine = restart
-		? `Up since ${relative(live.startedAt!)}${restart.due ? ' · 🔁 Restarts after this round' : ''}\n`
+		? `Wstał ${relative(live.startedAt!)}${restart.due ? ' · 🔁 Ponowne uruchomienie po tej rundzie' : ''}\n`
 		: '';
 	const stamp = (prefix = '') => ({
 		name: '\u200b',
-		value: `${upLine}${prefix}Updated ${relative(observedAt)}`
+		value: `${upLine}${prefix}Zaktualizowano ${relative(observedAt)}`
 	});
 	const players = live.players;
 	const thumb = art('square');
