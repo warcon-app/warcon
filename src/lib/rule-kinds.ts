@@ -35,7 +35,7 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 		kind: 'restart_notice',
 		group: 'Messages',
 		label: 'Restart notice',
-		blurb: 'Warn players before the 24-hour restart and tell them when it lands.'
+		blurb: 'Warn players before the scheduled restart and tell them when it lands.'
 	},
 	{
 		kind: 'match_broadcast',

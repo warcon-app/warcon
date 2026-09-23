@@ -3,6 +3,7 @@ import type { StatusStyle } from './status-styles';
 import type { OrgRole } from '$lib/server/access';
 import type { BuiltinRole, Capability } from '$lib/capabilities';
 import type { BanReason } from '$lib/ban-reasons';
+import type { RestartSchedule } from '$lib/uptime';
 
 export type { OrgRole, Capability, BuiltinRole };
 
@@ -65,6 +66,8 @@ export interface ServerInfo {
 	publicLeaderboards: boolean;
 	/** the public status page also carries the last kills */
 	publicKills: boolean;
+	/** when the game restarts it (see $lib/uptime); null runs on the game's default */
+	restartSchedule: RestartSchedule | null;
 	/** what the site owner allows this server's organisation */
 	allowPublicStatus: boolean;
 	allowPublicLeaderboards: boolean;

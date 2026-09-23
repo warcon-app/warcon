@@ -178,7 +178,13 @@ import {
 	type BountyReplayEvent,
 	type OpenBounty
 } from './bounty';
-import { fmtUptime, RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
+import {
+	describeRestartSchedule,
+	fmtUptime,
+	RESTART_AFTER_HOURS,
+	restartScheduleOf,
+	restartWindow
+} from '$lib/uptime';
 import {
 	ROTATION_SHUFFLE,
 	rotationShuffleState,
@@ -1401,7 +1407,8 @@ function evalRestartNotice(
 	const hit = restartNoticeStage(cfg, row.state as RestartNoticeState | null, {
 		startedAt: ctx.startedAt,
 		playerCount: ctx.status.playerCount,
-		now: ctx.ts.getTime()
+		now: ctx.ts.getTime(),
+		schedule: restartScheduleOf(ctx.server.restartSchedule)
 	});
 	if (!hit) return;
 	const message = renderTemplate(
@@ -2694,8 +2701,9 @@ export async function dryRun(
 			.from(serverLive)
 			.where(eq(serverLive.serverId, server.id))
 			.limit(1);
+		const schedule = restartScheduleOf(server.restartSchedule);
 		const w = live?.startedAt
-			? restartWindow(live.startedAt.toISOString(), RESTART_AFTER_HOURS, to.getTime())
+			? restartWindow(live.startedAt.toISOString(), schedule, to.getTime())
 			: null;
 		if (!w || !live?.startedAt) {
 			result.notes.push(
@@ -2703,7 +2711,13 @@ export async function dryRun(
 			);
 			return result;
 		}
-		const dueAt = new Date(live.startedAt.getTime() + RESTART_AFTER_HOURS * 3600_000);
+		if (w.dueAt === null) {
+			result.notes.push(
+				'This server has no scheduled restart (Settings tab), so the rule never sends anything.'
+			);
+			return result;
+		}
+		const dueAt = new Date(w.dueAt);
 		const v = dryRunVars(server.name, null, {
 			players: live.players,
 			uptime: fmtUptime(w.upMs)
@@ -2720,7 +2734,7 @@ export async function dryRun(
 			`${w.due ? 'already ' : ''}broadcast: ${renderTemplate(c.message, { ...v, minutes: 0 }, MAX_CHAT)}`
 		);
 		result.notes.push(
-			`Up ${fmtUptime(w.upMs)}; the restart window ${w.due ? 'is open: the game restarts when this round ends' : `opens in ${fmtUptime(w.untilDueMs ?? 0)}`}. Times shown are the coming cycle, not a replay; each stage goes once per game start${c.repeatMinutes ? `, the main message again every ${c.repeatMinutes} min while the window stays open` : ''}, and only with at least ${c.minPlayers} on.`
+			`Restart schedule: ${describeRestartSchedule(schedule)} (Settings tab). Up ${fmtUptime(w.upMs)}; the restart window ${w.due ? 'is open: the game restarts when this round ends' : `opens in ${fmtUptime(w.untilDueMs ?? 0)}`}. Times shown are the coming cycle, not a replay; each stage goes once per game start${c.repeatMinutes ? `, the main message again every ${c.repeatMinutes} min while the window stays open` : ''}, and only with at least ${c.minPlayers} on.`
 		);
 		return result;
 	}

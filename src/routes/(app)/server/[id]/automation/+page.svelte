@@ -26,6 +26,7 @@
 	import { watchLive } from '$lib/live';
 	import { RULE_KINDS } from '$lib/rule-kinds';
 	import RulePicker from '$lib/components/RulePicker.svelte';
+	import { restartScheduleOf } from '$lib/uptime';
 	import type {
 		DryRunResult,
 		MapSelection,
@@ -38,6 +39,7 @@
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let admin = $derived(can(data.server.caps, 'automation.manage'));
+	let restartSchedule = $derived(restartScheduleOf(data.server.restartSchedule));
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
 
 	/** A risk_kick rule's score threshold, 0 when off; rules saved with a level read as 20 or 50. */
@@ -1678,7 +1680,16 @@
 					</fieldset>
 					{@render placeholders('restart_notice', [f.leadMessage, f.message])}
 					<p class="note">
-						The game restarts 24 hours after it started, once the round then in progress ends.
+						{#if restartSchedule.kind === 'uptime'}
+							The game restarts this server {restartSchedule.hours} hours after it started, once the round
+							then in progress ends.
+						{:else if restartSchedule.kind === 'daily'}
+							The host restarts this server daily at {restartSchedule.time} ({restartSchedule.timeZone}),
+							once the round then in progress ends.
+						{:else}
+							This server has no scheduled restart, so this rule sends nothing.
+						{/if}
+						The schedule is set on the Settings tab.
 					</p>
 				{:else if f.kind === 'match_broadcast'}
 					<fieldset class="space-y-2">

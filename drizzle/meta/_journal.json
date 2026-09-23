@@ -337,6 +337,13 @@
       "when": 1791569710555,
       "tag": "0047_match_players_from_feed",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1791585970348,
+      "tag": "0048_restart_schedule",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "servers" ADD COLUMN "restart_schedule" jsonb;
