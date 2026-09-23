@@ -13,6 +13,7 @@ import { liveView } from './live';
 import { deleteDiscord, editDiscord, postDiscord, type PostResult } from './webhook-delivery';
 import { cardLinks, statusMessage, type StatusServer } from './webhook-status-core';
 import { effectiveFeatures, type FeatureSet } from '$lib/features';
+import { readRestartSchedule } from '$lib/uptime';
 
 export const STATUS_TICK_MS = 20_000;
 /** Re-edit an unchanged message this often so its embed timestamps do not drift into the past. */
@@ -107,7 +108,12 @@ export async function refreshStatusMessages(env: Env, now = Date.now()): Promise
 	const byOrg = new Map<string, CardServer[]>();
 	for (const { server, org } of rows) {
 		const list = byOrg.get(server.orgId) ?? [];
-		list.push({ id: server.id, name: server.name, features: effectiveFeatures(org, server) });
+		list.push({
+			id: server.id,
+			name: server.name,
+			restartSchedule: readRestartSchedule(server.restartSchedule),
+			features: effectiveFeatures(org, server)
+		});
 		byOrg.set(server.orgId, list);
 	}
 	// Different webhooks are different rate-limit buckets, so they need not wait on each other;

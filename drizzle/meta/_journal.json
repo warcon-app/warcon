@@ -239,6 +239,13 @@
       "when": 1790106668581,
       "tag": "0033_org_list_capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1790171397474,
+      "tag": "0034_restart_schedule",
+      "breakpoints": true
     }
   ]
 }

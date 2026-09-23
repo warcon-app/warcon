@@ -16,6 +16,7 @@ import { rolesOf } from './roles';
 import { assertCanAddServer } from './orgs';
 import { ensureServerLists } from './lists';
 import { allowed, FEATURE_LABELS, NOT_ALLOWED, type PublicFeature } from '$lib/features';
+import { readRestartSchedule } from '$lib/uptime';
 
 export interface TargetFields {
 	name?: string;
@@ -238,6 +239,17 @@ export async function updateServer(
 		if (!org) throw new ApiError(404, 'Organisation not found.', 'not_found');
 		Object.assign(set, publicSwitches(org, body));
 	}
+	// null goes back to the game's default; anything else must be a whole schedule
+	if (body.restartSchedule !== undefined) {
+		const schedule =
+			body.restartSchedule === null ? null : readRestartSchedule(body.restartSchedule);
+		if (body.restartSchedule !== null && !schedule)
+			throw new ApiError(
+				400,
+				'The restart schedule is not valid: hours from 1 to 168, or a time as HH:MM with a time zone such as America/Chicago.'
+			);
+		set.restartSchedule = schedule;
+	}
 	if (typeof body.password === 'string' && body.password)
 		set.passwordEnc = encryptSecret(env, body.password);
 	if (!Object.keys(set).length) throw new ApiError(400, 'Nothing to update.');
@@ -255,6 +267,7 @@ export async function updateServer(
 			publicStatus: set.publicStatus,
 			publicLeaderboards: set.publicLeaderboards,
 			publicKills: set.publicKills,
+			restartSchedule: set.restartSchedule,
 			credentialRotated: !!body.password
 		}
 	});

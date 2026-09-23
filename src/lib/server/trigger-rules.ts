@@ -5,7 +5,7 @@ import { ApiError, int, str } from './http';
 import { accountAgeDays, assessRisk, type RiskLevel, type RiskPerformance } from './risk';
 import { validateNameFilter, type NameFilterConfig } from './name-filter';
 import { validateKillRate, type KillRateConfig } from './kill-rate';
-import { RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
+import { MAX_RESTART_LEAD_MINUTES, restartWindow, type RestartSchedule } from '$lib/uptime';
 import type { SteamProfileRow } from './db/schema';
 import type { TriggerKind } from '$lib/types';
 
@@ -119,10 +119,11 @@ export function pingKickStep(
 	return { state: next, kicks };
 }
 /**
- * Tells players about the game's own restart: WARDOGS restarts a server once it has been up for
- * 24 hours, at the end of the round then in progress. Two broadcasts per uptime cycle: a
- * heads-up `leadMinutes` before the window opens (0 = none) and `message` once it has, repeated
- * every `repeatMinutes` while the round drags on (0 = once).
+ * Tells players about the server's scheduled restart (its restart schedule, $lib/uptime: after so
+ * many hours up, or daily at a set time), which happens at the end of the round then in
+ * progress. Two broadcasts per game start: a heads-up `leadMinutes` before the window opens
+ * (0 = none) and `message` once it has, repeated every `repeatMinutes` while the round drags on
+ * (0 = once).
  */
 export interface RestartNoticeConfig {
 	message: string;
@@ -283,7 +284,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 		case 'restart_notice': {
 			const message = str(c.message, MAX_MESSAGE);
 			if (!message) throw new ApiError(400, 'The restart message is empty.');
-			const leadMinutes = int(c.leadMinutes, 0, 0, RESTART_AFTER_HOURS * 60 - 1);
+			const leadMinutes = int(c.leadMinutes, 0, 0, MAX_RESTART_LEAD_MINUTES);
 			const leadMessage = str(c.leadMessage, MAX_MESSAGE);
 			if (leadMinutes && !leadMessage)
 				throw new ApiError(400, 'Add the heads-up message, or set the heads-up to 0 minutes.');
@@ -528,10 +529,16 @@ export interface RestartNoticeStage {
 export function restartNoticeStage(
 	cfg: Pick<RestartNoticeConfig, 'leadMinutes' | 'repeatMinutes' | 'minPlayers'>,
 	prev: RestartNoticeState | null | undefined,
-	input: { startedAt: number; playerCount: number; now: number }
+	input: {
+		startedAt: number;
+		playerCount: number;
+		now: number;
+		/** the server's restart schedule; null or undefined is the game's default */
+		schedule?: RestartSchedule | null;
+	}
 ): RestartNoticeStage | null {
 	if (!input.startedAt || input.playerCount < cfg.minPlayers) return null;
-	const w = restartWindow(new Date(input.startedAt).toISOString(), RESTART_AFTER_HOURS, input.now);
+	const w = restartWindow(new Date(input.startedAt).toISOString(), input.schedule, input.now);
 	if (!w) return null;
 	const state: RestartNoticeState =
 		prev && prev.startedAt === input.startedAt ? { ...prev } : { startedAt: input.startedAt };

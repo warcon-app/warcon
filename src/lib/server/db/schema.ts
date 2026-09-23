@@ -333,6 +333,11 @@ export const servers = pgTable('servers', {
 	publicLeaderboards: boolean('public_leaderboards').notNull().default(false),
 	/** the public status page also shows the last kills (needs the feed and the status page on) */
 	publicKills: boolean('public_kills').notNull().default(false),
+	/**
+	 * When the game restarts this server, as $lib/uptime's RestartSchedule: after so many hours up,
+	 * daily at a time in a zone (the host's own restart), or none. null = the game's default.
+	 */
+	restartSchedule: jsonb('restart_schedule'),
 	createdBy: text('created_by'),
 	createdAt: ts('created_at').notNull().defaultNow(),
 	updatedAt: ts('updated_at').notNull().defaultNow()

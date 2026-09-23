@@ -653,6 +653,20 @@ describe('restartNoticeStage', () => {
 		expect(restartNoticeStage({ ...cfg, leadMinutes: 0 }, null, at(23.9))).toBeNull();
 		expect(restartNoticeStage({ ...cfg, leadMinutes: 0 }, null, at(24))!.stage).toBe('due');
 	});
+	test('a daily schedule opens the window at its time of day, not 24 hours up', () => {
+		// the start is 19:00 the evening before in Chicago, so 07:00 there comes twelve hours later
+		const daily = { kind: 'daily', time: '07:00', timeZone: 'America/Chicago' } as const;
+		const on = (hours: number) => ({ ...at(hours), schedule: daily });
+		const lead = restartNoticeStage(cfg, null, on(11.6))!;
+		expect(lead.stage).toBe('lead');
+		expect(lead.minutes).toBe(24);
+		expect(restartNoticeStage(cfg, lead.state, on(12.1))!.stage).toBe('due');
+		// the game's default would still be twelve hours off
+		expect(restartNoticeStage(cfg, null, at(12.1))).toBeNull();
+	});
+	test('no scheduled restart, no notice', () => {
+		expect(restartNoticeStage(cfg, null, { ...at(200), schedule: { kind: 'none' } })).toBeNull();
+	});
 });
 
 describe('team_kill', () => {

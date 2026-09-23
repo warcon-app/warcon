@@ -6,7 +6,7 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
 	import { toast } from '$lib/toast.svelte';
-	import { fmtUptime, restartWindow, RESTART_AFTER_HOURS, RESTART_SOON_MS } from '$lib/uptime';
+	import { fmtUptime, restartWindow, RESTART_SOON_MS } from '$lib/uptime';
 	import type { LayoutProps } from './$types';
 
 	let { data, children }: LayoutProps = $props();
@@ -70,7 +70,7 @@
 		return () => clearInterval(t);
 	});
 	let restart = $derived(
-		live === false ? null : restartWindow(ident.startedAt, RESTART_AFTER_HOURS, now)
+		live === false ? null : restartWindow(ident.startedAt, data.server.restartSchedule, now)
 	);
 	let slowed = $derived(!!throttled[data.server.id]);
 

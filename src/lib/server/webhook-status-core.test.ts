@@ -365,6 +365,20 @@ describe('uptime', () => {
 			`Up since <t:${ts('2026-09-12T11:30:00Z')}:R> · 🔁 Restarts after this round`
 		);
 	});
+	test('a daily restart schedule says so from its time of day', () => {
+		// 06:30 in Chicago is 11:30 UTC, half an hour before opts.now, 23 hours into this start
+		const daily = {
+			...server,
+			restartSchedule: { kind: 'daily', time: '06:30', timeZone: 'America/Chicago' } as const
+		};
+		const started = '2026-09-12T13:00:00Z';
+		expect(
+			buildStatusEmbed(opts, server, live({ startedAt: started })).fields?.at(-1)?.value
+		).not.toContain('Restarts');
+		expect(
+			buildStatusEmbed(opts, daily, live({ startedAt: started })).fields?.at(-1)?.value
+		).toContain('🔁 Restarts after this round');
+	});
 	test('the start time and the restart note are in the change key; the ticking uptime is not', () => {
 		const k = (now: number, at: string | null) =>
 			statusMessage({ ...opts, now }, server, live({ startedAt: at })).key;

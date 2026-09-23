@@ -13,6 +13,7 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
 	import { watchLive } from '$lib/live';
+	import { restartScheduleOf } from '$lib/uptime';
 	import type {
 		DryRunResult,
 		MapSelection,
@@ -25,6 +26,7 @@
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let admin = $derived(can(data.server.caps, 'automation.manage'));
+	let restartSchedule = $derived(restartScheduleOf(data.server.restartSchedule));
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
 
 	/** The last actions the rules took and what became of them; refreshed as deliveries happen. */
@@ -125,7 +127,7 @@
 			kind: 'restart_notice',
 			group: 'Messages',
 			label: 'Restart notice',
-			blurb: 'Warn players before the 24-hour restart and tell them when it lands.'
+			blurb: 'Warn players before the scheduled restart and tell them when it lands.'
 		},
 		{
 			kind: 'match_broadcast',
@@ -1247,7 +1249,16 @@
 					</fieldset>
 					{@render placeholders(['minutes', 'uptime', 'server', 'map', 'players', 'max'])}
 					<p class="note">
-						The game restarts 24 hours after it started, once the round then in progress ends.
+						{#if restartSchedule.kind === 'uptime'}
+							The game restarts this server {restartSchedule.hours} hours after it started, once the round
+							then in progress ends.
+						{:else if restartSchedule.kind === 'daily'}
+							The host restarts this server daily at {restartSchedule.time} ({restartSchedule.timeZone}),
+							once the round then in progress ends.
+						{:else}
+							This server has no scheduled restart, so this rule sends nothing.
+						{/if}
+						The schedule is set on the Settings tab.
 					</p>
 				{:else if f.kind === 'match_broadcast'}
 					<fieldset class="space-y-2">
