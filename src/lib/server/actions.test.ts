@@ -3,7 +3,7 @@ import { test, expect, mock } from 'bun:test';
 // actions.ts reaches env.ts, which imports SvelteKit's env alias; outside the app that alias does
 // not resolve, so it is stubbed before the registry is loaded.
 mock.module('$env/dynamic/private', () => ({ env: process.env }));
-const { ACTIONS } = await import('./actions');
+const { ACTIONS, actionDef } = await import('./actions');
 const { GameError } = await import('./rcon');
 
 // The official console moves the faction and then kills the player so they respawn on the new
@@ -633,4 +633,11 @@ test('raw passes on the documented headers only: a proxy in front of the listene
 	};
 	const res: any = await ACTIONS.raw.run(client, { method: 'GET', path: '/v1/status' });
 	expect(res.headers).toEqual({ 'content-type': 'text/html', etag: '"abc"' });
+});
+
+test('actionDef finds real actions and nothing inherited from Object.prototype', () => {
+	expect(actionDef('status')).toBe(ACTIONS.status);
+	for (const name of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf'])
+		expect(actionDef(name)).toBeNull();
+	expect(actionDef('no-such-action')).toBeNull();
 });
