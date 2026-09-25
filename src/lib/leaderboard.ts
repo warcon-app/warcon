@@ -12,6 +12,8 @@ export type BoardMetric =
 	| 'perHour'
 	| 'playtime'
 	| 'seeded'
+	| 'headshots'
+	| 'teamKills'
 	| 'matches'
 	| 'wins'
 	| 'winRate'
@@ -31,6 +33,8 @@ export const BOARD_METRICS: { key: BoardMetric; label: string }[] = [
 	{ key: 'perHour', label: 'Kills per hour' },
 	{ key: 'playtime', label: 'Playtime' },
 	{ key: 'seeded', label: 'Seed time' },
+	{ key: 'headshots', label: 'Headshots' },
+	{ key: 'teamKills', label: 'Team kills' },
 	{ key: 'matches', label: 'Matches' },
 	{ key: 'wins', label: 'Wins' },
 	{ key: 'winRate', label: 'Win rate' },
@@ -244,6 +248,10 @@ export function metricValue(row: BoardRow, metric: BoardMetric): number | null {
 			return row.minutes;
 		case 'seeded':
 			return row.seedMinutes;
+		case 'headshots':
+			return row.headshots;
+		case 'teamKills':
+			return row.teamKills;
 		case 'matches':
 			return row.matches;
 		case 'wins':
