@@ -183,11 +183,12 @@
 							{:else}
 								<Badge tone="ok">active</Badge>
 							{/if}
-							{#if o.allowPublicStatus || o.allowPublicLeaderboards}
+							{#if o.allowPublicStatus || o.allowPublicLeaderboards || o.allowPublicMatches}
 								<div class="mt-1 text-[12px] text-mist-600">
 									public: {[
 										o.allowPublicStatus ? 'status' : '',
-										o.allowPublicLeaderboards ? 'leaderboards' : ''
+										o.allowPublicLeaderboards ? 'leaderboards' : '',
+										o.allowPublicMatches ? 'matches' : ''
 									]
 										.filter(Boolean)
 										.join(', ')}

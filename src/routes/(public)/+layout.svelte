@@ -44,7 +44,7 @@
 			>
 		{/if}
 	</header>
-	{#if heading && (heading.features.status || heading.features.leaderboards)}
+	{#if heading && (heading.features.status || heading.features.leaderboards || heading.features.matches)}
 		<nav class="strip mb-4 gap-1 border-b border-white/8 pb-3" aria-label="Public pages">
 			{#if heading.features.status}
 				<a href={base} class="tab-link {active(base, true) ? 'tab-link-active' : ''}">Live</a>
@@ -54,8 +54,9 @@
 					href="{base}/leaderboard"
 					class="tab-link {active(`${base}/leaderboard`, false) || active(`${base}/players`, false)
 						? 'tab-link-active'
-						: ''}">Leaderboard</a
-				>
+						: ''}">Leaderboard</a>
+			{/if}
+			{#if heading.features.matches}
 				<a
 					href="{base}/matches"
 					class="tab-link {active(`${base}/matches`, false) ? 'tab-link-active' : ''}">Matches</a

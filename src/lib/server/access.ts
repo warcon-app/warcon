@@ -177,6 +177,7 @@ export interface OrgSummary {
 	/** site-owner allowances for the public surfaces ($lib/features) */
 	allowPublicStatus: boolean;
 	allowPublicLeaderboards: boolean;
+	allowPublicMatches: boolean;
 }
 
 /** Servers (with their orgs) where the user's granted role includes `cap`; a suspended org grants nothing. */
@@ -204,7 +205,8 @@ export async function userOrgs(env: Env, user: SessionUser): Promise<OrgSummary[
 		suspended: !!o.suspendedAt,
 		listKinds,
 		allowPublicStatus: o.allowPublicStatus,
-		allowPublicLeaderboards: o.allowPublicLeaderboards
+		allowPublicLeaderboards: o.allowPublicLeaderboards,
+		allowPublicMatches: o.allowPublicMatches
 	});
 	if (user.apiKey) {
 		const o = await getOrg(env, user.apiKey.orgId);
@@ -435,15 +437,17 @@ export type ServerSummary = {
 	demo: boolean;
 	publicStatus: boolean;
 	publicLeaderboards: boolean;
+	publicMatches: boolean;
 	publicKills: boolean;
 	allowPublicStatus: boolean;
 	allowPublicLeaderboards: boolean;
+	allowPublicMatches: boolean;
 };
 
 export function shapeServer(
 	env: Env,
 	s: ServerRow,
-	org: Pick<OrgRow, 'name' | 'allowPublicStatus' | 'allowPublicLeaderboards'>,
+	org: Pick<OrgRow, 'name' | 'allowPublicStatus' | 'allowPublicLeaderboards' | 'allowPublicMatches'>,
 	access: ServerAccess
 ): ServerSummary {
 	return {
@@ -462,9 +466,11 @@ export function shapeServer(
 		demo: isDemoServer(env, s),
 		publicStatus: s.publicStatus,
 		publicLeaderboards: s.publicLeaderboards,
+		publicMatches: s.publicMatches,
 		publicKills: s.publicKills,
 		allowPublicStatus: org.allowPublicStatus,
-		allowPublicLeaderboards: org.allowPublicLeaderboards
+		allowPublicLeaderboards: org.allowPublicLeaderboards,
+		allowPublicMatches: org.allowPublicMatches
 	};
 }
 

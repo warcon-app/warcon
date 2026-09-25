@@ -42,6 +42,7 @@
 				sortOrder: string;
 				publicStatus: boolean;
 				publicLeaderboards: boolean;
+				publicMatches: boolean;
 		  }
 		| { kind: 'test'; server: ServerInfo; result: TestOk }
 		| {
@@ -92,7 +93,8 @@
 			notes: s?.notes ?? '',
 			sortOrder: String(s?.sortOrder ?? 0),
 			publicStatus: s?.publicStatus ?? false,
-			publicLeaderboards: s?.publicLeaderboards ?? false
+			publicLeaderboards: s?.publicLeaderboards ?? false,
+			publicMatches: s?.publicMatches ?? false
 		};
 	};
 	/** An edit that changes where RCON listens is the add flow again: the password is asked for. */
@@ -104,7 +106,7 @@
 	/** What the site owner allows the dialog's organisation (the server's, or the one picked for a new one). */
 	const allowancesOf = (d: { server: ServerInfo | null; orgId: string }) =>
 		d.server ?? data.ownedOrgs.find((o) => o.id === d.orgId) ?? NO_ALLOWANCES;
-	const FEATURE_KEY = { status: 'publicStatus', leaderboards: 'publicLeaderboards' } as const;
+	const FEATURE_KEY = { status: 'publicStatus', leaderboards: 'publicLeaderboards', matches: 'publicMatches' } as const;
 
 	async function run(fn: () => Promise<void>, done: string) {
 		busy = true;

@@ -8,6 +8,7 @@
 		linkStatus = $bindable(),
 		linkLeaderboard = $bindable(),
 		linkPanel = $bindable(),
+		linkMatches = $bindable(),
 		/** the one server's public pages, when the card is for one server; null across an org */
 		features = null
 	}: {
@@ -15,6 +16,7 @@
 		linkStatus: boolean;
 		linkLeaderboard: boolean;
 		linkPanel: boolean;
+		linkMatches: boolean;
 		features?: FeatureSet | null;
 	} = $props();
 
@@ -45,6 +47,11 @@
 		<label class="flex items-center gap-2 text-[13px]"
 			><input type="checkbox" bind:checked={linkLeaderboard} />
 			Leaderboard{#if off(features?.leaderboards)}
+				<span class="text-mist-600">(page is off)</span>{/if}</label
+		>
+		<label class="flex items-center gap-2 text-[13px]"
+			><input type="checkbox" bind:checked={linkMatches} />
+			Matches{#if off(features?.matches)}
 				<span class="text-mist-600">(page is off)</span>{/if}</label
 		>
 		<label class="flex items-center gap-2 text-[13px]"

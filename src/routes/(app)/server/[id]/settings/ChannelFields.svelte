@@ -13,6 +13,7 @@
 		interval = $bindable(),
 		linkStatus = $bindable(),
 		linkLeaderboard = $bindable(),
+		linkMatches = $bindable(),
 		linkPanel = $bindable(),
 		features
 	}: {
@@ -22,6 +23,7 @@
 		interval: number;
 		linkStatus: boolean;
 		linkLeaderboard: boolean;
+		linkMatches: boolean;
 		linkPanel: boolean;
 		features: FeatureSet;
 	} = $props();
@@ -48,7 +50,7 @@
 		</select></label
 	>
 	<p class="note">{STATUS_STYLE_LABELS[style]}</p>
-	<CardOptions bind:interval bind:linkStatus bind:linkLeaderboard bind:linkPanel {features} />
+	<CardOptions bind:interval bind:linkStatus bind:linkLeaderboard bind:linkMatches bind:linkPanel {features} />
 {/if}
 {#if carry !== 'card'}<p class="note">
 		One message per team kill, as the kill feed reports it (set up on the Config tab).

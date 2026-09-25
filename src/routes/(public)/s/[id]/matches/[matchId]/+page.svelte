@@ -7,6 +7,7 @@
 	import { factionColor, fmtDuration, mapName } from '$lib/format';
 	import type { PublicKill } from '$lib/server/public';
 	import type { PageProps } from './$types';
+	import LeaderboardTable from '$lib/components/LeaderboardTable.svelte';
 
 	let { data }: PageProps = $props();
 	let base = $derived(`/s/${encodeURIComponent(data.heading.id)}`);
@@ -57,7 +58,7 @@
 <div class="rise">
 	<a href="{base}/matches" class="caps text-mist-400 hover:text-mist-100">← Matches</a>
 	<div class="mt-3 panel">
-		<MatchPanel {view} hrefFor={(steamId) => `${base}/players/${steamId}`} />
+		<MatchPanel {view} hrefFor={(steamId) => data.heading.features.leaderboards ? `${base}/players/${steamId}` : undefined } />
 		{#if view.kills}
 			<span class="mt-4 field-label">Kill feed · {view.kills}</span>
 			<div class="table-wrap">

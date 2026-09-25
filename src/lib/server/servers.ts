@@ -28,13 +28,15 @@ export interface TargetFields {
 	allowPrivate?: boolean;
 	publicStatus?: boolean;
 	publicLeaderboards?: boolean;
+	publicMatches?: boolean;
 	publicKills?: boolean;
 }
 
-export type PublicSwitchKey = 'publicStatus' | 'publicLeaderboards' | 'publicKills';
+export type PublicSwitchKey = 'publicStatus' | 'publicLeaderboards' | 'publicMatches' | 'publicKills';
 export const PUBLIC_SWITCH_KEYS: readonly PublicSwitchKey[] = [
 	'publicStatus',
 	'publicLeaderboards',
+	'publicMatches',
 	'publicKills'
 ];
 
@@ -44,11 +46,11 @@ export const PUBLIC_SWITCH_KEYS: readonly PublicSwitchKey[] = [
  * kill feed switch is part of the status page and needs no allowance of its own.
  */
 export function publicSwitches(
-	org: Pick<OrgRow, 'allowPublicStatus' | 'allowPublicLeaderboards'>,
+	org: Pick<OrgRow, 'allowPublicStatus' | 'allowPublicLeaderboards' | 'allowPublicMatches'>,
 	body: Record<string, unknown>
 ): Pick<TargetFields, PublicSwitchKey> {
 	const out: Pick<TargetFields, PublicSwitchKey> = {};
-	const read = (key: 'publicStatus' | 'publicLeaderboards', feature: PublicFeature) => {
+	const read = (key: 'publicStatus' | 'publicLeaderboards' | 'publicMatches', feature: PublicFeature) => {
 		if (body[key] === undefined) return;
 		const on = !!body[key];
 		if (on && !allowed(org, feature))
@@ -57,6 +59,7 @@ export function publicSwitches(
 	};
 	read('publicStatus', 'status');
 	read('publicLeaderboards', 'leaderboards');
+	read('publicMatches', 'matches');
 	if (body.publicKills !== undefined) out.publicKills = !!body.publicKills;
 	return out;
 }
@@ -180,6 +183,7 @@ export async function createServer(
 			publicStatus: pub.publicStatus ?? false,
 			publicLeaderboards: pub.publicLeaderboards ?? false,
 			publicKills: pub.publicKills ?? false,
+			publicMatches: pub.publicMatches ?? false,
 			createdBy: actor.id
 		});
 		await ensureServerLists(tx, id, orgId);
@@ -254,6 +258,7 @@ export async function updateServer(
 			...t,
 			publicStatus: set.publicStatus,
 			publicLeaderboards: set.publicLeaderboards,
+			publicMatches: set.publicMatches,
 			publicKills: set.publicKills,
 			credentialRotated: !!body.password
 		}

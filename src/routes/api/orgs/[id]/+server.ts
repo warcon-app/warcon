@@ -21,7 +21,8 @@ export const PATCH = route(async (event) => {
 		body.serverLimit !== undefined ||
 		body.suspended !== undefined ||
 		body.allowPublicStatus !== undefined ||
-		body.allowPublicLeaderboards !== undefined
+		body.allowPublicLeaderboards !== undefined ||
+		body.allowPublicMatches !== undefined
 	) {
 		requireOwner(event.locals);
 		await setOrgControls(env, event.request, user, org, body);

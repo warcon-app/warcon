@@ -51,6 +51,7 @@
 				interval: number;
 				linkStatus: boolean;
 				linkLeaderboard: boolean;
+				linkMatches: boolean;
 				linkPanel: boolean;
 				allServers: boolean;
 				servers: Record<string, boolean>;
@@ -237,6 +238,7 @@
 			interval: w?.statusIntervalS ?? 60,
 			linkStatus: w?.linkStatus ?? true,
 			linkLeaderboard: w?.linkLeaderboard ?? true,
+			linkMatches: w?.linkMatches ?? true,
 			linkPanel: w?.linkPanel ?? false,
 			allServers: !w?.serverIds,
 			servers
@@ -255,6 +257,7 @@
 			statusIntervalS: d.interval,
 			linkStatus: d.linkStatus,
 			linkLeaderboard: d.linkLeaderboard,
+			linkMatches: d.linkMatches,
 			linkPanel: d.linkPanel,
 			serverIds: d.allServers
 				? null
@@ -334,9 +337,10 @@
 	}
 	const ALLOW_KEY = {
 		status: 'allowPublicStatus',
-		leaderboards: 'allowPublicLeaderboards'
+		leaderboards: 'allowPublicLeaderboards',
+		matches: 'allowPublicMatches'
 	} as const;
-	const setAllowance = (feature: 'status' | 'leaderboards', on: boolean) =>
+	const setAllowance = (feature: 'status' | 'leaderboards' | 'matches', on: boolean) =>
 		run(
 			() => api('PATCH', orgPath, { [ALLOW_KEY[feature]]: on }),
 			on ? `${FEATURE_LABELS[feature]} allowed.` : `${FEATURE_LABELS[feature]} no longer allowed.`,
@@ -879,6 +883,7 @@
 							bind:interval={d.interval}
 							bind:linkStatus={d.linkStatus}
 							bind:linkLeaderboard={d.linkLeaderboard}
+							bind:linkMatches={d.linkMatches}
 							bind:linkPanel={d.linkPanel}
 						/>
 					</div>

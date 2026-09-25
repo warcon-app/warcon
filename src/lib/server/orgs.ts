@@ -106,6 +106,7 @@ const shapeOrg = (
 	suspended: o.suspendedAt ? { at: o.suspendedAt.toISOString(), reason: o.suspendedReason } : null,
 	allowPublicStatus: o.allowPublicStatus,
 	allowPublicLeaderboards: o.allowPublicLeaderboards,
+	allowPublicMatches: o.allowPublicMatches,
 	discordInviteUrl: o.discordInviteUrl,
 	createdBy: creator ? { username: creator.username || '', name: creator.name } : null,
 	createdAt: iso(o.createdAt)
@@ -172,6 +173,8 @@ export async function setOrgControls(
 		changes.allowPublicStatus = set.allowPublicStatus = !!body.allowPublicStatus;
 	if (body.allowPublicLeaderboards !== undefined)
 		changes.allowPublicLeaderboards = set.allowPublicLeaderboards = !!body.allowPublicLeaderboards;
+	if (body.allowPublicMatches !== undefined)
+		changes.allowPublicMatches = set.allowPublicMatches = !!body.allowPublicMatches;
 	if (body.suspended !== undefined) {
 		const suspended = !!body.suspended;
 		if (suspended && !org.suspendedAt) {

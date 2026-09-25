@@ -20,7 +20,7 @@
 	}: {
 		view: MatchView;
 		/** where a player's name goes: the dossier, or the public career */
-		hrefFor: (steamId: string) => string;
+		hrefFor: (steamId: string) => string | undefined;
 		showIds?: boolean;
 	} = $props();
 
@@ -125,14 +125,20 @@
 {#if view.awards.length}
 	<div class="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
 		{#each view.awards as a (a.key)}
+			{@const href = hrefFor(a.steamId)}
 			<div class="rounded-ctl border border-black bg-ink-950 px-3.5 py-3">
 				<div class="caps text-mist-400">{a.label}</div>
 				<div class="mt-1 font-display text-xl font-semibold tabular">{a.value}</div>
-				<a
-					href={hrefFor(a.steamId)}
-					class="block truncate text-[12.5px] text-mist-400 hover:text-accent hover:underline"
-					>{a.name}</a
-				>
+
+				{#if href}
+					<a
+						href={href}
+						class="block truncate text-[12.5px] text-mist-400 hover:text-accent hover:underline"
+						>{a.name}</a>
+				{:else}
+					<span class="block truncate text-[12.5px] text-mist-400">{a.name}</span>
+				{/if}
+
 			</div>
 		{/each}
 	</div>
@@ -162,9 +168,14 @@
 		</thead>
 		<tbody>
 			{#each rows as l (l.steamId)}
+				{@const href = hrefFor(l.steamId)}
 				<tr>
 					<td>
+						{#if href}
 						<a href={hrefFor(l.steamId)} class="hover:text-accent hover:underline">{l.name}</a>
+						{:else}
+						<span >{l.name}</span>
+						{/if}
 						{#if showIds}<span class="block font-mono text-[11px] text-mist-600">{l.steamId}</span
 							>{/if}
 					</td>

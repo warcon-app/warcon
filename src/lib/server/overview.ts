@@ -78,7 +78,7 @@ async function fleetCounts(env: Env): Promise<Fleet> {
 		       (SELECT count(*) FROM "user")::int AS users,
 		       (SELECT count(DISTINCT user_id) FROM session WHERE updated_at > now() - interval '7 days')::int AS users_week,
 		       (SELECT count(*) FROM servers)::int AS servers,
-		       (SELECT count(*) FROM servers WHERE public_status OR public_leaderboards)::int AS servers_public,
+		       (SELECT count(*) FROM servers WHERE public_status OR public_leaderboards OR public_matches)::int AS servers_public,
 		       (SELECT count(*) FROM server_live WHERE ok)::int AS servers_ok,
 		       (SELECT count(*) FROM server_live WHERE observed_at IS NOT NULL)::int AS servers_observed,
 		       (SELECT count(*) FROM server_live WHERE feed_at > now() - ${FEED_ALIVE}::interval)::int AS servers_feeding,

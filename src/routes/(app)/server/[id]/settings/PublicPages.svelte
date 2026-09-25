@@ -14,13 +14,15 @@
 	let busy = $state(false);
 	let orgPage = $derived(`/orgs/${encodeURIComponent(data.server.orgId)}`);
 
-	const KEY = { status: 'publicStatus', leaderboards: 'publicLeaderboards' } as const;
-	const PATH = { status: '', leaderboards: '/leaderboard' } as const;
+	const KEY = { status: 'publicStatus', leaderboards: 'publicLeaderboards', matches: 'publicMatches' } as const;
+	const PATH = { status: '', leaderboards: '/leaderboard', matches: '/matches' } as const;
 	const ABOUT: Record<PublicFeature, string> = {
 		status:
 			'Map, mode, scores, player count, join code and who is on with kills and deaths, refreshed every twenty seconds.',
 		leaderboards:
-			"The same board as the Leaderboards tab (this server, or the organisation's public servers), and a career page per player."
+			"The same board as the Leaderboards tab (this server, or the organisation's public servers), and a career page per player.",
+		matches:
+			'List of matches, can open match statiscics'
 	};
 	const address = (feature: PublicFeature) =>
 		`${data.origin}/s/${encodeURIComponent(data.server.id)}${PATH[feature]}`;

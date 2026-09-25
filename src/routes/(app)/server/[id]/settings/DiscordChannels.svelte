@@ -23,6 +23,7 @@
 		interval: number;
 		linkStatus: boolean;
 		linkLeaderboard: boolean;
+		linkMatches: boolean;
 		linkPanel: boolean;
 	};
 
@@ -42,6 +43,7 @@
 		interval: 60,
 		linkStatus: true,
 		linkLeaderboard: true,
+		linkMatches: true,
 		linkPanel: false
 	});
 	let wantCard = $derived(carry !== 'teamkills');
@@ -71,6 +73,7 @@
 		statusIntervalS: c.interval,
 		linkStatus: c.linkStatus,
 		linkLeaderboard: c.linkLeaderboard,
+		linkMatches: c.linkMatches,
 		linkPanel: c.linkPanel
 	});
 	async function add() {
@@ -109,6 +112,7 @@
 		const on = [
 			w.linkStatus && features.status ? 'live status' : '',
 			w.linkLeaderboard && features.leaderboards ? 'leaderboard' : '',
+			w.linkMatches && features.matches ? 'matches' : '',
 			w.linkPanel ? 'panel' : ''
 		].filter(Boolean);
 		return on.length ? `links to ${on.join(', ')}` : 'no links';
@@ -125,6 +129,7 @@
 				interval: w.statusIntervalS,
 				linkStatus: w.linkStatus,
 				linkLeaderboard: w.linkLeaderboard,
+				linkMatches: w.linkMatches,
 				linkPanel: w.linkPanel
 			}
 		};
@@ -146,6 +151,7 @@
 				interval: e.w.statusIntervalS,
 				linkStatus: e.w.linkStatus,
 				linkLeaderboard: e.w.linkLeaderboard,
+				linkMatches: e.w.linkMatches,
 				linkPanel: e.w.linkPanel
 			});
 			for (const k of Object.keys(now) as (keyof typeof now)[])
@@ -302,6 +308,7 @@
 				bind:interval={card.interval}
 				bind:linkStatus={card.linkStatus}
 				bind:linkLeaderboard={card.linkLeaderboard}
+				bind:linkMatches={card.linkMatches}
 				bind:linkPanel={card.linkPanel}
 				{features}
 			/>
@@ -343,6 +350,7 @@
 				bind:interval={e.card.interval}
 				bind:linkStatus={e.card.linkStatus}
 				bind:linkLeaderboard={e.card.linkLeaderboard}
+				bind:linkMatches={e.card.linkMatches}
 				bind:linkPanel={e.card.linkPanel}
 				{features}
 			/>

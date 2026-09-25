@@ -16,7 +16,7 @@
 </svelte:head>
 
 <div class="rise">
-	<MatchCards matches={list.matches} live={list.live} hrefFor={(m) => `${base}/matches/${m.id}`} />
+	<MatchCards matches={list.matches} live={list.live} hrefFor={(m) => m.endedAt ? `${base}/matches/${m.id}` : data.heading.features.status ? base : undefined } />
 	{#if list.pages > 1}
 		<div class="mt-4 flex items-center gap-2 text-[12.5px] text-mist-400">
 			{#if list.page > 1}<a href={pageHref(list.page - 1)} class="btn btn-sm">← Newer</a

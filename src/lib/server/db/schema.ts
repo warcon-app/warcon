@@ -194,6 +194,7 @@ export const organizations = pgTable('organizations', {
 	 */
 	allowPublicStatus: boolean('allow_public_status').notNull().default(true),
 	allowPublicLeaderboards: boolean('allow_public_leaderboards').notNull().default(true),
+	allowPublicMatches: boolean('allow_public_matches').notNull().default(true),
 	/** a discord.gg or discord.com/invite link, shown as a button on the org's public pages; '' = none */
 	discordInviteUrl: text('discord_invite_url').notNull().default(''),
 	/** what a banned player is shown: the reason and facts about the ban, see $lib/ban-message */
@@ -331,6 +332,7 @@ export const servers = pgTable('servers', {
 	/** the org owner's switches for the public pages; effective only with the org's allowance ($lib/features) */
 	publicStatus: boolean('public_status').notNull().default(false),
 	publicLeaderboards: boolean('public_leaderboards').notNull().default(false),
+	publicMatches: boolean('public_matches').notNull().default(false),
 	/** the public status page also shows the last kills (needs the feed and the status page on) */
 	publicKills: boolean('public_kills').notNull().default(false),
 	createdBy: text('created_by'),
@@ -718,6 +720,7 @@ export const webhooks = pgTable(
 		/** which links the card carries: the public status page, the public leaderboard, the panel */
 		linkStatus: boolean('link_status').notNull().default(true),
 		linkLeaderboard: boolean('link_leaderboard').notNull().default(true),
+		linkMatches: boolean('link_matches').notNull().default(true),
 		linkPanel: boolean('link_panel').notNull().default(false),
 		/** server id -> the Discord id of its message, once posted */
 		statusMessages: jsonb('status_messages'),

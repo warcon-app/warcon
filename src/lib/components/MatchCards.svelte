@@ -4,6 +4,7 @@
 	// started, how long it ran and how many played. A match that has ended is a link to its page;
 	// the one in progress shows the scores as they stand.
 	import { factionColor, fmtTime, mapName } from '$lib/format';
+	import { page } from '$app/state';
 	import {
 		durationOf,
 		fmtLength,
@@ -19,7 +20,7 @@
 	}: {
 		matches: MatchSummary[];
 		live?: LiveFaction[];
-		hrefFor: (m: MatchSummary) => string;
+		hrefFor: (m: MatchSummary) => string | undefined;
 	} = $props();
 	let now = $state(Date.now());
 	$effect(() => {
@@ -75,10 +76,9 @@
 
 <div class="grid gap-3">
 	{#each matches as m (m.id)}
-		{#if m.endedAt}
-			<a href={hrefFor(m)} class="block panel py-4 transition-colors hover:border-mist-600"
-				>{@render card(m)}</a
-			>
+		{@const href = hrefFor(m)}
+		{#if href}
+			<a href={href} class="block panel py-4 transition-colors hover:border-mist-600">{@render card(m)}</a>
 		{:else}
 			<div class="panel py-4">{@render card(m)}</div>
 		{/if}

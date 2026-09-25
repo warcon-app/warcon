@@ -9,7 +9,7 @@ import { parsePage } from '$lib/matches';
 export const GET = route(async (event) => {
 	const env = getEnv();
 	limitPublicReads(event.request);
-	const ps = await requirePublicServer(env, param(event, 'id'), 'leaderboards');
+	const ps = await requirePublicServer(env, param(event, 'id'), 'matches');
 	const page = parsePage(event.url.searchParams.get('page'));
 	return apiJson(
 		{ ok: true, ...(await matchListView(env, ps.server.id, page, PUBLIC_MATCHES_PAGE)) },

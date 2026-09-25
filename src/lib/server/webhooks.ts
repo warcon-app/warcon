@@ -94,6 +94,7 @@ const shape = (w: WebhookRow): WebhookView => ({
 	statusIntervalS: w.statusIntervalS,
 	linkStatus: w.linkStatus,
 	linkLeaderboard: w.linkLeaderboard,
+	linkMatches: w.linkMatches,
 	linkPanel: w.linkPanel,
 	statusSentAt: w.statusSentAt ? w.statusSentAt.toISOString() : null,
 	lastSentAt: w.lastSentAt ? w.lastSentAt.toISOString() : null,
@@ -138,6 +139,7 @@ export async function createWebhook(
 		statusIntervalS: clampInterval(body.statusIntervalS),
 		linkStatus: body.linkStatus === undefined ? true : !!body.linkStatus,
 		linkLeaderboard: body.linkLeaderboard === undefined ? true : !!body.linkLeaderboard,
+		linkMatches: body.linkMatches === undefined ? true : !!body.linkMatches,
 		linkPanel: !!body.linkPanel
 	};
 	const [row] = await env.db
@@ -212,7 +214,7 @@ export async function updateWebhook(
 		changes.statusStyle = set.statusStyle = parseStyle(body.statusStyle);
 	if (body.statusIntervalS !== undefined)
 		changes.statusIntervalS = set.statusIntervalS = clampInterval(body.statusIntervalS);
-	for (const key of ['linkStatus', 'linkLeaderboard', 'linkPanel'] as const)
+	for (const key of ['linkStatus', 'linkLeaderboard', 'linkMatches', 'linkPanel'] as const)
 		if (body[key] !== undefined) changes[key] = set[key] = !!body[key];
 	const statusEnabled = set.statusEnabled ?? row.statusEnabled;
 	if (body.events !== undefined)

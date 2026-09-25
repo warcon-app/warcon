@@ -9,7 +9,7 @@ import { parsePage } from '$lib/matches';
 export const load: PageServerLoad = (event) =>
 	publicLoad(event, async () => {
 		const env = getEnv();
-		const ps = await requirePublicServer(env, event.params.id, 'leaderboards');
+		const ps = await requirePublicServer(env, event.params.id, 'matches');
 		const page = parsePage(event.url.searchParams.get('page'));
 		return {
 			list: await matchListView(env, ps.server.id, page, PUBLIC_MATCHES_PAGE),

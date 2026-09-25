@@ -16,7 +16,7 @@ import { EMPTY_FILTER } from '$lib/kills';
 export const GET = route(async (event) => {
 	const env = getEnv();
 	limitPublicReads(event.request);
-	const ps = await requirePublicServer(env, param(event, 'id'), 'leaderboards');
+	const ps = await requirePublicServer(env, param(event, 'id'), 'matches');
 	const id = parseMatchId(param(event, 'matchId'));
 	const view = id === null ? null : await loadMatch(env, ps.server.id, id);
 	if (!view || id === null) throw new ApiError(404, 'No such match here.', 'not_found');

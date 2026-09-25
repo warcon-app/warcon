@@ -40,6 +40,7 @@ export interface CardLink {
 export interface LinkFlags {
 	linkStatus: boolean;
 	linkLeaderboard: boolean;
+	linkMatches: boolean;
 	linkPanel: boolean;
 }
 
@@ -70,6 +71,8 @@ export function cardLinks(
 		out.push({ label: 'Live status', url: `${origin}/s/${id}` });
 	if (flags.linkLeaderboard && features.leaderboards)
 		out.push({ label: 'Leaderboard', url: `${origin}/s/${id}/leaderboard` });
+	if (flags.linkMatches && features.matches)
+		out.push({ label: 'Matches', url: `${origin}/s/${id}/matches` });
 	if (flags.linkPanel) out.push({ label: 'Panel', url: `${origin}/server/${id}` });
 	return out;
 }

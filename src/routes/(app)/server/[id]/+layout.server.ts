@@ -21,7 +21,7 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 	const server: ServerInfo = shapeServer(
 		env,
 		row,
-		org ?? { name: '', allowPublicStatus: false, allowPublicLeaderboards: false },
+		org ?? { name: '', allowPublicStatus: false, allowPublicLeaderboards: false, allowPublicMatches: false },
 		access
 	);
 	let catalog: Catalog = EMPTY;

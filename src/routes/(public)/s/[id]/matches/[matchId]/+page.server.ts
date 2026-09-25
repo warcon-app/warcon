@@ -11,7 +11,7 @@ import { EMPTY_FILTER } from '$lib/kills';
 export const load: PageServerLoad = (event) =>
 	publicLoad(event, async () => {
 		const env = getEnv();
-		const ps = await requirePublicServer(env, event.params.id, 'leaderboards');
+		const ps = await requirePublicServer(env, event.params.id, 'matches');
 		const id = parseMatchId(event.params.matchId);
 		const view = id === null ? null : await loadMatch(env, ps.server.id, id);
 		if (!view || id === null) throw new ApiError(404, 'Not found.', 'not_found');
