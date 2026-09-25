@@ -69,6 +69,21 @@
 		const n = Math.max(0, Math.round(Number(floor) || 0));
 		if (n !== query.minMinutes) set({ minMinutes: n });
 	}
+	// The search, the same way: the field holds what is typed and follows the query; a pause in
+	// the typing applies it (as the Players tab's search does), so a name is one read, not ten.
+	let search = $state('');
+	$effect(() => {
+		search = query.q;
+	});
+	let searchTimer: ReturnType<typeof setTimeout> | undefined;
+	function searchSoon() {
+		clearTimeout(searchTimer);
+		searchTimer = setTimeout(() => {
+			const v = search.trim();
+			if (v !== query.q) set({ q: v });
+		}, 300);
+	}
+	$effect(() => () => clearTimeout(searchTimer));
 	let pages = $derived(
 		board
 			? Math.min(board.maxPage ?? Infinity, Math.max(1, Math.ceil(board.total / board.pageSize)))
@@ -116,8 +131,18 @@
 		/>
 		<span class="pointer-events-none btn btn-sm">min played</span>
 	</label>
+	<input
+		class="h-[30px] input w-full py-0 sm:w-56"
+		type="search"
+		placeholder={showIds ? 'Name, alias or SteamID…' : 'Name…'}
+		aria-label="Search the leaderboard"
+		title="Narrows the rows; each player keeps their place on the whole board"
+		bind:value={search}
+		oninput={searchSoon}
+	/>
 	<span class="ml-auto text-[12.5px] text-mist-600">
-		{#if board}{fmtNum(board.total)} player{board.total === 1 ? '' : 's'}{#if loading}
+		{#if board}{fmtNum(board.total)} player{board.total === 1 ? '' : 's'}{#if query.q}
+				matching{/if}{#if loading}
 				· loading…{/if}{:else}Loading…{/if}
 	</span>
 	{#if exportHref}
@@ -176,7 +201,8 @@
 			{:else}
 				<tr>
 					<td colspan="15" class="py-6 text-center text-mist-600">
-						{#if !board || loading}Loading…{:else if board.total === 0 && query.minMinutes > 0}Nobody
+						{#if !board || loading}Loading…{:else if board.total === 0 && query.q}Nobody on this
+							board matches “{query.q}”.{:else if board.total === 0 && query.minMinutes > 0}Nobody
 							has {fmtMinutes(query.minMinutes)} of playtime in this range yet.{:else}No players in
 							this range yet.{/if}
 					</td>

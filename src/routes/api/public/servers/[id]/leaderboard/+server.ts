@@ -21,7 +21,7 @@ export const GET = route(async (event) => {
 			? (await publicOrgServers(env, ps.org, 'leaderboards')).map((s) => s.id)
 			: [ps.server.id];
 	return apiJson(
-		{ ok: true, ...(await loadBoard(env, ids, q)), maxPage: PUBLIC_MAX_PAGE },
+		{ ok: true, ...(await loadBoard(env, ids, q, { public: true })), maxPage: PUBLIC_MAX_PAGE },
 		200,
 		publicHeaders(30)
 	);

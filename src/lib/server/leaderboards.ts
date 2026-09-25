@@ -172,6 +172,8 @@ const METRIC_SQL: Record<BoardMetric, ReturnType<typeof sql>> = {
 };
 
 interface BaseRow extends Record<string, unknown> {
+	/** the place on the whole board as it is set, before any search narrows the rows */
+	rank: string;
 	steamId: string;
 	name: string | null;
 	minutes: string;
@@ -207,27 +209,57 @@ async function anyFeed(env: Env, ids: string[]): Promise<boolean> {
 /** The most rows an export writes: the top ten thousand of the board as it is set. */
 export const EXPORT_ROWS = 10_000;
 
+/** Who may be found by what: a public board shows only names, so only its shown name matches. */
+export interface BoardAudience {
+	/** a public board: match the name it shows, never an alias or a SteamID it does not show */
+	public?: boolean;
+}
+
+const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+
 /**
- * `limit` rows of the board as `q` sets it (scope, range, sort, floor), from `offset`: the
- * aggregate covers the whole range either way, then the page, or an export, takes its slice.
+ * The rows a search keeps, as a condition on a row of `ranked`. On the panel a name the player
+ * used on these servers matches anywhere in it, and digits also match the start of a SteamID, as
+ * the Players tab's search does; a public board matches only the name it shows (the last one),
+ * so a search there cannot tie a SteamID or an old name to a player.
+ */
+function searchFilter(ids: string[], q: string, audience: BoardAudience) {
+	if (!q) return sql`TRUE`;
+	const like = '%' + likeEscape(q) + '%';
+	if (audience.public)
+		return sql`(SELECT ps.name FROM player_sessions ps WHERE ps.steam_id = ranked.steam_id AND ps.server_id IN ${ids}
+		             ORDER BY ps.last_seen DESC LIMIT 1) ILIKE ${like}`;
+	const named = sql`EXISTS (SELECT 1 FROM player_sessions ps WHERE ps.steam_id = ranked.steam_id
+	                          AND ps.server_id IN ${ids} AND ps.name ILIKE ${like})`;
+	return /^\d+$/.test(q) ? sql`(ranked.steam_id LIKE ${q + '%'} OR ${named})` : named;
+}
+
+/**
+ * `limit` rows of the board as `q` sets it (scope, range, sort, floor, search), from `offset`: the
+ * aggregate covers the whole range either way and every row is ranked on it, then the search
+ * narrows the rows (their ranks stay), and the page, or an export, takes its slice.
  */
 async function boardSlice(
 	env: Env,
 	ids: string[],
 	q: BoardQuery,
 	limit: number,
-	offset: number
+	offset: number,
+	audience: BoardAudience
 ): Promise<BaseRow[]> {
 	const from = rangeStart(q.range) ?? EPOCH;
 	const order = q.dir === 'asc' ? sql`ASC NULLS LAST` : sql`DESC NULLS LAST`;
 	return (await env.db.execute<BaseRow>(sql`
 		WITH ${base(ids, from)},
+		ranked AS (
+			SELECT *, ROW_NUMBER() OVER (ORDER BY ${METRIC_SQL[q.sort]} ${order}, kills DESC, steam_id) AS rank
+			  FROM base WHERE minutes >= ${q.minMinutes}),
 		page AS (
-			SELECT *, COUNT(*) OVER () AS total FROM base
-			 WHERE minutes >= ${q.minMinutes}
-			 ORDER BY ${METRIC_SQL[q.sort]} ${order}, kills DESC, steam_id
+			SELECT *, COUNT(*) OVER () AS total FROM ranked
+			 WHERE ${searchFilter(ids, q.q, audience)}
+			 ORDER BY rank
 			 LIMIT ${limit} OFFSET ${offset})
-		SELECT r.steam_id AS "steamId", r.minutes, r.seed_minutes AS "seedMinutes", r.cash, r.last_seen AS "lastSeen",
+		SELECT r.rank, r.steam_id AS "steamId", r.minutes, r.seed_minutes AS "seedMinutes", r.cash, r.last_seen AS "lastSeen",
 		       r.kills, r.headshots, r.team_kills AS "teamKills", r.deaths, r.suicides,
 		       r.vehicle_kills AS "vehicleKills", r.kill_streak AS "killStreak", r.death_streak AS "deathStreak",
 		       r.matches, r.wins, r.losses, r.draws, r.total,
@@ -236,17 +268,22 @@ async function boardSlice(
 		  FROM page r`)) as BaseRow[];
 }
 
-export async function loadBoard(env: Env, ids: string[], q: BoardQuery): Promise<BoardView> {
+export async function loadBoard(
+	env: Env,
+	ids: string[],
+	q: BoardQuery,
+	audience: BoardAudience = {}
+): Promise<BoardView> {
 	const empty: BoardView = { query: q, rows: [], total: 0, pageSize: BOARD_PAGE, hasFeed: false };
 	if (!ids.length) return empty;
 	const offset = (q.page - 1) * BOARD_PAGE;
 	const [rows, hasFeed] = await Promise.all([
-		boardSlice(env, ids, q, BOARD_PAGE, offset),
+		boardSlice(env, ids, q, BOARD_PAGE, offset, audience),
 		anyFeed(env, ids)
 	]);
 	return {
 		query: q,
-		rows: rows.map((r, i) => shapeRow(r, offset + i + 1)),
+		rows: rows.map(shapeRow),
 		total: rows.length ? num(rows[0].total) : 0,
 		pageSize: BOARD_PAGE,
 		hasFeed
@@ -256,11 +293,11 @@ export async function loadBoard(env: Env, ids: string[], q: BoardQuery): Promise
 /** The board as `q` sets it from the top, every page of it up to EXPORT_ROWS; `q.page` is ignored. */
 export async function exportBoard(env: Env, ids: string[], q: BoardQuery): Promise<BoardRow[]> {
 	if (!ids.length) return [];
-	return (await boardSlice(env, ids, q, EXPORT_ROWS, 0)).map((r, i) => shapeRow(r, i + 1));
+	return (await boardSlice(env, ids, q, EXPORT_ROWS, 0, {})).map(shapeRow);
 }
 
-const shapeRow = (r: BaseRow, rank: number): BoardRow => ({
-	rank,
+const shapeRow = (r: BaseRow): BoardRow => ({
+	rank: num(r.rank),
 	steamId: r.steamId,
 	name: r.name || r.steamId,
 	minutes: Math.round(num(r.minutes)),
