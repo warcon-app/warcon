@@ -150,6 +150,8 @@ async function teamKillsThisSession(env: Env, serverId: string, steamId: string)
 		.where(
 			and(
 				eq(kills.serverId, serverId),
+				eq(kills.eventType, 'killed'),
+				eq(kills.parsedKill, true),
 				eq(kills.killerSteamId, steamId),
 				eq(kills.teamKill, true),
 				gte(kills.ts, since)

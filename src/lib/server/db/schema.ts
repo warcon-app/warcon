@@ -478,8 +478,9 @@ export const matches = pgTable(
 );
 
 /**
- * One row per kill the game's feed delivered (`[WDServerFeed]`, see docs/wardogs-api.md), with
- * what Warcon knew at receipt: the open match and both players' factions. History: never pruned;
+ * One row per event the game's feed delivered (`[WDServerFeed]`, see docs/wardogs-api.md).
+ * The raw event and its type are kept even when it is not a usable kill; structured kill fields
+ * include what Warcon knew at receipt: the open match and both players' factions. Never pruned;
  * a TimescaleDB hypertable with compression where the extension exists (migration 0019).
  */
 export const kills = pgTable(
@@ -489,6 +490,11 @@ export const kills = pgTable(
 		ts: ts('ts').notNull(),
 		serverId: text('server_id').notNull(),
 		eventId: text('event_id').notNull(),
+		eventType: text('event_type').notNull().default('killed'),
+		/** false for non-kills or incomplete killed events; old rows were all valid kills */
+		parsedKill: boolean('parsed_kill').notNull().default(true),
+		/** the original event object; null only for historical rows written before this column */
+		rawEvent: jsonb('raw_event'),
 		/** the game's serverId: a per-boot instance id, not the join code */
 		instanceId: text('instance_id').notNull(),
 		/** the game's matchId: also per boot, as observed */
@@ -496,13 +502,13 @@ export const kills = pgTable(
 		/** matches.id open on this server at receipt */
 		matchRow: bigint('match_row', { mode: 'number' }),
 		/** seconds on the match clock */
-		eventTime: real('event_time').notNull(),
+		eventTime: real('event_time'),
 		map: text('map').notNull(),
 		/** null: the environment */
 		killerSteamId: text('killer_steam_id'),
 		killerName: text('killer_name'),
 		killerFaction: text('killer_faction'),
-		victimSteamId: text('victim_steam_id').notNull(),
+		victimSteamId: text('victim_steam_id'),
 		victimName: text('victim_name').notNull(),
 		victimFaction: text('victim_faction'),
 		/** the raw weapon or vehicle tag, e.g. Id.Item.AK74M */

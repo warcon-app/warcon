@@ -22,11 +22,11 @@ CREATE TABLE "two_factor" (
 	"locked_until" timestamp with time zone
 );
 --> statement-breakpoint
-ALTER TABLE "user" ADD COLUMN "two_factor_enabled" boolean DEFAULT false;--> statement-breakpoint
-ALTER TABLE "user" ADD COLUMN "auth_complete" boolean DEFAULT false NOT NULL;--> statement-breakpoint
-ALTER TABLE "user" ADD COLUMN "auth_grace_started_at" timestamp with time zone;--> statement-breakpoint
-ALTER TABLE "user" ADD COLUMN "recovery_key_hash" text;--> statement-breakpoint
-ALTER TABLE "user" ADD COLUMN "recovery_key_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "two_factor_enabled" boolean DEFAULT false;--> statement-breakpoint
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "auth_complete" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "auth_grace_started_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "recovery_key_hash" text;--> statement-breakpoint
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "recovery_key_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "passkey" ADD CONSTRAINT "passkey_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "two_factor" ADD CONSTRAINT "two_factor_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "passkey_user_id_idx" ON "passkey" USING btree ("user_id");--> statement-breakpoint

@@ -442,12 +442,13 @@ interface NewEntry {
 	addedByName: string;
 }
 
-/** Inserts an active entry; `added` is false when the player is already on the list. */
+/** Inserts an active entry; optionally soft-removes an active duplicate before inserting. */
 async function insertEntry(
 	env: Env,
 	list: ListRow,
-	entry: NewEntry
-): Promise<{ id: string; added: boolean }> {
+	entry: NewEntry,
+	replaceExisting = false
+): Promise<{ id: string; added: boolean; replaced: boolean }> {
 	const id = newId();
 	return env.db.transaction(async (tx) => {
 		// Serialise adds to one list so two writers cannot race past the duplicate check; the
@@ -464,24 +465,35 @@ async function insertEntry(
 				)
 			)
 			.limit(1);
-		if (dup) return { id: dup.id, added: false };
+		if (dup && !replaceExisting) return { id: dup.id, added: false, replaced: false };
+		if (dup)
+			await tx
+				.update(listEntries)
+				.set({
+					removedAt: new Date(),
+					removedBy: null,
+					removedByName: entry.addedByName,
+					removal: 'manual'
+				})
+				.where(eq(listEntries.id, dup.id));
 		await tx.insert(listEntries).values({ id, listId: list.id, ...entry });
 		await touch(tx, list.id);
-		return { id, added: true };
+		return { id, added: true, replaced: !!dup };
 	});
 }
 
 /**
  * An entry a rule adds (the Seeding reward) to an org list or a server's own: no request, no
  * signed-in actor; the caller records the outcome. `added` is false when the player already
- * holds an active entry on that list.
+ * holds an active entry on that list and replacement was not requested.
  */
 export async function grantEntry(
 	env: Env,
 	list: ListRow,
-	entry: { steamId: string; reason: string; expiresAt: Date | null; addedByName: string }
-): Promise<{ id: string; added: boolean }> {
-	return insertEntry(env, list, { ...entry, addedBy: null });
+	entry: { steamId: string; reason: string; expiresAt: Date | null; addedByName: string },
+	opts: { replaceExisting?: boolean } = {}
+): Promise<{ id: string; added: boolean; replaced: boolean }> {
+	return insertEntry(env, list, { ...entry, addedBy: null }, !!opts.replaceExisting);
 }
 
 export async function addEntry(

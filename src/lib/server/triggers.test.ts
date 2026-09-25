@@ -144,6 +144,7 @@ describe('validateConfig', () => {
 		});
 		expect(validateConfig('seed_reward', { minutes: '45' })).toEqual({
 			scope: 'org',
+			replaceExisting: false,
 			lowAt: 20,
 			untilFull: true,
 			fullAt: null,
@@ -163,6 +164,7 @@ describe('validateConfig', () => {
 			})
 		).toEqual({
 			scope: 'org',
+			replaceExisting: false,
 			lowAt: 1,
 			untilFull: false,
 			fullAt: null,
@@ -181,6 +183,9 @@ describe('validateConfig', () => {
 		});
 		expect(validateConfig('seed_reward', { minutes: 60, scope: 'everywhere' })).toMatchObject({
 			scope: 'org'
+		});
+		expect(validateConfig('seed_reward', { minutes: 60, replaceExisting: true })).toMatchObject({
+			replaceExisting: true
 		});
 	});
 });

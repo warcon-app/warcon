@@ -332,6 +332,7 @@
 		windowDays: number;
 		slotDays: number;
 		slotScope: 'server' | 'org';
+		replaceExisting: boolean;
 		characters: 'off' | 'latin' | 'ascii';
 		extraScripts: string[];
 		allowSymbols: boolean;
@@ -466,6 +467,7 @@
 			minutes: n('minutes', 60),
 			windowDays: n('windowDays', 7),
 			slotDays: n('slotDays', 7),
+			replaceExisting: b('replaceExisting', false),
 			// a rule saved before the scope existed hands out org-wide slots; a new one, this server's
 			slotScope: c.scope === 'server' ? 'server' : t ? 'org' : canSlotHere ? 'server' : 'org',
 			characters: c.characters === 'ascii' || c.characters === 'off' ? c.characters : 'latin',
@@ -600,6 +602,7 @@
 					windowDays: Number(f.windowDays),
 					slotDays: Number(f.slotDays),
 					scope: f.slotScope,
+					replaceExisting: f.replaceExisting,
 					message: f.message
 				};
 		}
@@ -756,7 +759,7 @@
 					.join(' or ')
 					.concat(` in ${c.windowMinutes} min · flag only · again after ${c.cooldownMinutes} min`);
 			case 'seed_reward':
-				return `${c.minutes} min with ${c.lowAt} or fewer on${c.untilFull === false ? '' : `, staying until ${typeof c.fullAt === 'number' ? `${c.fullAt}+ on` : 'it fills'}`}, within ${c.windowDays} day${c.windowDays === 1 ? '' : 's'} · slot ${c.scope === 'server' ? 'here' : 'on every server'} for ${c.slotDays} day${c.slotDays === 1 ? '' : 's'}${c.message ? ' · with a whisper' : ''}`;
+				return `${c.minutes} min with ${c.lowAt} or fewer on${c.untilFull === false ? '' : `, staying until ${typeof c.fullAt === 'number' ? `${c.fullAt}+ on` : 'it fills'}`}, within ${c.windowDays} day${c.windowDays === 1 ? '' : 's'} · slot ${c.scope === 'server' ? 'here' : 'on every server'} for ${c.slotDays} day${c.slotDays === 1 ? '' : 's'}${c.replaceExisting ? ' · replaces an existing slot' : ''}${c.message ? ' · with a whisper' : ''}`;
 		}
 	}
 </script>
@@ -1756,6 +1759,10 @@
 								on every server in the organisation</label
 							>
 						</div>
+						<label class="flex items-center gap-2">
+							<input type="checkbox" bind:checked={f.replaceExisting} /> Replace an existing reserved
+							slot with the newly earned one
+						</label>
 					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">Whisper on the grant, blank for none</legend>
@@ -1768,7 +1775,10 @@
 						passes. A slot on this server only goes on this server's own reserved-slot list; one on
 						every server goes on the organisation's, which this server applies at once and the
 						others at their next sync. Either lapses on its own and can be earned again. Players who
-						already hold a reserved slot here are skipped.
+						already hold a reserved slot here are skipped unless replacement is enabled; replacement
+						removes the active entry in the selected list and grants a fresh one. Seed time below
+						the reward threshold carries into later games; granting the reward resets that player's
+						reward counter without erasing their historical seeding statistics.
 					</p>
 				{/if}
 

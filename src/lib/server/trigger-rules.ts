@@ -151,6 +151,8 @@ export type SeedScope = 'server' | 'org';
  */
 export interface SeedRewardConfig {
 	scope?: SeedScope;
+	/** replace an active entry in the selected reserved-slot list instead of skipping the reward */
+	replaceExisting: boolean;
 	lowAt: number;
 	/** count seed time only once the server has filled with the player still on */
 	untilFull: boolean;
@@ -342,6 +344,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 				throw new ApiError(400, 'Filled must be more players than the seeding threshold.');
 			return {
 				scope: c.scope === 'server' ? 'server' : 'org',
+				replaceExisting: !!c.replaceExisting,
 				lowAt,
 				untilFull: c.untilFull === undefined ? true : !!c.untilFull,
 				fullAt,

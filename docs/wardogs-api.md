@@ -153,8 +153,10 @@ environment deaths, `cause` on falls, `distance` (Unreal units, centimetres) on 
 explosions and most suicides. Tags seen: `Headshot`, `Penetration`, `Ricochet`, `WeaponMelee`,
 `VehicleExplosion`, `RoadKill`, `Falling` (all `Meta.Progression.Context.Player.KillContext.*`),
 `Suicide` and the constant `Local.Kill`/`Local.Death` (`Meta.PlayerKillFlag.Player.*`). No faction
-on either side. Only `killed` was seen; other types may exist. Whether the game buffers while the
-endpoint is down is not known. Warcon serves the endpoint at `POST /api/ingest/events` and writes
+on either side. Only `killed` was seen; other types may exist. Warcon retains every event's
+original JSON and event type, while kill views and statistics use only complete `killed` events.
+Whether the game buffers while the endpoint is down is not known. Warcon serves the endpoint at
+`POST /api/ingest/events` and writes
 `Url=<origin>` with a per-server token (README, "Kill feed"); a config written before the suffix
 was known (`Url=<origin>/api/feed/events`) needs Configure again, and Warcon keeps building the
 scoreboard's kill and cash totals as before.

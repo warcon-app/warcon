@@ -129,12 +129,24 @@ describe('shortTags', () => {
 });
 
 describe('parseBatch', () => {
-	test('keeps the instance id and name, counts what it skipped', () => {
-		const b = parseBatch(batch([killed, { type: 'match_started' }, { ...killed, eventId: 'x' }]));
+	test('keeps every event, including unknown types and incomplete kills', () => {
+		const started = { type: 'match_started', mapName: 'Kavkazi', extra: { round: 2 } };
+		const incomplete = { ...killed, eventId: 'incomplete', victimSteamId: null };
+		const b = parseBatch(
+			batch([killed, started, incomplete, { ...killed, eventId: 'x' }, 'opaque'])
+		);
 		expect(b.instanceId).toBe('e9cf2544-b21e-4b80-9f12-8ec95ff58964');
 		expect(b.serverName).toBe('[TLR][UK] The Last Rifles');
 		expect(b.kills.map((k) => k.eventId)).toEqual([killed.eventId, 'x']);
-		expect(b.skipped).toBe(1);
+		expect(b.events).toHaveLength(5);
+		expect(b.events[1]).toMatchObject({ eventType: 'match_started', raw: started, kill: null });
+		expect(b.events[2]).toMatchObject({ eventType: 'killed', raw: incomplete, kill: null });
+		expect(b.events[4]).toMatchObject({ eventType: 'unknown', raw: 'opaque', kill: null });
+		expect(b.skipped).toBe(0);
+		expect(parseBatch(batch([killed, started])).events[1].eventId).toBe(b.events[1].eventId);
+		expect(parseBatch(batch([started, started])).events[0].eventId).not.toBe(
+			parseBatch(batch([started, started])).events[1].eventId
+		);
 	});
 
 	test('refuses what is not a batch, and batches too big to be the game', () => {

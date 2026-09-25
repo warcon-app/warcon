@@ -33,8 +33,8 @@ CREATE TABLE "organizations" (
 	CONSTRAINT "organizations_slug_unique" UNIQUE("slug")
 );
 --> statement-breakpoint
-ALTER TABLE "servers" ADD COLUMN "org_id" text;--> statement-breakpoint
-ALTER TABLE "audit_log" ADD COLUMN "org_id" text;--> statement-breakpoint
+ALTER TABLE "servers" ADD COLUMN IF NOT EXISTS "org_id" text;--> statement-breakpoint
+ALTER TABLE "audit_log" ADD COLUMN IF NOT EXISTS "org_id" text;--> statement-breakpoint
 -- Every install gets a 'Default' org (so the owner can add servers straight after setup). On an
 -- existing install it takes every server; owners become org owners, everyone else a member.
 INSERT INTO "organizations" ("id", "name", "slug")

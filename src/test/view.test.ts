@@ -6,15 +6,18 @@ import { join } from 'node:path';
 import type { Env } from '$lib/server/env';
 import { listOf } from '$lib/server/lists';
 import {
+	kills,
 	listEntries,
 	matches,
 	matchPlayers,
 	playerMarks,
 	playerNotes,
 	playerSessions,
-	serverBans
+	serverBans,
+	triggers
 } from '$lib/server/db/schema';
 import { newId } from '$lib/server/http';
+import { validateConfig } from '$lib/server/trigger-rules';
 import { hasTestDb, testEnv } from './db';
 import { callApi, callLoad, stubGateway } from './call';
 import { seedWorld, type PrincipalName, type World } from './world';
@@ -173,6 +176,84 @@ describe.skipIf(!hasTestDb)('what View shows', () => {
 		expect(slots.orgLists).toMatchObject({ ban: null, canBan: false, canReserve: true });
 		expect(slots.orgLists.reserve).toMatchObject({ reason: 'sponsor, paid until March' });
 		expect(JSON.stringify(slots)).not.toContain('org-wide ban reason');
+	});
+
+	test('the player endpoint exposes total cash only across servers the reader can view', async () => {
+		const joinedAt = new Date(Date.now() - 120_000);
+		const lastSeen = new Date(Date.now() - 60_000);
+		await env.db.insert(playerSessions).values([
+			{
+				serverId: w.server.id,
+				steamId: PLAYER,
+				name: 'someone',
+				joinedAt,
+				lastSeen,
+				leftAt: lastSeen,
+				cash: 1_234
+			},
+			{
+				serverId: w.otherServer.id,
+				steamId: PLAYER,
+				name: 'someone',
+				joinedAt,
+				lastSeen,
+				leftAt: lastSeen,
+				cash: 5_678
+			},
+			{
+				serverId: w.otherOrgServer.id,
+				steamId: PLAYER,
+				name: 'someone',
+				joinedAt,
+				lastSeen,
+				leftAt: lastSeen,
+				cash: 90_000
+			}
+		]);
+		await env.db.insert(kills).values({
+			ts: new Date(joinedAt.getTime() + 45_000),
+			serverId: w.server.id,
+			eventId: newId(),
+			instanceId: 'test-instance',
+			matchId: 'test-match',
+			eventTime: 45,
+			map: 'Test',
+			killerSteamId: '76561198000000043',
+			killerName: 'killer',
+			victimSteamId: PLAYER,
+			victimName: 'someone',
+			cause: 'Id.Item.AK74M',
+			distanceM: 10,
+			tags: []
+		});
+		await env.db.insert(triggers).values({
+			id: newId(),
+			serverId: w.server.id,
+			orgId: w.org.id,
+			kind: 'seed_reward',
+			name: 'Seed reward',
+			enabled: true,
+			config: validateConfig('seed_reward', { minutes: 60 }),
+			state: {
+				players: {
+					[PLAYER]: { observed: 2_100, balance: 2_100, seenAt: Date.now() }
+				}
+			}
+		});
+
+		const viewer = (await get('viewer', 'api/servers/[id]/players/[steamId]')).dossier;
+		expect(viewer.summary.cash).toBe(1_234);
+		expect(viewer.summary.longestAliveSeconds).toBe(45);
+		expect(viewer.summary.seedReward).toEqual({ minutes: 35, requiredMinutes: 60 });
+		expect(
+			viewer.perServer.map((s: { serverId: string; cash: number }) => [s.serverId, s.cash])
+		).toEqual([[w.server.id, 1_234]]);
+
+		const owner = (await get('owner', 'api/servers/[id]/players/[steamId]')).dossier;
+		expect(owner.summary.cash).toBe(6_912);
+		expect(
+			owner.perServer.map((s: { cash: number }) => s.cash).sort((a: number, b: number) => a - b)
+		).toEqual([1_234, 5_678]);
 	});
 
 	test('the risk score counts bans and recorded games only on servers the reader can open', async () => {

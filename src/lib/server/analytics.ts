@@ -375,15 +375,15 @@ async function loadCombat(
 		SELECT COUNT(*) AS kills, COUNT(*) FILTER (WHERE headshot) AS headshots,
 		       COUNT(*) FILTER (WHERE team_kill) AS "teamKills", COUNT(*) FILTER (WHERE suicide) AS suicides,
 		       COUNT(*) FILTER (WHERE cause LIKE 'Vehicle.%' OR cause LIKE 'Id.Vehicle.%') AS "vehicleKills"
-		  FROM kills WHERE server_id = ${serverId} AND ts >= ${from}`);
+		  FROM kills WHERE event_type = 'killed' AND parsed_kill AND server_id = ${serverId} AND ts >= ${from}`);
 	if (!feed?.configured && !num(totals?.kills)) return null;
 	const [perBucket, causes, players, longest] = await Promise.all([
 		db.execute<{ b: Date; kills: string }>(sql`
 			SELECT to_timestamp(floor(extract(epoch FROM ts) / ${bucket}) * ${bucket}) AS b, COUNT(*) AS kills
-			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} GROUP BY b ORDER BY b`),
+			  FROM kills WHERE event_type = 'killed' AND parsed_kill AND server_id = ${serverId} AND ts >= ${from} GROUP BY b ORDER BY b`),
 		db.execute<{ cause: string; kills: string; headshots: string }>(sql`
 			SELECT cause, COUNT(*) AS kills, COUNT(*) FILTER (WHERE headshot) AS headshots
-			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND cause IS NOT NULL AND NOT suicide
+			  FROM kills WHERE event_type = 'killed' AND parsed_kill AND server_id = ${serverId} AND ts >= ${from} AND cause IS NOT NULL AND NOT suicide
 			 GROUP BY cause ORDER BY kills DESC LIMIT 12`),
 		db.execute<{
 			steamId: string;
@@ -398,17 +398,17 @@ async function loadCombat(
 				SELECT killer_steam_id AS steam_id, MAX(killer_name) AS name, COUNT(*) AS kills,
 				       COUNT(*) FILTER (WHERE headshot) AS headshots, COUNT(*) FILTER (WHERE team_kill) AS team_kills,
 				       AVG(distance_m) AS avg
-				  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND killer_steam_id IS NOT NULL AND NOT suicide
+				  FROM kills WHERE event_type = 'killed' AND parsed_kill AND server_id = ${serverId} AND ts >= ${from} AND killer_steam_id IS NOT NULL AND NOT suicide
 				 GROUP BY killer_steam_id),
 			d AS (
 				SELECT victim_steam_id AS steam_id, COUNT(*) AS deaths
-				  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} GROUP BY victim_steam_id)
+				  FROM kills WHERE event_type = 'killed' AND parsed_kill AND server_id = ${serverId} AND ts >= ${from} GROUP BY victim_steam_id)
 			SELECT k.steam_id AS "steamId", k.name, k.kills, COALESCE(d.deaths, 0) AS deaths, k.headshots,
 			       k.team_kills AS "teamKills", k.avg
 			  FROM k LEFT JOIN d ON d.steam_id = k.steam_id ORDER BY k.kills DESC LIMIT 25`),
 		db.execute<{ ts: Date; killer: string; victim: string; cause: string | null; d: number }>(sql`
 			SELECT ts, killer_name AS killer, victim_name AS victim, cause, distance_m AS d
-			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND distance_m IS NOT NULL
+			  FROM kills WHERE event_type = 'killed' AND parsed_kill AND server_id = ${serverId} AND ts >= ${from} AND distance_m IS NOT NULL
 			   AND NOT suicide AND NOT team_kill
 			 ORDER BY distance_m DESC LIMIT 5`)
 	]);

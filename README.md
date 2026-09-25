@@ -530,14 +530,18 @@ joiner then.
 
 ### Kill feed
 
-WARDOGS can push every kill to an HTTP endpoint: with `[WDServerFeed] Url` and `Token` set in
-`ServerSettings.ini`, the game process POSTs each kill (killer, victim, weapon or vehicle,
-distance, headshot and other context) a second or two after it happens. Warcon is that endpoint.
+WARDOGS can push event batches to an HTTP endpoint: with `[WDServerFeed] Url` and `Token` set in
+`ServerSettings.ini`, the game process POSTs kills (killer, victim, weapon or vehicle,
+distance, headshot and other context) a second or two after they happen. Warcon is that endpoint.
 On the server's **Config** tab an org owner clicks **Configure**: Warcon mints a token,
 writes both keys into the config document and applies; the game reads them at its next restart
 (its own 24-hour one, or a manual restart). `Url` is the panel's origin alone: the game
 appends `/api/ingest/events` to it by itself. The card shows when the last batch arrived, so a
 config that did not take is visible.
+
+Warcon stores every event in a batch with its original JSON and `eventType`, including event types
+it does not yet display and incomplete kills. Existing kill rows predate raw-JSON storage. All
+kill-specific views, statistics and automation explicitly use only valid `killed` events.
 
 What the feed adds: a live kill feed on the server's Overview tab, a **Kills** tab with the whole
 history (filter by killer, victim, either side, weapon or vehicle, kind of kill and minimum
@@ -546,7 +550,7 @@ view can be shared), a **Combat** section on Analytics (kills per bucket, weapon
 top killers with headshot share and team kills), a Combat card on every player dossier (weapons,
 most-killed, nemeses, recent kills and deaths), and the team-kill trigger. Team kills are
 inferred: the feed carries no factions, so Warcon uses the factions it observed for both players
-at that moment. Kills are history and are
+at that moment. Feed events are history and are
 never pruned (a TimescaleDB hypertable with compression where the extension is installed). The
 demo server feeds itself once its feed is turned on.
 

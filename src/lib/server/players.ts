@@ -14,10 +14,20 @@ import {
 	type SessionUser
 } from './access';
 import { orgListMembership } from './lists';
-import { kills, playerMarks, playerNotes, playerSessions, serverBans, servers } from './db/schema';
+import {
+	kills,
+	playerMarks,
+	playerNotes,
+	playerSessions,
+	serverBans,
+	servers,
+	triggers
+} from './db/schema';
 import { getProfiles, isSteamId, steamEnabled, type SteamProfileRow } from './steam';
 import { accountAgeDays, assessRisk, namesResemble, type Risk, type RiskPerformance } from './risk';
 import { riskPerformanceFor } from './leaderboards';
+import { seedBalanceSeconds } from './seed-progress';
+import type { SeedRewardConfig } from './trigger-rules';
 import type {
 	DossierView,
 	PlayerCombat,
@@ -242,22 +252,60 @@ export async function dossier(
 	const [summary] = await db.execute<{
 		sessions: string;
 		minutes: string | null;
+		cash: string | null;
 		firstSeen: Date | null;
 		lastSeen: Date | null;
 	}>(sql`
 		SELECT COUNT(*) AS sessions,
 		       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS minutes,
+		       SUM(cash) AS cash,
 		       MIN(joined_at) AS "firstSeen", MAX(last_seen) AS "lastSeen"
 		  FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids.length ? ids : ['']}`);
+	const [longestAlive] = ids.length
+		? await db.execute<{ seconds: string | null }>(sql`
+			WITH tracked AS (
+				SELECT ps.id, ps.server_id, ps.joined_at,
+				       COALESCE(ps.left_at, ps.last_seen) AS ended_at
+				  FROM player_sessions ps
+				  JOIN servers s ON s.id = ps.server_id
+				 WHERE ps.steam_id = ${steamId} AND ps.server_id IN ${ids}
+				   AND COALESCE(ps.left_at, ps.last_seen) > ps.joined_at
+				   AND (s.feed_token_hash IS NOT NULL OR EXISTS (
+				       SELECT 1 FROM kills k
+				        WHERE k.server_id = ps.server_id AND k.event_type = 'killed'
+				          AND k.parsed_kill AND k.victim_steam_id = ${steamId}
+				          AND k.ts BETWEEN ps.joined_at AND COALESCE(ps.left_at, ps.last_seen)
+				   ))
+			), boundaries AS (
+				SELECT id, joined_at AS at FROM tracked
+				UNION
+				SELECT id, ended_at AS at FROM tracked
+				UNION
+				SELECT t.id, k.ts AS at FROM tracked t JOIN kills k
+				  ON k.server_id = t.server_id AND k.ts BETWEEN t.joined_at AND t.ended_at
+				 WHERE k.event_type = 'killed' AND k.parsed_kill AND k.victim_steam_id = ${steamId}
+				UNION
+				SELECT t.id, m.started_at AS at FROM tracked t JOIN matches m
+				  ON m.server_id = t.server_id AND m.started_at > t.joined_at
+				 AND m.started_at < t.ended_at
+			), intervals AS (
+				SELECT at - LAG(at) OVER (PARTITION BY id ORDER BY at) AS alive_for
+				  FROM boundaries
+			)
+			SELECT MAX(EXTRACT(EPOCH FROM alive_for)) AS seconds
+			  FROM intervals WHERE alive_for IS NOT NULL`)
+		: [];
 	const perServer = ids.length
 		? await db.execute<{
 				serverId: string;
 				sessions: string;
 				minutes: string;
+				cash: string;
 				lastSeen: Date;
 			}>(sql`
 			SELECT server_id AS "serverId", COUNT(*) AS sessions,
 			       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS minutes,
+			       SUM(cash) AS cash,
 			       MAX(last_seen) AS "lastSeen"
 			  FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids}
 			 GROUP BY server_id ORDER BY "lastSeen" DESC`)
@@ -303,7 +351,8 @@ export async function dossier(
 		listsRole,
 		allOrgServers,
 		combat,
-		performance
+		performance,
+		seedRows
 	] = await Promise.all([
 		getProfiles(env, [steamId], {
 			refresh: !!opts.refreshSteam,
@@ -333,8 +382,22 @@ export async function dossier(
 		listsRoleFor(env, user, server.orgId),
 		orgServers(env, server.orgId),
 		playerCombat(env, ids, nameOf, steamId),
-		riskPerformanceFor(env, ids, [steamId])
+		riskPerformanceFor(env, ids, [steamId]),
+		db
+			.select({ config: triggers.config, state: triggers.state })
+			.from(triggers)
+			.where(
+				and(
+					eq(triggers.serverId, server.id),
+					eq(triggers.kind, 'seed_reward'),
+					eq(triggers.enabled, true)
+				)
+			)
+			.limit(1)
 	]);
+	const seedRow = seedRows[0];
+	const seedConfig = seedRow?.config as Partial<SeedRewardConfig> | undefined;
+	const requiredSeedMinutes = num(seedConfig?.minutes);
 	const l = local.get(steamId);
 	const admin = access.caps.has('players.notes.manage');
 	// What staff wrote about the player is for those who may write it; an org list entry (its
@@ -378,6 +441,18 @@ export async function dossier(
 			minutes: Math.round(num(summary?.minutes)),
 			kills: recordedAll.kills,
 			deaths: recordedAll.deaths,
+			cash: num(summary?.cash),
+			longestAliveSeconds:
+				longestAlive?.seconds === null || longestAlive?.seconds === undefined
+					? null
+					: Math.round(num(longestAlive.seconds)),
+			seedReward:
+				seedRow && requiredSeedMinutes > 0
+					? {
+							minutes: Math.floor(seedBalanceSeconds(seedRow.state, steamId) / 60),
+							requiredMinutes: requiredSeedMinutes
+						}
+					: null,
 			firstSeen: iso(summary?.firstSeen ? new Date(summary.firstSeen) : null),
 			lastSeen: iso(summary?.lastSeen ? new Date(summary.lastSeen) : null)
 		},
@@ -388,6 +463,7 @@ export async function dossier(
 			minutes: Math.round(num(r.minutes)),
 			kills: num(recordedOn.get(r.serverId)?.kills),
 			deaths: num(recordedOn.get(r.serverId)?.deaths),
+			cash: num(r.cash),
 			lastSeen: new Date(r.lastSeen).toISOString()
 		})),
 		recent: recent.map((s) => ({
@@ -566,6 +642,8 @@ async function playerCombat(
 		.where(
 			and(
 				inArray(kills.serverId, serverIds),
+				eq(kills.eventType, 'killed'),
+				eq(kills.parsedKill, true),
 				or(eq(kills.killerSteamId, steamId), eq(kills.victimSteamId, steamId))
 			)
 		)
@@ -614,21 +692,24 @@ export async function combatSummary(
 		       COUNT(*) FILTER (WHERE victim_steam_id = ${steamId} AND suicide) AS suicides,
 		       AVG(distance_m) FILTER (WHERE killer_steam_id = ${steamId} AND NOT suicide) AS avg,
 		       MAX(distance_m) FILTER (WHERE killer_steam_id = ${steamId} AND NOT suicide) AS longest
-		  FROM kills WHERE server_id IN ${serverIds}
+		  FROM kills WHERE event_type = 'killed' AND parsed_kill AND server_id IN ${serverIds}
 		   AND (killer_steam_id = ${steamId} OR victim_steam_id = ${steamId})`);
 	if (!num(feed?.n) && !num(t?.kills) && !num(t?.deaths)) return null;
 	const [causes, victims, nemeses] = await Promise.all([
 		db.execute<{ cause: string; kills: string }>(sql`
 			SELECT cause, COUNT(*) AS kills FROM kills
-			 WHERE server_id IN ${serverIds} AND killer_steam_id = ${steamId} AND NOT suicide AND cause IS NOT NULL
+			 WHERE event_type = 'killed' AND parsed_kill AND server_id IN ${serverIds}
+			   AND killer_steam_id = ${steamId} AND NOT suicide AND cause IS NOT NULL
 			 GROUP BY cause ORDER BY kills DESC LIMIT 8`),
 		db.execute<{ steamId: string; name: string; kills: string }>(sql`
 			SELECT victim_steam_id AS "steamId", MAX(victim_name) AS name, COUNT(*) AS kills FROM kills
-			 WHERE server_id IN ${serverIds} AND killer_steam_id = ${steamId} AND NOT suicide
+			 WHERE event_type = 'killed' AND parsed_kill AND server_id IN ${serverIds}
+			   AND killer_steam_id = ${steamId} AND NOT suicide
 			 GROUP BY victim_steam_id ORDER BY kills DESC LIMIT 5`),
 		db.execute<{ steamId: string; name: string; deaths: string }>(sql`
 			SELECT killer_steam_id AS "steamId", MAX(killer_name) AS name, COUNT(*) AS deaths FROM kills
-			 WHERE server_id IN ${serverIds} AND victim_steam_id = ${steamId} AND killer_steam_id IS NOT NULL AND NOT suicide
+			 WHERE event_type = 'killed' AND parsed_kill AND server_id IN ${serverIds}
+			   AND victim_steam_id = ${steamId} AND killer_steam_id IS NOT NULL AND NOT suicide
 			 GROUP BY killer_steam_id ORDER BY deaths DESC LIMIT 5`)
 	]);
 	return {

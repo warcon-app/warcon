@@ -115,7 +115,8 @@ export async function riskPerformanceFor(
 			SELECT killer_steam_id AS "steamId",
 			       COUNT(*) FILTER (WHERE NOT suicide) AS "feedKills",
 			       COUNT(*) FILTER (WHERE headshot AND NOT suicide) AS headshots
-			  FROM kills WHERE server_id IN ${serverIds} AND killer_steam_id IN ${steamIds}
+			  FROM kills WHERE event_type = 'killed' AND parsed_kill
+			   AND server_id IN ${serverIds} AND killer_steam_id IN ${steamIds}
 			 GROUP BY killer_steam_id`),
 		env.db.execute<{
 			steamId: string;

@@ -1,3 +1,3 @@
-ALTER TABLE "organizations" ADD COLUMN "server_limit" integer;--> statement-breakpoint
-ALTER TABLE "organizations" ADD COLUMN "suspended_at" timestamp with time zone;--> statement-breakpoint
-ALTER TABLE "organizations" ADD COLUMN "suspended_reason" text DEFAULT '' NOT NULL;
+ALTER TABLE "organizations" ADD COLUMN IF NOT EXISTS "server_limit" integer;--> statement-breakpoint
+ALTER TABLE "organizations" ADD COLUMN IF NOT EXISTS "suspended_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "organizations" ADD COLUMN IF NOT EXISTS "suspended_reason" text DEFAULT '' NOT NULL;

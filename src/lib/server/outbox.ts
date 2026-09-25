@@ -259,6 +259,7 @@ async function deliverSeedReward(env: Env, row: OutboxRow): Promise<void> {
 		slotDays: number;
 		/** missing on rows from before the rule had a scope: those went org-wide */
 		scope?: 'server' | 'org';
+		replaceExisting?: boolean;
 	};
 	stats.inFlight++;
 	try {
@@ -272,12 +273,17 @@ async function deliverSeedReward(env: Env, row: OutboxRow): Promise<void> {
 			? await serverListOf(env, server, 'reserve')
 			: await listOf(env, org.id, 'reserve');
 		const expiresAt = new Date(Date.now() + p.slotDays * 86400_000);
-		const { added } = await grantEntry(env, list, {
-			steamId: p.steamId,
-			reason: p.reason,
-			expiresAt,
-			addedByName: `trigger: ${row.triggerName}`
-		});
+		const { added, replaced } = await grantEntry(
+			env,
+			list,
+			{
+				steamId: p.steamId,
+				reason: p.reason,
+				expiresAt,
+				addedByName: `trigger: ${row.triggerName}`
+			},
+			{ replaceExisting: !!p.replaceExisting }
+		);
 		// The next sync puts the slot on the server; remember it now so the rule does not grant
 		// it again before the next snapshot.
 		m?.reserved.add(p.steamId);
@@ -296,7 +302,7 @@ async function deliverSeedReward(env: Env, row: OutboxRow): Promise<void> {
 			env,
 			row,
 			'delivered',
-			`Reserved a slot for ${p.name} until ${expiresAt.toISOString().slice(0, 10)}.`
+			`${replaced ? 'Replaced the reserved slot' : 'Reserved a slot'} for ${p.name} until ${expiresAt.toISOString().slice(0, 10)}.`
 		);
 	} catch (err) {
 		if (err instanceof LostOwnership) return; // the lease sweep marks it unknown

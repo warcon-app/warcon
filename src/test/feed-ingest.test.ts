@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import { kills } from '$lib/server/db/schema';
-import { ingestBatch } from '$lib/server/feed';
+import { countKills, ingestBatch, recentKills } from '$lib/server/feed';
+import { EMPTY_FILTER } from '$lib/kills';
 import { hasTestDb, testEnv } from './db';
 import { seedWorld } from './world';
 
@@ -62,5 +63,42 @@ describe.skipIf(!hasTestDb)('kill feed ingest', () => {
 			ingestBatch(env, w.otherServer.id, batchOf([id]))
 		]);
 		expect([a.accepted, b.accepted]).toEqual([1, 1]);
+	});
+
+	test('stores every event but exposes only complete kills to kill consumers', async () => {
+		const w = await seedWorld(env);
+		const killId = randomUUID();
+		const startedId = randomUUID();
+		const incompleteId = randomUUID();
+		const started = {
+			eventId: startedId,
+			type: 'match_started',
+			mapName: 'Kavkazi',
+			extra: { round: 2 }
+		};
+		const incomplete = { eventId: incompleteId, type: 'killed', eventTime: 102 };
+		const body = {
+			...batchOf([killId]),
+			events: [...batchOf([killId]).events, started, incomplete]
+		};
+		const result = await ingestBatch(env, w.server.id, body);
+		expect(result).toMatchObject({ accepted: 3, acceptedKills: 1, skipped: 0, duplicates: 0 });
+		expect(result.kills.map((k) => k.eventId)).toEqual([killId]);
+		const rows = await env.db.select().from(kills).where(eq(kills.serverId, w.server.id));
+		expect(rows.find((r) => r.eventId === startedId)).toMatchObject({
+			eventType: 'match_started',
+			parsedKill: false,
+			rawEvent: started,
+			victimSteamId: null
+		});
+		expect(rows.find((r) => r.eventId === incompleteId)).toMatchObject({
+			eventType: 'killed',
+			parsedKill: false,
+			rawEvent: incomplete
+		});
+		expect(await countKills(env, w.server.id, EMPTY_FILTER)).toBe(1);
+		expect(
+			(await recentKills(env, w.server.id, null, 10, EMPTY_FILTER)).map((k) => k.eventId)
+		).toEqual([killId]);
 	});
 });

@@ -1,1 +1,1 @@
-ALTER TABLE "server_live" ADD COLUMN "started_at" timestamp with time zone;
+ALTER TABLE "server_live" ADD COLUMN IF NOT EXISTS "started_at" timestamp with time zone;

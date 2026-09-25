@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { api, errorMessage, rconPost } from '$lib/api';
-	import { fmtNum, fmtTime } from '$lib/format';
+	import { fmtCash } from '$lib/cash';
+	import { fmtDuration, fmtNum, fmtTime } from '$lib/format';
 	import { causeLabel } from '$lib/causes';
 	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
@@ -195,8 +196,8 @@
 	</div>
 </div>
 
-<div class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-	{#each [['Sessions', fmtNum(d.summary.sessions), 'A session is one stay on a server, from joining to leaving.'], ['Playtime', d.summary.sessions ? minutes(d.summary.minutes) : '—', ''], ['Kills', fmtNum(d.summary.kills), SCOREBOARD_NOTE], ['Deaths', fmtNum(d.summary.deaths), SCOREBOARD_NOTE], ['K/D', kd(d.summary.kills, d.summary.deaths), SCOREBOARD_NOTE], ['First seen', d.summary.firstSeen ? fmtTime(d.summary.firstSeen) : '—', '']] as [label, value, note] (label)}
+<div class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-9">
+	{#each [['Sessions', fmtNum(d.summary.sessions), 'A session is one stay on a server, from joining to leaving.'], ['Playtime', d.summary.sessions ? minutes(d.summary.minutes) : '—', ''], ['Seed progress', d.summary.seedReward ? `${fmtNum(d.summary.seedReward.minutes)} / ${fmtNum(d.summary.seedReward.requiredMinutes)} min` : '—', 'Unspent seeding time toward this server’s next reward. It resets when the reward is granted.'], ['Cash earned', fmtCash(d.summary.cash), 'Total cash earned across the servers visible to you.'], ['Kills', fmtNum(d.summary.kills), SCOREBOARD_NOTE], ['Deaths', fmtNum(d.summary.deaths), SCOREBOARD_NOTE], ['Longest alive', fmtDuration(d.summary.longestAliveSeconds), 'Longest recorded interval between joining, a death, a match start, and departure. Available for sessions tracked by the event feed.'], ['K/D', kd(d.summary.kills, d.summary.deaths), SCOREBOARD_NOTE], ['First seen', d.summary.firstSeen ? fmtTime(d.summary.firstSeen) : '—', '']] as [label, value, note] (label)}
 		<div class="panel py-4" title={note || undefined}>
 			<div class="caps text-mist-400">{label}</div>
 			<div class="mt-1 font-display text-2xl font-semibold tabular">{value}</div>

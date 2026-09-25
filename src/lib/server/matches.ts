@@ -144,7 +144,8 @@ export async function loadMatch(
 		liveFactions(env, serverId),
 		env.db.execute<{ n: string }>(sql`
 			SELECT COUNT(*) AS n FROM kills
-			 WHERE server_id = ${serverId} AND ts >= ${new Date(m.startedAt.getTime() - 120_000)} AND match_row = ${matchId}::bigint`)
+			 WHERE event_type = 'killed' AND parsed_kill
+			   AND server_id = ${serverId} AND ts >= ${new Date(m.startedAt.getTime() - 120_000)} AND match_row = ${matchId}::bigint`)
 	]);
 	const lines: MatchLine[] = rows.map((r) => ({
 		steamId: r.steamId,

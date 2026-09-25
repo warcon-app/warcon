@@ -239,6 +239,20 @@
       "when": 1790106668581,
       "tag": "0033_org_list_capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1790260966340,
+      "tag": "0034_feed_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1790278202475,
+      "tag": "0035_seed_progress_backfill",
+      "breakpoints": true
     }
   ]
 }
