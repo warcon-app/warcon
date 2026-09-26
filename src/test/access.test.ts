@@ -119,6 +119,52 @@ describe.skipIf(!hasTestDb)('access', () => {
 			]);
 		});
 
+		test("a key over every server sees its org's list changes, and nothing else logged on the org", async () => {
+			const w = await seedWorld(env);
+			const row = (orgId: string, action: string, serverId: string | null = null) => ({
+				actorId: w.users.admin!.id,
+				actorName: 'admin',
+				serverId,
+				orgId,
+				category: serverId ? ('server' as const) : ('org' as const),
+				action,
+				target: '76561198000000099',
+				outcome: 'ok' as const
+			});
+			await env.db
+				.insert(auditLog)
+				.values([
+					row(w.org.id, 'list.add'),
+					row(w.org.id, 'list.expire'),
+					row(w.org.id, 'list.members'),
+					row(w.org.id, 'org.member.grants'),
+					row(w.org.id, 'rcon.kick', w.server.id),
+					row(w.otherOrg.id, 'list.add')
+				]);
+			const seenBy = async (who: PrincipalName) =>
+				(
+					await queryAudit(env, {
+						target: '76561198000000099',
+						visibleTo: await auditVisibility(env, w.users[who]!)
+					})
+				).entries
+					.map((e) => `${e.orgId === w.org.id ? 'ours' : 'theirs'}:${e.action}`)
+					.sort();
+			// every server, audit.read: the org's list changes and the server's own rows
+			expect(await seenBy('keyAll')).toEqual([
+				'ours:list.add',
+				'ours:list.expire',
+				'ours:rcon.kick'
+			]);
+			// one server only: that server's rows, never the org's (keyElsewhere holds otherServer)
+			expect(await seenBy('keyElsewhere')).toEqual([]);
+			// no audit.read: nothing
+			expect(await seenBy('keyView')).toEqual([]);
+			// people are unchanged: an admin of the server sees its rows, the owner the whole org
+			expect(await seenBy('admin')).toContain('ours:org.member.grants'); // their own row
+			expect((await auditVisibility(env, w.users.admin!))?.listOrgIds).toBeUndefined();
+		});
+
 		test('Audit trail on a server leaves out the owners editing it: those rows say where RCON listens', async () => {
 			const w = await seedWorld(env);
 			const edited = await api(w, 'owner', 'PATCH api/servers/[id]', {

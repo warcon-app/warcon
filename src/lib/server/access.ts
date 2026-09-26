@@ -16,6 +16,7 @@ import {
 	type Capability
 } from '../capabilities';
 import type { ListKind } from '../types';
+import type { AuditVisibility } from './audit';
 import { accessFromCaps, resolveAccess, type ServerAccess } from './access-resolve';
 import { keyActorId, keyActorName, keyCoversServer, type ApiKeyPrincipal } from './apikeys-core';
 import {
@@ -546,14 +547,23 @@ export async function accessibleServers(
  * What a non-site-owner may see in the audit log: their own rows, rows on servers where their
  * role includes audit.read (plus everything in orgs they own), and rows of orgs they own.
  */
-export async function auditVisibility(
-	env: Env,
-	user: SessionUser
-): Promise<{ userId: string; adminServerIds: string[]; ownedOrgIds: string[] } | null> {
+export async function auditVisibility(env: Env, user: SessionUser): Promise<AuditVisibility> {
 	if (user.apiKey) {
 		const covered = user.apiKey.capabilities.includes('audit.read')
 			? (await accessibleServers(env, user)).map((s) => s.id)
 			: [];
+		// A key held to every server of its org (serverIds null) also sees that org's list-entry
+		// changes: they are logged on the org with no server, and every one of those servers
+		// enforces them, so without this a key watching the whole org misses its org-wide bans.
+		// Nothing else logged on the org: member, role, key and webhook rows stay the owners'.
+		// `covered` is empty for a suspended org, which closes this with the rest.
+		if (user.apiKey.serverIds === null && covered.length)
+			return {
+				userId: user.id,
+				adminServerIds: covered,
+				ownedOrgIds: [],
+				listOrgIds: [user.apiKey.orgId]
+			};
 		return { userId: user.id, adminServerIds: covered, ownedOrgIds: [] };
 	}
 	if (user.role === 'owner') return null;

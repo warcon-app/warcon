@@ -5,6 +5,7 @@ import {
 	gte,
 	inArray,
 	isNotNull,
+	isNull,
 	like,
 	lt,
 	lte,
@@ -16,7 +17,7 @@ import type { Env } from './env';
 import { userAgent, int, str } from './http';
 import { auditLog, user, type AuditRow } from './db/schema';
 import { notifyWebhooks } from './webhook-delivery';
-import { OWNERS_ROWS } from './audit-rows';
+import { ORG_LIST_ROWS, OWNERS_ROWS } from './audit-rows';
 
 export type { AuditRow };
 export type Outcome = 'ok' | 'error' | 'denied';
@@ -105,6 +106,9 @@ export type AuditVisibility = {
 	userId: string;
 	adminServerIds: string[];
 	ownedOrgIds: string[];
+	/** orgs whose list-entry changes (ORG_LIST_ROWS) the caller also sees: an API key's own org,
+	 *  when it reads the audit trail of every server in it */
+	listOrgIds?: string[];
 } | null;
 
 /**
@@ -125,6 +129,15 @@ function visibleWhere(v: AuditVisibility | undefined): SQL | undefined {
 			and(inArray(auditLog.serverId, v.adminServerIds), notInArray(auditLog.action, OWNERS_ROWS))!
 		);
 	if (v.ownedOrgIds.length) any.push(inArray(auditLog.orgId, v.ownedOrgIds));
+	// An org list change is logged on the org, with no server, though every server enforces it.
+	if (v.listOrgIds?.length)
+		any.push(
+			and(
+				inArray(auditLog.orgId, v.listOrgIds),
+				isNull(auditLog.serverId),
+				inArray(auditLog.action, ORG_LIST_ROWS)
+			)!
+		);
 	return or(...any)!;
 }
 
