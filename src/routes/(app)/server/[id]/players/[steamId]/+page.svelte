@@ -143,7 +143,14 @@
 		}, '');
 	}
 
-	const SCOREBOARD_NOTE = "The game's scoreboard counters, added up over the player's sessions.";
+	// The totals and By server read the player's lines of the matches that ENDED (see dossier),
+	// while a session row carries that session's own live counters. For a player who is on right
+	// now the two disagree by the match in progress, so each says which it is.
+	const SCOREBOARD_NOTE =
+		"The game's scoreboard counters from matches that have ended. A match still in progress is added when it ends.";
+	const SESSION_NOTE =
+		"This session's own scoreboard counters, including a match still in progress.";
+	const MATCH_TOTALS = new Set(['Kills', 'Deaths', 'K/D']);
 	const minutes = (m: number) => (m >= 90 ? `${(m / 60).toFixed(1)} h` : `${m} min`);
 	const kd = (k: number, dd: number) => (dd ? (k / dd).toFixed(2) : k ? `${k}.00` : '—');
 	const RISK_TONE = { low: 'ok', medium: 'warn', high: 'err' } as const;
@@ -200,6 +207,9 @@
 		<div class="panel py-4" title={note || undefined}>
 			<div class="caps text-mist-400">{label}</div>
 			<div class="mt-1 font-display text-2xl font-semibold tabular">{value}</div>
+			{#if d.online && MATCH_TOTALS.has(label)}
+				<div class="mt-1 text-[12px] text-mist-600">finished matches only</div>
+			{/if}
 		</div>
 	{/each}
 </div>
@@ -246,7 +256,10 @@
 									></td
 								>
 								<td class="num">{s.sessions}</td><td class="num">{minutes(s.minutes)}</td>
-								<td class="num">{fmtNum(s.kills)}</td><td class="num">{fmtNum(s.deaths)}</td>
+								<td class="num" title={SCOREBOARD_NOTE}>{fmtNum(s.kills)}</td><td
+									class="num"
+									title={SCOREBOARD_NOTE}>{fmtNum(s.deaths)}</td
+								>
 								<td class="whitespace-nowrap text-mist-400">{fmtTime(s.lastSeen)}</td>
 							</tr>
 						{:else}
@@ -290,7 +303,10 @@
 										>{/if}</td
 								>
 								<td class="num">{s.seedMinutes ? minutes(s.seedMinutes) : '—'}</td>
-								<td class="num">{s.kills}</td><td class="num">{s.deaths}</td>
+								<td class="num" title={SESSION_NOTE}>{s.kills}</td><td
+									class="num"
+									title={SESSION_NOTE}>{s.deaths}</td
+								>
 								<td class="num">{fmtNum(s.cash)}</td>
 							</tr>
 						{:else}
