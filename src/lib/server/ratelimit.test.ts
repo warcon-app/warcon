@@ -33,4 +33,15 @@ describe('assertRate', () => {
 		}
 		expect(() => assertRate('k', 3, 1)).not.toThrow();
 	});
+
+	test('a short-window caller does not sweep away a longer-window key', () => {
+		assertRate('short:k', 5, 1); // the first call sets the sweep due one millisecond out
+		assertRate('long:k', 1, 60 * 60_000);
+		const until = Date.now() + 3;
+		while (Date.now() < until) {
+			/* let the short window's sweep come due */
+		}
+		assertRate('short:k', 5, 1); // runs the sweep
+		expect(() => assertRate('long:k', 1, 60 * 60_000)).toThrow(ApiError);
+	});
 });
