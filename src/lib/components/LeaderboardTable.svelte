@@ -142,8 +142,8 @@
 				<SortHeader {sort} key="deaths" num>D</SortHeader>
 				<SortHeader {sort} key="kd" num>K/D</SortHeader>
 				<SortHeader {sort} key="perHour" num title="Kills per hour of playtime">K/h</SortHeader>
-				<th class="num" title="Headshots">HS</th>
-				<th class="num" title="Team kills">TK</th>
+				<SortHeader {sort} key="headshots" num title="Headshots">HS</SortHeader>
+				<SortHeader {sort} key="teamKills" num title="Team kills">TK</SortHeader>
 				<SortHeader {sort} key="matches" num>Matches</SortHeader>
 				<SortHeader {sort} key="wins" num title="Wins, losses, draws">W-L-D</SortHeader>
 				<SortHeader {sort} key="winRate" num>Win %</SortHeader>

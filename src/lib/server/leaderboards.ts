@@ -165,6 +165,8 @@ const METRIC_SQL: Record<BoardMetric, ReturnType<typeof sql>> = {
 	perHour: sql`CASE WHEN minutes - seed_minutes > 0 THEN kills::float / ((minutes - seed_minutes) / 60) ELSE NULL END`,
 	playtime: sql`minutes`,
 	seeded: sql`seed_minutes`,
+	headshots: sql`headshots`,
+	teamKills: sql`team_kills`,
 	matches: sql`matches`,
 	wins: sql`wins`,
 	winRate: sql`CASE WHEN wins + losses + draws > 0 THEN wins::float / (wins + losses + draws) ELSE NULL END`,
