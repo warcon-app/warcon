@@ -187,6 +187,46 @@ describe('twoTeamsStep', () => {
 		expect(later.moves).toHaveLength(1);
 		expect(later.state.capped.has('1')).toBe(false);
 	});
+
+	describe('a player back on the closed faction', () => {
+		const three = [p('v0', 'Valkyra'), p('v1', 'Valkyra'), p('v2', 'Valkyra')];
+		const two = [p('m0', 'Manticore'), p('m1', 'Manticore')];
+		/** P1 placed on Manticore, the smaller side, and seen landed there */
+		const placed = () => {
+			const a = step(emptyTwoTeamsState(), [...three, ...two, p('1', 'Lonestar')], 0);
+			expect(a.moves.map((m) => m.to)).toEqual(['Manticore']);
+			return step(a.state, [...three, ...two, p('1', 'Manticore')], 2000).state;
+		};
+
+		test('goes back to the side they were placed on, not to whichever is smaller by then', () => {
+			// two leave Valkyra, so it is the smaller side when P1 picks the closed faction again
+			const r = step(placed(), [three[0], ...two, p('1', 'Lonestar')], 4000);
+			expect(r.moves).toEqual([
+				{ steamId: '1', name: 'P1', from: 'Lonestar', to: 'Manticore', why: 'closed' }
+			]);
+		});
+
+		test('goes to the smaller side when their own would be past the gap', () => {
+			const more = ['m2', 'm3', 'm4'].map((id) => p(id, 'Manticore'));
+			// back on Manticore they would make it six against one
+			const r = step(placed(), [three[0], ...two, ...more, p('1', 'Lonestar')], 4000);
+			expect(r.moves.map((m) => m.to)).toEqual(['Valkyra']);
+		});
+
+		test('is placed afresh in a new match', () => {
+			const list = [three[0], ...two, p('1', 'Lonestar')];
+			const r = twoTeamsStep(cfg, placed(), list, OPEN, 4000, ALL, { newMatch: true }, first);
+			expect(r.moves.map((m) => m.to)).toEqual(['Valkyra']);
+		});
+
+		test('is placed afresh after long enough away', () => {
+			const away = step(placed(), [three[0], ...two], 4000).state;
+			const back = [three[0], ...two, p('1', 'Lonestar')];
+			expect(step(away, back, 5 * 60_000).moves.map((m) => m.to)).toEqual(['Manticore']);
+			const later = step(away, back, 4000 + TWO_TEAMS_SIDE_FORGET_MS + 1000);
+			expect(later.moves.map((m) => m.to)).toEqual(['Valkyra']);
+		});
+	});
 });
 
 describe('twoTeamsStep balancing', () => {
@@ -268,6 +308,20 @@ describe('twoTeamsStep balancing', () => {
 		);
 		expect(helper.moves).toEqual([]);
 		expect(helper.state.sides.get('v0')?.side).toBe(M);
+	});
+
+	test('a placed player back on the closed faction returns to their side, not the smaller one', () => {
+		const players = [...side('v', 3, V), ...side('m', 2, M)];
+		const a = bal(seeded(players), [...players, p('x', 'Lonestar')], 2000);
+		expect(a.moves.map((m) => [m.to, m.why])).toEqual([[M, 'closed']]);
+		const landed = bal(a.state, [...players, p('x', M)], 4000).state;
+		// two leave Valkyra, so it is the smaller side when x picks the closed faction again
+		const fewer = players.filter((x) => x.steamId !== 'v1' && x.steamId !== 'v2');
+		const b = bal(landed, [...fewer, p('x', 'Lonestar')], 6000);
+		expect(b.moves.map((m) => [m.to, m.why])).toEqual([[M, 'closed']]);
+		// a new match places them by the numbers again
+		const c = bal(landed, [...fewer, p('x', 'Lonestar')], 6000, { newMatch: true });
+		expect(c.moves.map((m) => [m.steamId, m.to])).toContainEqual(['x', V]);
 	});
 
 	test('a player who leaves and rejoins on the bigger side is still put back, until forgotten', () => {

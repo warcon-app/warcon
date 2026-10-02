@@ -146,6 +146,8 @@ export interface TwoTeamsState {
 	/**
 	 * Balancing: the side each player was placed on (null: to be placed, as after a match ends) and
 	 * when they were last on the list. A player not in it is new and is placed when they pick a side.
+	 * Closing a faction only: the side a move of this match put each player on, which a player back
+	 * on the closed faction is returned to.
 	 */
 	sides: Map<string, { side: string | null; seen: number }>;
 	/** balancing: whoever was on when the rule first looked has been taken as placed */
@@ -308,6 +310,11 @@ export function twoTeamsStep(
 					? p.faction
 					: (known?.side ?? null);
 			state.sides.set(p.steamId, { side, seen: now });
+		} else {
+			// Closing a faction only: the side a move of this match put them on, kept while they are on.
+			const known = state.sides.get(p.steamId);
+			if (landed) state.sides.set(p.steamId, { side: p.faction, seen: now });
+			else if (known) state.sides.set(p.steamId, { side: known.side, seen: now });
 		}
 		// No whisper on a match end's look: a move of the match that ended may land on it, and the new
 		// match may move the player again at once.
@@ -331,7 +338,11 @@ export function twoTeamsStep(
 	const waiting = (p: { steamId: string }) => state.moving.has(p.steamId) || exempt.has(p.steamId);
 	// A move decided in the match that ended is no longer wanted (delivery drops its row from the
 	// moment the match end is seen): the new match is decided on its own counts.
-	if (look.newMatch) state.moving.clear();
+	if (look.newMatch) {
+		state.moving.clear();
+		// Players pick a side again in the new match: where the last one put them is forgotten.
+		if (!balance) state.sides.clear();
+	}
 	/** players on no side yet: the game's holding side, or none (the closed faction is a side) */
 	const unpicked = players.filter((p) => p.faction !== cfg.closedFaction && !isOpen(p.faction));
 	if (balance) {
@@ -421,15 +432,16 @@ export function twoTeamsStep(
 		moves.push({ steamId: p.steamId, name: p.name, from: p.faction!, to, why });
 	};
 
-	// The closed faction first: nobody plays there.
+	// The closed faction first: nobody plays there. A player placed earlier in this match goes back
+	// to the same side while that keeps within the gap: picking the closed faction again is no way
+	// to be dealt another side.
 	if (cfg.closedFaction)
 		for (const p of players)
-			if (p.faction === cfg.closedFaction && !waiting(p))
-				move(
-					p,
-					chooseSide(counts, null, balance && cfg.clans ? clanSideOf(p) : null, gap, random),
-					'closed'
-				);
+			if (p.faction === cfg.closedFaction && !waiting(p)) {
+				const kept = state.sides.get(p.steamId)?.side ?? null;
+				const prefer = isOpen(kept) ? kept : balance && cfg.clans ? clanSideOf(p) : null;
+				move(p, chooseSide(counts, null, prefer, gap, random), 'closed');
+			}
 	if (!balance) return { state, moves, whispers, stopped };
 
 	// A placed player on another side switched themselves: fine onto a side no bigger than the gap

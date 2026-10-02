@@ -1797,7 +1797,8 @@
 						</datalist>
 						<p class="text-[12px] text-mist-600">
 							Everyone on it is moved to the smaller other side (or their clan's, within the gap)
-							and respawns there.
+							and respawns there. A player who picks it again in the same match goes back to the
+							side they were on.
 						</p>
 					</fieldset>
 					<fieldset class="space-y-2">
