@@ -1850,7 +1850,8 @@
 					<p class="note">
 						Moves go out a few at a time as the player list refreshes; each kills the player so they
 						respawn on the new side. A player asked to move three times in ten minutes is left where
-						they are until the ten minutes pass.{f.balance
+						they are until the ten minutes pass, except on the closed faction, which they are still
+						moved off once a minute.{f.balance
 							? ''
 							: ' Players are never moved between the open sides.'} One rule per server.
 					</p>

@@ -3,6 +3,7 @@ import {
 	clanTag,
 	emptyTwoTeamsState,
 	TWO_TEAMS_ASK_WINDOW_MS,
+	TWO_TEAMS_CLOSED_REASK_MS,
 	TWO_TEAMS_FORGET_MS,
 	TWO_TEAMS_MAX_ASKS,
 	TWO_TEAMS_PICK_HOLD_MS,
@@ -168,24 +169,28 @@ describe('twoTeamsStep', () => {
 		expect(sides.filter((s) => s === 'Valkyra')).toHaveLength(4);
 	});
 
-	test('a player put back again and again is asked at most three times in ten minutes', () => {
+	test('a player back on the closed faction again and again is still moved off it, once a minute after the third ask', () => {
 		let state = emptyTwoTeamsState();
-		let asks = 0;
+		const asked: number[] = [];
 		const stopped: string[] = [];
-		// every look: back on the closed faction, as if the game kept putting them there
-		for (let look = 0; look < 30; look++) {
+		// every look: back on the closed faction, as a player picking it again does
+		for (let look = 0; look < 100; look++) {
+			const now = look * 2000;
 			const faction = look % 2 === 0 ? 'Lonestar' : 'Valkyra';
-			const r = step(state, [p('1', faction)], look * 2000);
+			const r = step(state, [p('1', faction)], now);
 			state = r.state;
-			asks += r.moves.length;
+			if (r.moves.length) asked.push(now);
 			stopped.push(...r.stopped.map((s) => s.steamId));
 		}
-		expect(asks).toBe(TWO_TEAMS_MAX_ASKS);
-		expect(stopped).toEqual(['1']);
-		// once the window has passed, the rule tries again
-		const later = step(state, [p('1', 'Lonestar')], TWO_TEAMS_ASK_WINDOW_MS + 60_000);
+		// three at once, then one for each TWO_TEAMS_CLOSED_REASK_MS since the last
+		expect(asked).toEqual([0, 4000, 8000, 68_000, 128_000, 188_000]);
+		expect(asked[3] - asked[2]).toBe(TWO_TEAMS_CLOSED_REASK_MS);
+		// never left on the closed faction, so never said to be
+		expect(stopped).toEqual([]);
+		expect(state.capped.has('1')).toBe(false);
+		// once the window has passed, the rule asks at its usual pace again
+		const later = step(state, [p('1', 'Lonestar')], 188_000 + TWO_TEAMS_ASK_WINDOW_MS);
 		expect(later.moves).toHaveLength(1);
-		expect(later.state.capped.has('1')).toBe(false);
 	});
 });
 
@@ -268,6 +273,28 @@ describe('twoTeamsStep balancing', () => {
 		);
 		expect(helper.moves).toEqual([]);
 		expect(helper.state.sides.get('v0')?.side).toBe(M);
+	});
+
+	test('a player who keeps switching onto the bigger side is put back at most three times in ten minutes', () => {
+		const players = [...side('v', 7, V), ...side('m', 5, M)];
+		let state = seeded(players);
+		let asks = 0;
+		const stopped: string[] = [];
+		for (let look = 1; look <= 30; look++) {
+			const faction = look % 2 === 1 ? V : M;
+			const list = players.map((x) => (x.steamId === 'm0' ? { ...x, faction } : x));
+			const r = bal(state, list, look * 2000);
+			state = r.state;
+			asks += r.moves.length;
+			stopped.push(...r.stopped.map((s) => s.steamId));
+		}
+		expect(asks).toBe(TWO_TEAMS_MAX_ASKS);
+		expect(stopped).toEqual(['m0']);
+		// once the window has passed, the rule puts them back again
+		const list = players.map((x) => (x.steamId === 'm0' ? { ...x, faction: V } : x));
+		const later = bal(state, list, TWO_TEAMS_ASK_WINDOW_MS + 60_000);
+		expect(later.moves.map((m) => m.why)).toEqual(['back']);
+		expect(later.state.capped.has('m0')).toBe(false);
 	});
 
 	test('a player who leaves and rejoins on the bigger side is still put back, until forgotten', () => {

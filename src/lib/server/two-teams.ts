@@ -29,10 +29,19 @@ export const TWO_TEAMS_MOVES_PER_SECOND = 3;
 export const TWO_TEAMS_MAX_MOVES_PER_LOOK = 6;
 /**
  * A player asked to move this many times within TWO_TEAMS_ASK_WINDOW_MS is left where they are
- * until the window passes: something keeps putting them back, and every move kills them.
+ * until the window passes: something keeps putting them back, and every move kills them. The
+ * closed faction is the exception (TWO_TEAMS_CLOSED_REASK_MS): nobody plays there.
  */
 export const TWO_TEAMS_MAX_ASKS = 3;
 export const TWO_TEAMS_ASK_WINDOW_MS = 10 * 60_000;
+/**
+ * A player on the closed faction who has been asked TWO_TEAMS_MAX_ASKS times is still moved off
+ * it, this long after their last ask. With the other sides locked for being ahead of the empty
+ * one, the closed faction is the only side the game lets a player pick, so picking it again and
+ * again was a way to stay on it for the rest of the window. Paced, so a move that keeps failing
+ * costs one ask in this long.
+ */
+export const TWO_TEAMS_CLOSED_REASK_MS = 60_000;
 /**
  * How long the side a player was placed on is kept while they are away: the list empties for half
  * a minute at a map change, and a player who leaves and rejoins on the bigger side is still put
@@ -396,11 +405,15 @@ export function twoTeamsStep(
 	) => {
 		const times = state.asked.get(p.steamId) ?? [];
 		if (times.length >= TWO_TEAMS_MAX_ASKS) {
-			if (!state.capped.has(p.steamId)) {
-				state.capped.add(p.steamId);
-				stopped.push({ steamId: p.steamId, name: p.name, faction: p.faction! });
+			if (why !== 'closed') {
+				if (!state.capped.has(p.steamId)) {
+					state.capped.add(p.steamId);
+					stopped.push({ steamId: p.steamId, name: p.name, faction: p.faction! });
+				}
+				return;
 			}
-			return;
+			// Off the closed faction: never left there, asked again at a slower pace.
+			if (now - times[times.length - 1] < TWO_TEAMS_CLOSED_REASK_MS) return;
 		}
 		if (moves.length >= maxMoves) return;
 		if (isOpen(p.faction)) counts.set(p.faction, counts.get(p.faction)! - 1);

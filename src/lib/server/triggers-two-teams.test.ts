@@ -97,34 +97,57 @@ describe('the Team balance rule', () => {
 		expect(moved(await look(edited, tick(everyone, 2000)))).toEqual(['0', '1', '2']);
 	});
 
-	test('says once that it has left a player on the closed faction', async () => {
+	test('never leaves a player on the closed faction: after three asks it moves them once a minute', async () => {
 		const rule = row(CLOSED);
 		const results: string[] = [];
-		for (let n = 0; n < 12; n++) {
+		const asked: number[] = [];
+		for (let n = 0; n < 40; n++) {
 			const faction = n % 2 === 0 ? 'Lonestar' : 'Valkyra';
 			const ev = await look(rule, tick([player('7', faction)], n * 2000));
+			if (moved(ev).length) asked.push(n * 2000);
+			results.push(...ev.updates.map((u) => u.lastResult ?? ''));
+		}
+		expect(asked).toEqual([0, 4000, 8000, 68_000]);
+		expect(results.filter((r) => /left/i.test(r))).toEqual([]);
+	});
+
+	/** eight on Valkyra and five on Manticore, with one of Manticore's on `faction` */
+	const switcher = (faction: string) => [
+		...Array.from({ length: 8 }, (_, i) => player(`v${i}`, 'Valkyra')),
+		...Array.from({ length: 5 }, (_, i) => player(`m${i}`, i === 0 ? faction : 'Manticore'))
+	];
+	const BALANCED = { closedFaction: 'Lonestar', message: '', balance: true, gap: 3 };
+
+	test('says once that it has left a player who keeps switching onto the bigger side', async () => {
+		const rule = row(BALANCED);
+		await look(rule, tick(switcher('Manticore'), 0));
+		const results: string[] = [];
+		for (let n = 1; n <= 12; n++) {
+			const faction = n % 2 === 1 ? 'Valkyra' : 'Manticore';
+			const ev = await look(rule, tick(switcher(faction), n * 2000));
 			results.push(...ev.updates.map((u) => u.lastResult ?? ''));
 		}
 		expect(results.filter((r) => r.startsWith('Moving'))).toHaveLength(3);
 		expect(results.filter((r) => r.startsWith('Left'))).toEqual([
-			'Left P7 on Lonestar: asked to move 3 times in 10 min'
+			'Left Pm0 on Valkyra: asked to move 3 times in 10 min'
 		]);
 	});
 
 	test('says so even on a look that also moves other players', async () => {
-		const rule = row(CLOSED);
+		const rule = row(BALANCED);
+		await look(rule, tick(switcher('Manticore'), 0));
 		const results: string[] = [];
-		// P7 keeps being put back while newcomers keep arriving on the closed faction
-		for (let n = 0; n < 8; n++) {
+		// Pm0 keeps switching while newcomers keep arriving on the closed faction
+		for (let n = 1; n <= 8; n++) {
 			const players = [
-				player('7', n % 2 === 0 ? 'Lonestar' : 'Valkyra'),
+				...switcher(n % 2 === 1 ? 'Valkyra' : 'Manticore'),
 				player(String(100 + n), 'Lonestar')
 			];
 			const ev = await look(rule, tick(players, n * 2000));
 			results.push(...ev.updates.map((u) => u.lastResult ?? ''));
 		}
-		expect(results.filter((r) => r.includes('left P7'))).toEqual([
-			'Moving P106; left P7 on Lonestar: asked to move 3 times in 10 min'
+		expect(results.filter((r) => r.includes('left Pm0'))).toEqual([
+			'Moving P107; left Pm0 on Valkyra: asked to move 3 times in 10 min'
 		]);
 	});
 	describe('balancing', () => {
