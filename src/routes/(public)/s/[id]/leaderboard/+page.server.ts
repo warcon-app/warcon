@@ -19,7 +19,7 @@ export const load: PageServerLoad = (event) =>
 		const orgServers = await publicOrgServers(env, ps.org, 'leaderboards');
 		const ids = q.scope === 'org' ? orgServers.map((s) => s.id) : [ps.server.id];
 		return {
-			board: { ...(await loadBoard(env, ids, q)), maxPage: PUBLIC_MAX_PAGE },
+			board: { ...(await loadBoard(env, ids, q, { public: true })), maxPage: PUBLIC_MAX_PAGE },
 			orgScope: orgServers.length > 1,
 			heading: publicHeading(ps)
 		};
