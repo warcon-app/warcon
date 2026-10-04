@@ -191,6 +191,8 @@ async function stampedMatch(env: Env, serverId: string, batch: KillView[]): Prom
 		.where(
 			and(
 				eq(kills.serverId, serverId),
+				eq(kills.eventType, 'killed'),
+				eq(kills.parsedKill, true),
 				eq(kills.eventId, batch[0].eventId),
 				gte(kills.ts, new Date(at.getTime() - 60_000))
 			)
@@ -371,6 +373,8 @@ async function teamKillsThisMatch(
 		.where(
 			and(
 				eq(kills.serverId, serverId),
+				eq(kills.eventType, 'killed'),
+				eq(kills.parsedKill, true),
 				eq(kills.eventId, batch[0].eventId),
 				gte(kills.ts, new Date(at.getTime() - 60_000))
 			)
@@ -386,6 +390,8 @@ async function teamKillsThisMatch(
 		.where(
 			and(
 				eq(kills.serverId, serverId),
+				eq(kills.eventType, 'killed'),
+				eq(kills.parsedKill, true),
 				inArray(kills.killerSteamId, steamIds),
 				eq(kills.teamKill, true),
 				stamp?.row != null ? eq(kills.matchRow, stamp.row) : isNull(kills.matchRow),

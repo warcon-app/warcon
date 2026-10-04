@@ -169,6 +169,10 @@ export type SeedScope = 'server' | 'org';
  */
 export interface SeedRewardConfig {
 	scope?: SeedScope;
+	/** replace an active entry in the selected reserved-slot list instead of skipping the reward */
+	replaceExisting: boolean;
+	/** keep an existing entry when its note contains this word; blank protects nothing */
+	protectedNoteWord: string;
 	lowAt: number;
 	/** count seed time only once the server has filled with the player still on */
 	untilFull: boolean;
@@ -178,6 +182,18 @@ export interface SeedRewardConfig {
 	windowDays: number;
 	slotDays: number;
 	message: string;
+}
+
+/** Case-insensitive whole-word/marker match, so `paid` does not accidentally match `unpaid`. */
+export function noteContainsProtectedWord(note: string, word: string): boolean {
+	const needle = word.trim();
+	if (!needle) return false;
+	const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const chars = Array.from(needle);
+	const wordChar = /[\p{L}\p{N}_]/u;
+	const left = wordChar.test(chars[0] ?? '') ? '(^|[^\\p{L}\\p{N}_])' : '';
+	const right = wordChar.test(chars.at(-1) ?? '') ? '(?=$|[^\\p{L}\\p{N}_])' : '';
+	return new RegExp(`${left}${escaped}${right}`, 'iu').test(note);
 }
 /**
  * Announces a match ending and the next one starting. A match ends when the map changes or the
@@ -368,6 +384,8 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 				throw new ApiError(400, 'Filled must be more players than the seeding threshold.');
 			return {
 				scope: c.scope === 'server' ? 'server' : 'org',
+				replaceExisting: !!c.replaceExisting,
+				protectedNoteWord: str(c.protectedNoteWord, 50),
 				lowAt,
 				untilFull: c.untilFull === undefined ? true : !!c.untilFull,
 				fullAt,

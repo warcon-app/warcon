@@ -36,6 +36,7 @@ import {
 	type ListRow
 } from './db/schema';
 import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
+import { noteContainsProtectedWord } from './trigger-rules';
 import { requireSteamId } from './steam';
 import { desiredFor, memberSlots, summaryOf } from './lists-sync';
 import { latestNames } from './sessions';
@@ -436,13 +437,20 @@ interface NewEntry {
 	addedByName: string;
 }
 
-/** Inserts an active entry; `added` is false when the player is already on the list. */
+/** Inserts an active entry; optionally soft-removes an active duplicate before inserting. */
 async function insertEntry(
 	env: Env,
 	list: ListRow,
-	entry: NewEntry
-): Promise<{ id: string; added: boolean }> {
-	return env.db.transaction((tx) => insertInto(tx, list, entry));
+	entry: NewEntry,
+	opts: { replaceExisting?: boolean; protectedNoteWord?: string } = {}
+): Promise<{
+	id: string;
+	added: boolean;
+	replaced: boolean;
+	lengthened: boolean;
+	protected: boolean;
+}> {
+	return env.db.transaction((tx) => insertInto(tx, list, entry, opts));
 }
 
 /** How much longer an entry must make an existing one last to lengthen it. */
@@ -457,14 +465,20 @@ async function insertInto(
 	tx: Tx,
 	list: ListRow,
 	entry: NewEntry,
-	lengthen = false
-): Promise<{ id: string; added: boolean; lengthened: boolean }> {
+	opts: { lengthen?: boolean; replaceExisting?: boolean; protectedNoteWord?: string } = {}
+): Promise<{
+	id: string;
+	added: boolean;
+	replaced: boolean;
+	lengthened: boolean;
+	protected: boolean;
+}> {
 	const id = newId();
 	// Serialise adds to one list so two writers cannot race past the duplicate check; the
 	// partial unique index on (list_id, steam_id) where removed_at is null is the backstop.
 	await tx.execute(sql`SELECT 1 FROM ${lists} WHERE ${lists.id} = ${list.id} FOR UPDATE`);
 	const found = tx
-		.select({ id: listEntries.id, expiresAt: listEntries.expiresAt })
+		.select({ id: listEntries.id, expiresAt: listEntries.expiresAt, reason: listEntries.reason })
 		.from(listEntries)
 		.where(
 			and(
@@ -475,43 +489,87 @@ async function insertInto(
 		)
 		.limit(1);
 	// Lengthening decides from the entry's expiry: an edit of it by hand is seen, or waits.
-	const [dup] = lengthen ? await found.for('update') : await found;
+	const [dup] = opts.lengthen || opts.replaceExisting ? await found.for('update') : await found;
 	if (dup) {
-		// Longer by an hour at least: the same ban given again a moment later is not a longer one.
-		const longer =
-			dup.expiresAt !== null &&
-			(entry.expiresAt === null ||
-				entry.expiresAt.getTime() - dup.expiresAt.getTime() >= LENGTHEN_MIN_MS);
-		if (!lengthen || !longer) return { id: dup.id, added: false, lengthened: false };
-		await tx
-			.update(listEntries)
-			.set({ expiresAt: entry.expiresAt })
-			.where(eq(listEntries.id, dup.id));
-		await touch(tx, list.id);
-		return { id: dup.id, added: false, lengthened: true };
+		if (opts.replaceExisting && noteContainsProtectedWord(dup.reason, opts.protectedNoteWord ?? ''))
+			return {
+				id: dup.id,
+				added: false,
+				replaced: false,
+				lengthened: false,
+				protected: true
+			};
+		if (opts.replaceExisting) {
+			await tx
+				.update(listEntries)
+				.set({
+					removedAt: new Date(),
+					removedBy: null,
+					removedByName: entry.addedByName,
+					removal: 'manual'
+				})
+				.where(eq(listEntries.id, dup.id));
+		} else {
+			// Longer by an hour at least: the same ban given again a moment later is not a longer one.
+			const longer =
+				dup.expiresAt !== null &&
+				(entry.expiresAt === null ||
+					entry.expiresAt.getTime() - dup.expiresAt.getTime() >= LENGTHEN_MIN_MS);
+			if (!opts.lengthen || !longer)
+				return {
+					id: dup.id,
+					added: false,
+					replaced: false,
+					lengthened: false,
+					protected: false
+				};
+			await tx
+				.update(listEntries)
+				.set({ expiresAt: entry.expiresAt })
+				.where(eq(listEntries.id, dup.id));
+			await touch(tx, list.id);
+			return {
+				id: dup.id,
+				added: false,
+				replaced: false,
+				lengthened: true,
+				protected: false
+			};
+		}
 	}
 	await tx.insert(listEntries).values({ id, listId: list.id, ...entry });
 	await touch(tx, list.id);
-	return { id, added: true, lengthened: false };
+	return { id, added: true, replaced: !!dup, lengthened: false, protected: false };
 }
 
 /**
  * An entry a rule adds (the Seeding reward, a rule's ban) to an org list or a server's own: no
  * request, no signed-in actor; the caller records the outcome. `added` is false when the player
- * already holds an active entry on that list; with `lengthen` such an entry that would end sooner
- * is made to last as long (`lengthened`). With `tx` it is written in that transaction (the
- * worker's owned one), else in one of its own.
+ * already holds an active entry on that list; `replaceExisting` replaces it, while `lengthen`
+ * keeps its attribution and reason but extends a shorter expiry. With `tx` it is written in that
+ * transaction (the worker's owned one), else in one of its own.
  */
 export async function grantEntry(
 	env: Env,
 	list: ListRow,
 	entry: { steamId: string; reason: string; expiresAt: Date | null; addedByName: string },
-	opts: { tx?: Tx; lengthen?: boolean } = {}
-): Promise<{ id: string; added: boolean; lengthened: boolean }> {
+	opts: {
+		tx?: Tx;
+		lengthen?: boolean;
+		replaceExisting?: boolean;
+		protectedNoteWord?: string;
+	} = {}
+): Promise<{
+	id: string;
+	added: boolean;
+	replaced: boolean;
+	lengthened: boolean;
+	protected: boolean;
+}> {
 	const row = { ...entry, addedBy: null };
 	return opts.tx
-		? insertInto(opts.tx, list, row, opts.lengthen)
-		: env.db.transaction((tx) => insertInto(tx, list, row, opts.lengthen));
+		? insertInto(opts.tx, list, row, opts)
+		: env.db.transaction((tx) => insertInto(tx, list, row, opts));
 }
 
 export async function addEntry(

@@ -1,7 +1,8 @@
-// The pure part of the kill feed: what the game POSTs to [WDServerFeed] Url (docs/wardogs-api.md)
+// The pure part of the event feed: what the game POSTs to [WDServerFeed] Url (docs/wardogs-api.md)
 // and how one batch becomes rows. No database, so it is unit-tested with plain objects; feed.ts
 // adds what only the database knows (the open match, both factions) and writes.
 import { mapId } from '$lib/format';
+import { createHash } from 'node:crypto';
 
 export const FEED_TOKEN_PREFIX = 'wkf_';
 const FEED_TOKEN_RE = /^wkf_[A-Za-z0-9_-]{43}$/;
@@ -37,9 +38,20 @@ export interface ParsedKill {
 export interface ParsedBatch {
 	instanceId: string;
 	serverName: string;
+	events: ParsedEvent[];
 	kills: ParsedKill[];
-	/** events that were not kills, or kills missing what a row needs */
+	/** only malformed batch envelopes are refused; individual events are retained */
 	skipped: number;
+}
+
+export interface ParsedEvent {
+	eventId: string;
+	eventType: string;
+	eventTime: number | null;
+	matchId: string;
+	map: string;
+	raw: unknown;
+	kill: ParsedKill | null;
 }
 
 const STEAM_RE = /^\d{17}$/;
@@ -106,14 +118,34 @@ export function parseBatch(body: unknown): ParsedBatch {
 	const events = o.events as unknown[];
 	if (events.length > MAX_BATCH)
 		throw new Error(`Too many events in one batch (${events.length}).`);
-	const kills: ParsedKill[] = [];
-	let skipped = 0;
-	for (const e of events) {
-		const k = parseKill(e);
-		if (k) kills.push(k);
-		else skipped++;
-	}
-	return { instanceId: str(o.serverId, 64), serverName: str(o.serverName), kills, skipped };
+	const instanceId = str(o.serverId, 64);
+	const parsed = events.map((raw, index): ParsedEvent => {
+		const e = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+		const kill = parseKill(raw);
+		// A malformed or future event may lack an eventId. Give it a stable id so a retried batch
+		// does not write it twice; the full original event is still retained.
+		const eventId =
+			str(e.eventId, 64) ||
+			createHash('sha256')
+				.update(JSON.stringify([instanceId, index, raw ?? null]))
+				.digest('hex');
+		return {
+			eventId,
+			eventType: str(e.type, 64) || 'unknown',
+			eventTime: num(e.eventTime),
+			matchId: str(e.matchId, 64),
+			map: str(e.mapName, 64),
+			raw: raw ?? null,
+			kill
+		};
+	});
+	return {
+		instanceId,
+		serverName: str(o.serverName),
+		events: parsed,
+		kills: parsed.flatMap((e) => (e.kill ? [e.kill] : [])),
+		skipped: 0
+	};
 }
 
 /** Same faction on both sides, both known, and not a suicide. */

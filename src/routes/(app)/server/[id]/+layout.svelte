@@ -18,6 +18,7 @@
 		['', 'Overview'],
 		['/players', 'Players'],
 		['/kills', 'Kills'],
+		['/events', 'Events'],
 		['/matches', 'Matches'],
 		['/bans', 'Bans'],
 		['/slots', 'Reserved slots'],

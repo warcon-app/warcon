@@ -61,8 +61,8 @@ CREATE TABLE "server_reserved" (
 	CONSTRAINT "server_reserved_server_id_steam_id_pk" PRIMARY KEY("server_id","steam_id")
 );
 --> statement-breakpoint
-ALTER TABLE "organizations" ADD COLUMN "members_reserved" boolean DEFAULT false NOT NULL;--> statement-breakpoint
-ALTER TABLE "user" ADD COLUMN "steam_id" text;--> statement-breakpoint
+ALTER TABLE "organizations" ADD COLUMN IF NOT EXISTS "members_reserved" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "steam_id" text;--> statement-breakpoint
 ALTER TABLE "list_entries" ADD CONSTRAINT "list_entries_list_id_lists_id_fk" FOREIGN KEY ("list_id") REFERENCES "public"."lists"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "lists" ADD CONSTRAINT "lists_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "server_list_state" ADD CONSTRAINT "server_list_state_server_id_servers_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."servers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

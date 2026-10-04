@@ -287,7 +287,8 @@ export async function enrichMatchPlayers(
 		SELECT killer_steam_id AS "killerSteamId", victim_steam_id AS "victimSteamId", headshot, suicide,
 		       team_kill AS "teamKill", cause, distance_m AS "distanceM"
 		  FROM kills
-		 WHERE server_id = ${serverId} AND ts >= ${new Date(startedAt.getTime() - 120_000)}
+		 WHERE event_type = 'killed' AND parsed_kill
+		   AND server_id = ${serverId} AND ts >= ${new Date(startedAt.getTime() - 120_000)}
 		   AND match_row = ${matchId}::bigint
 		 ORDER BY event_time, ts`);
 	const record = feedRecord(rows as FeedKill[]);

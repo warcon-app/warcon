@@ -1,1 +1,1 @@
-ALTER TABLE "servers" ADD COLUMN "allow_private" boolean DEFAULT false NOT NULL;
+ALTER TABLE "servers" ADD COLUMN IF NOT EXISTS "allow_private" boolean DEFAULT false NOT NULL;

@@ -1,5 +1,5 @@
-// The kill feed on the database side: each server's feed token, which batch belongs to which
-// server, and how a batch becomes rows in `kills`. Inbound data from the game process, so it runs
+// The event feed on the database side: each server's feed token, which batch belongs to which
+// server, and how every event becomes a row in `kills`. Inbound data from the game process, so it runs
 // on the web role and writes Postgres directly; the worker's lane is for requests Warcon makes.
 import {
 	and,
@@ -32,10 +32,10 @@ import {
 	type KillRow,
 	type ServerRow
 } from './db/schema';
-import type { KillView } from '$lib/types';
+import type { FeedEventView, KillView } from '$lib/types';
 import { VEHICLE_TAGS, type KillFilter } from '$lib/kills';
 import type { SessionUser } from './access';
-import { FEED_TOKEN_PREFIX, isTeamKill, parseBatch, type ParsedKill } from './feed-core';
+import { FEED_TOKEN_PREFIX, isTeamKill, parseBatch, type ParsedEvent } from './feed-core';
 
 const hashToken = (token: string): string =>
 	createHash('sha256').update(token, 'utf8').digest('hex');
@@ -141,14 +141,19 @@ const feedAtWritten = new Map<string, number>();
 const DEDUPE_WINDOW_MS = 24 * 3600_000;
 
 export interface IngestResult {
+	/** all newly stored events, not only kills */
 	accepted: number;
+	acceptedKills: number;
 	skipped: number;
 	duplicates: number;
+	duplicateKills: number;
 	/** what was written, in feed order */
 	kills: KillView[];
 }
 
 export function killView(r: KillRow): KillView {
+	if (r.eventType !== 'killed' || !r.parsedKill || !r.victimSteamId || r.eventTime === null)
+		throw new Error('A non-kill feed event reached a kill view.');
 	return {
 		eventId: r.eventId,
 		ts: r.ts.toISOString(),
@@ -164,6 +169,20 @@ export function killView(r: KillRow): KillView {
 		suicide: r.suicide,
 		teamKill: r.teamKill,
 		tags: Array.isArray(r.tags) ? (r.tags as string[]) : []
+	};
+}
+
+export function feedEventView(r: KillRow): FeedEventView {
+	return {
+		eventId: r.eventId,
+		ts: r.ts.toISOString(),
+		eventType: r.eventType,
+		parsedKill: r.parsedKill,
+		instanceId: r.instanceId,
+		matchId: r.matchId,
+		eventTime: r.eventTime,
+		map: r.map,
+		rawEvent: r.rawEvent
 	};
 }
 
@@ -183,8 +202,9 @@ export async function ingestBatch(
 	} catch (err) {
 		throw new ApiError(400, err instanceof Error ? err.message : 'Malformed batch.');
 	}
-	let fresh: ParsedKill[] = batch.kills;
+	let fresh: ParsedEvent[] = batch.events;
 	let duplicates = 0;
+	let duplicateKills = 0;
 	let written: KillView[] = [];
 	if (fresh.length)
 		// The table cannot hold a unique event id (a hypertable's unique indexes must include ts),
@@ -215,12 +235,17 @@ export async function ingestBatch(
 				once.add(k.eventId);
 				return true;
 			});
-			duplicates = batch.kills.length - fresh.length;
+			duplicates = batch.events.length - fresh.length;
+			duplicateKills = batch.kills.length - fresh.filter((e) => e.kill !== null).length;
 			if (!fresh.length) return;
 			const steamIds = [
 				...new Set(
-					fresh.flatMap((k) =>
-						k.killerSteamId ? [k.killerSteamId, k.victimSteamId] : [k.victimSteamId]
+					fresh.flatMap(({ kill }) =>
+						kill
+							? kill.killerSteamId
+								? [kill.killerSteamId, kill.victimSteamId]
+								: [kill.victimSteamId]
+							: []
 					)
 				)
 			];
@@ -249,35 +274,39 @@ export async function ingestBatch(
 			const rows = await db
 				.insert(kills)
 				.values(
-					fresh.map((k) => {
-						const kf = k.killerSteamId ? (faction.get(k.killerSteamId) ?? null) : null;
-						const vf = faction.get(k.victimSteamId) ?? null;
+					fresh.map((event) => {
+						const k = event.kill;
+						const kf = k?.killerSteamId ? (faction.get(k.killerSteamId) ?? null) : null;
+						const vf = k ? (faction.get(k.victimSteamId) ?? null) : null;
 						return {
 							ts: now,
 							serverId,
-							eventId: k.eventId,
+							eventId: event.eventId,
+							eventType: event.eventType,
+							parsedKill: k !== null,
+							rawEvent: event.raw,
 							instanceId: batch.instanceId,
-							matchId: k.matchId,
+							matchId: event.matchId,
 							matchRow: match?.id ?? null,
-							eventTime: k.eventTime,
-							map: k.map,
-							killerSteamId: k.killerSteamId,
-							killerName: k.killerName,
+							eventTime: event.eventTime,
+							map: event.map,
+							killerSteamId: k?.killerSteamId ?? null,
+							killerName: k?.killerName ?? null,
 							killerFaction: kf,
-							victimSteamId: k.victimSteamId,
-							victimName: k.victimName,
+							victimSteamId: k?.victimSteamId ?? null,
+							victimName: k?.victimName ?? '',
 							victimFaction: vf,
-							cause: k.cause,
-							distanceM: k.distanceM,
-							headshot: k.headshot,
-							suicide: k.suicide,
-							teamKill: isTeamKill(k, kf, vf),
-							tags: k.tags
+							cause: k?.cause ?? null,
+							distanceM: k?.distanceM ?? null,
+							headshot: k?.headshot ?? false,
+							suicide: k?.suicide ?? false,
+							teamKill: k ? isTeamKill(k, kf, vf) : false,
+							tags: k?.tags ?? []
 						};
 					})
 				)
 				.returning();
-			written = rows.map(killView);
+			written = rows.filter((r) => r.eventType === 'killed' && r.parsedKill).map(killView);
 		});
 	// The liveness stamp, at most every ten seconds per server: the worker's upsert of the row
 	// leaves this column alone, so the two never fight.
@@ -289,7 +318,14 @@ export async function ingestBatch(
 			.values({ serverId, feedAt: now })
 			.onConflictDoUpdate({ target: serverLive.serverId, set: { feedAt: now } });
 	}
-	return { accepted: fresh.length, skipped: batch.skipped, duplicates, kills: written };
+	return {
+		accepted: fresh.length,
+		acceptedKills: written.length,
+		skipped: batch.skipped,
+		duplicates,
+		duplicateKills,
+		kills: written
+	};
 }
 
 const STEAM_RE = /^\d{17}$/;
@@ -319,7 +355,11 @@ function killWhere(
 	f: KillFilter,
 	match: KillsOfMatch | null = null
 ): SQL {
-	const conds: (SQL | undefined)[] = [eq(kills.serverId, serverId)];
+	const conds: (SQL | undefined)[] = [
+		eq(kills.serverId, serverId),
+		eq(kills.eventType, 'killed'),
+		eq(kills.parsedKill, true)
+	];
 	if (match) {
 		conds.push(eq(kills.matchRow, match.matchRow), gte(kills.ts, match.from));
 		if (match.to) conds.push(lte(kills.ts, match.to));
@@ -401,5 +441,43 @@ export async function countKills(
 		.select({ n: count() })
 		.from(kills)
 		.where(killWhere(serverId, null, filter, match));
+	return row?.n ?? 0;
+}
+
+export interface EventsBefore {
+	ts: Date;
+	eventId: string;
+}
+
+const eventWhere = (serverId: string, before: EventsBefore | null, eventType: string): SQL =>
+	and(
+		eq(kills.serverId, serverId),
+		eventType ? eq(kills.eventType, eventType) : undefined,
+		before ? sql`(${kills.ts}, ${kills.eventId}) < (${before.ts}, ${before.eventId})` : undefined
+	)!;
+
+/** Every feed event, including unknown types and incomplete kills, newest first. */
+export async function recentFeedEvents(
+	env: Env,
+	serverId: string,
+	before: EventsBefore | null,
+	limit: number,
+	eventType = ''
+): Promise<FeedEventView[]> {
+	const rows = await env.db
+		.select()
+		.from(kills)
+		.where(eventWhere(serverId, before, eventType))
+		.orderBy(desc(kills.ts), desc(kills.eventId))
+		.limit(limit);
+	return rows.map(feedEventView);
+}
+
+/** How many stored feed events match the optional exact event type. */
+export async function countFeedEvents(env: Env, serverId: string, eventType = ''): Promise<number> {
+	const [row] = await env.db
+		.select({ n: count() })
+		.from(kills)
+		.where(eventWhere(serverId, null, eventType));
 	return row?.n ?? 0;
 }

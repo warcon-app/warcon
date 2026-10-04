@@ -26,7 +26,7 @@ SELECT gen_random_uuid()::text, o."id", r."name", r."caps"::jsonb, r."name", r."
     ('admin', '["server.view","chat.send","players.moderate","match.control","rotation.edit","players.notes","rotation.save","players.notes.manage","bans.manage","slots.manage","lists.edit","config.apply","automation.manage","audit.read","rcon.raw"]', 2)
   ) AS r("name", "caps", "ord");--> statement-breakpoint
 -- Grants: viewer / operator / admin -> the matching built-in of the server's org.
-ALTER TABLE "server_grants" ADD COLUMN "role_id" text;--> statement-breakpoint
+ALTER TABLE "server_grants" ADD COLUMN IF NOT EXISTS "role_id" text;--> statement-breakpoint
 UPDATE "server_grants" g SET "role_id" = r."id"
   FROM "servers" s, "org_roles" r
  WHERE s."id" = g."server_id" AND r."org_id" = s."org_id" AND r."builtin" = g."role";--> statement-breakpoint
@@ -37,7 +37,7 @@ ALTER TABLE "server_grants" ADD CONSTRAINT "server_grants_role_id_org_roles_id_f
 CREATE INDEX "server_grants_role_idx" ON "server_grants" USING btree ("role_id");--> statement-breakpoint
 ALTER TABLE "server_grants" DROP COLUMN "role";--> statement-breakpoint
 -- Invite links: the default server role they hand out, same mapping.
-ALTER TABLE "org_invites" ADD COLUMN "server_role_id" text;--> statement-breakpoint
+ALTER TABLE "org_invites" ADD COLUMN IF NOT EXISTS "server_role_id" text;--> statement-breakpoint
 UPDATE "org_invites" i SET "server_role_id" = r."id"
   FROM "org_roles" r
  WHERE r."org_id" = i."org_id" AND r."builtin" = i."server_role";--> statement-breakpoint

@@ -1,1 +1,1 @@
-ALTER TABLE "organizations" ADD COLUMN "ban_message" text DEFAULT '{reason}' NOT NULL;
+ALTER TABLE "organizations" ADD COLUMN IF NOT EXISTS "ban_message" text DEFAULT '{reason}' NOT NULL;

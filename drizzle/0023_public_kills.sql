@@ -1,1 +1,1 @@
-ALTER TABLE "servers" ADD COLUMN "public_kills" boolean DEFAULT false NOT NULL;
+ALTER TABLE "servers" ADD COLUMN IF NOT EXISTS "public_kills" boolean DEFAULT false NOT NULL;

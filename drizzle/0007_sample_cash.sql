@@ -1,1 +1,1 @@
-ALTER TABLE "samples" ADD COLUMN "cash" jsonb;
+ALTER TABLE "samples" ADD COLUMN IF NOT EXISTS "cash" jsonb;

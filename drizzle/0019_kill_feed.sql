@@ -21,9 +21,9 @@ CREATE TABLE "kills" (
 	"tags" jsonb NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "server_live" ADD COLUMN "feed_at" timestamp with time zone;--> statement-breakpoint
-ALTER TABLE "servers" ADD COLUMN "feed_token_enc" text;--> statement-breakpoint
-ALTER TABLE "servers" ADD COLUMN "feed_token_hash" text;--> statement-breakpoint
+ALTER TABLE "server_live" ADD COLUMN IF NOT EXISTS "feed_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "servers" ADD COLUMN IF NOT EXISTS "feed_token_enc" text;--> statement-breakpoint
+ALTER TABLE "servers" ADD COLUMN IF NOT EXISTS "feed_token_hash" text;--> statement-breakpoint
 CREATE INDEX "kills_event_idx" ON "kills" USING btree ("event_id");--> statement-breakpoint
 CREATE INDEX "kills_server_ts_idx" ON "kills" USING btree ("server_id","ts" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "kills_killer_idx" ON "kills" USING btree ("killer_steam_id","ts" DESC NULLS LAST);--> statement-breakpoint

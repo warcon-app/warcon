@@ -123,6 +123,7 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'GET api/servers/[id]/analytics/periods': 'cap:server.view',
 	'GET api/servers/[id]/cash': 'cap:server.view',
 	'GET api/servers/[id]/feed': 'cap:server.view',
+	'GET api/servers/[id]/events': 'cap:server.view',
 	'GET api/servers/[id]/kills': 'cap:server.view',
 	'GET api/servers/[id]/leaderboard': 'cap:server.view',
 	'GET api/servers/[id]/leaderboard/export': 'cap:server.view',
