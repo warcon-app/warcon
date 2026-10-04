@@ -58,7 +58,14 @@ export interface BoardQuery {
 	page: number;
 	/** the playtime floor, in minutes */
 	minMinutes: number;
+	/** narrows the rows shown, never their ranks: a match keeps its place on the whole board.
+	 *  The panel matches any name a player used here or their SteamID; a public board only the
+	 *  name it shows. Empty shows everyone. */
+	q: string;
 }
+
+/** How much of a search is kept, as the Players tab's search keeps it. */
+export const BOARD_SEARCH_MAX = 100;
 
 export const DEFAULT_BOARD_QUERY: BoardQuery = {
 	scope: 'server',
@@ -66,7 +73,8 @@ export const DEFAULT_BOARD_QUERY: BoardQuery = {
 	sort: 'kills',
 	dir: 'desc',
 	page: 1,
-	minMinutes: DEFAULT_FLOOR_MINUTES
+	minMinutes: DEFAULT_FLOOR_MINUTES,
+	q: ''
 };
 
 /**
@@ -131,7 +139,8 @@ export function parseBoardQuery(params: URLSearchParams, maxPage = 100_000): Boa
 		sort: METRIC_KEYS.has(sort) ? (sort as BoardMetric) : DEFAULT_BOARD_QUERY.sort,
 		dir: params.get('dir') === 'asc' ? 'asc' : 'desc',
 		page: clampInt(params.get('page'), 1, 1, maxPage),
-		minMinutes: clampInt(params.get('minMinutes'), DEFAULT_FLOOR_MINUTES, 0, MAX_FLOOR_MINUTES)
+		minMinutes: clampInt(params.get('minMinutes'), DEFAULT_FLOOR_MINUTES, 0, MAX_FLOOR_MINUTES),
+		q: (params.get('q') ?? '').trim().slice(0, BOARD_SEARCH_MAX).trim()
 	};
 }
 
@@ -144,6 +153,7 @@ export function boardQueryParams(q: BoardQuery): Record<string, string> {
 	if (q.dir !== 'desc') out.dir = q.dir;
 	if (q.page !== 1) out.page = String(q.page);
 	if (q.minMinutes !== DEFAULT_FLOOR_MINUTES) out.minMinutes = String(q.minMinutes);
+	if (q.q) out.q = q.q;
 	return out;
 }
 

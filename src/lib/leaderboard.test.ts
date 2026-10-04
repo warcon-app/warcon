@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+	BOARD_SEARCH_MAX,
 	boardQueryParams,
 	DEFAULT_BOARD_QUERY,
 	DEFAULT_FLOOR_MINUTES,
@@ -108,7 +109,8 @@ describe('board query', () => {
 			sort: 'winRate',
 			dir: 'asc',
 			page: 3,
-			minMinutes: 120
+			minMinutes: 120,
+			q: ''
 		});
 		expect(
 			parseBoardQuery(new URLSearchParams('scope=x&range=1y&sort=luck&dir=up&page=0&minMinutes=-5'))
@@ -118,6 +120,16 @@ describe('board query', () => {
 		expect(boardQueryParams(DEFAULT_BOARD_QUERY)).toEqual({});
 		const q = { ...DEFAULT_BOARD_QUERY, range: 'all' as const, minMinutes: 0, page: 2 };
 		expect(boardQueryParams(q)).toEqual({ range: 'all', minMinutes: '0', page: '2' });
+		expect(parseBoardQuery(new URLSearchParams(boardQueryParams(q)))).toEqual(q);
+	});
+	test('a search is trimmed, kept to BOARD_SEARCH_MAX, and left out when empty', () => {
+		expect(parseBoardQuery(new URLSearchParams('q=%20%20Viper%20')).q).toBe('Viper');
+		expect(parseBoardQuery(new URLSearchParams(`q=${'x'.repeat(250)}`)).q).toHaveLength(
+			BOARD_SEARCH_MAX
+		);
+		expect(parseBoardQuery(new URLSearchParams('q=%20%20')).q).toBe('');
+		const q = { ...DEFAULT_BOARD_QUERY, q: 'ARTEC' };
+		expect(boardQueryParams(q)).toEqual({ q: 'ARTEC' });
 		expect(parseBoardQuery(new URLSearchParams(boardQueryParams(q)))).toEqual(q);
 	});
 	test('ranges start where they say; all time has no start', () => {
