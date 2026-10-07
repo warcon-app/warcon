@@ -34,17 +34,20 @@ const LABELS: Record<string, string> = {
 	'Id.Item.RPG7': 'RPG-7',
 	'Id.Item.CGM4': 'MAAWS',
 	'Id.Item.MMGL': 'MGL-40',
-	// No name known: the tag's own words
-	'Id.Item.Launcher_04': 'Launcher 04',
-	'Id.Item.SMG_03': 'SMG 03',
-	'Id.Item.SR_04': 'SR 04',
-	'Id.Item.WEPN_026': 'WEPN 026',
-	'Id.Item.WEPN_027': 'WEPN 027',
-	'Id.Item.WEPN_028': 'WEPN 028',
-	'Id.Item.WEPN_030': 'WEPN 030',
-	'Id.Item.WEPN_032': 'WEPN 032',
-	'Id.Item.WEPN_033': 'WEPN 033',
-	'Id.Item.WEPN_035': 'WEPN 035',
+	// From a list shared among server admins, each in the class its kill distances put it in:
+	// three pistols, two SMGs, a bullpup with the KH-2002 and A-91, a rifle, a scout rifle, the
+	// longest-range rifle, and Launcher_04's kills nearly all vehicle explosions at a few hundred
+	// metres. Within a class (which pistol is which) the distances cannot tell.
+	'Id.Item.WEPN_026': 'M1911',
+	'Id.Item.WEPN_027': 'Deagle',
+	'Id.Item.WEPN_032': 'GGX 18',
+	'Id.Item.WEPN_028': 'MP5',
+	'Id.Item.SMG_03': 'PP-19 Vityaz',
+	'Id.Item.WEPN_033': 'Bushmaster M17S',
+	'Id.Item.WEPN_030': 'FAL',
+	'Id.Item.WEPN_035': 'Scout Rifle TD',
+	'Id.Item.SR_04': 'AMR 50',
+	'Id.Item.Launcher_04': '9K333 Verba',
 	// Explosives and tools
 	'Id.Item.M67Grenade': 'M67 frag grenade',
 	'Id.Item.C4Explosive': 'C4 charge',

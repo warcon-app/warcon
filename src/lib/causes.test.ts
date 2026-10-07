@@ -34,10 +34,20 @@ describe('causeLabel', () => {
 		expect(causeLabel('ID.Vehicle.WeaponExtension.STN_01.MistralAA')).toBe('Talon 9K-SAM');
 	});
 
+	test('the codenamed firearms and launcher have their names', () => {
+		expect(causeLabel('Id.Item.WEPN_026')).toBe('M1911');
+		expect(causeLabel('Id.Item.WEPN_027')).toBe('Deagle');
+		expect(causeLabel('Id.Item.WEPN_028')).toBe('MP5');
+		expect(causeLabel('Id.Item.WEPN_030')).toBe('FAL');
+		expect(causeLabel('Id.Item.WEPN_032')).toBe('GGX 18');
+		expect(causeLabel('Id.Item.WEPN_033')).toBe('Bushmaster M17S');
+		expect(causeLabel('Id.Item.WEPN_035')).toBe('Scout Rifle TD');
+		expect(causeLabel('Id.Item.SMG_03')).toBe('PP-19 Vityaz');
+		expect(causeLabel('Id.Item.SR_04')).toBe('AMR 50');
+		expect(causeLabel('Id.Item.Launcher_04')).toBe('9K333 Verba');
+	});
+
 	test('tags the game sends that have no name are listed in their own words', () => {
-		expect(causeLabel('Id.Item.SR_04')).toBe('SR 04');
-		expect(causeLabel('Id.Item.Launcher_04')).toBe('Launcher 04');
-		expect(causeLabel('Id.Item.WEPN_035')).toBe('WEPN 035');
 		expect(causeLabel('ID.Item.RepairTool.Drill.Light')).toBe('Light drill');
 		expect(causeLabel('Vehicle.Variant.Land.Wheeled.Humvee.Default')).toBe('Humvee');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_05.MainBarrel')).toBe('STN 05 main gun');
