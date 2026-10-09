@@ -12,6 +12,7 @@ import { forLog, publicMessage } from './http';
 import type { OrgRow, ServerRow } from './access';
 import { ACTIONS, readConfig } from './actions';
 import { reservedSlotsHeld } from '../reserved-doc';
+import { restartTimeFromConfig } from '../uptime';
 import { GameError, WardogsClient } from './rcon';
 import { matches, samples, serverLive } from './db/schema';
 import type { DbOrTx } from './db';
@@ -150,6 +151,16 @@ export interface Identity {
 	gameServerId: string;
 	/** MaxReservedSlots from the config document; null until read or when the document lacks it */
 	reservedSlots: number | null;
+	/** RestartTimeUtc in the config document as last read ("HH:MM", UTC); null when unset */
+	restartTimeUtcFile: string | null;
+	/**
+	 * RestartTimeUtc the running process started with: the game reads it at its start, so a change
+	 * to the document waits for the next restart. Taken from the first read of the document since
+	 * the process started (restartTimeRead).
+	 */
+	restartTimeUtc: string | null;
+	/** restartTimeUtc has been read for this process start; a restart clears it */
+	restartTimeRead: boolean;
 	features: Features | null;
 	/** when it was last (re)read; 0 asks the next observation to read it */
 	checkedAt: number;
@@ -203,6 +214,9 @@ export function memoryFor(server: ServerRow, org: OrgRow): ServerMemory {
 				build: '',
 				gameServerId: '',
 				reservedSlots: null,
+				restartTimeUtcFile: null,
+				restartTimeUtc: null,
+				restartTimeRead: false,
 				features: null,
 				checkedAt: 0,
 				hydrated: false
@@ -240,6 +254,8 @@ async function hydrateIdentity(env: Env, m: ServerMemory): Promise<void> {
 				build: serverLive.build,
 				gameServerId: serverLive.gameServerId,
 				reservedSlots: serverLive.reservedSlots,
+				restartTimeUtc: serverLive.restartTimeUtc,
+				restartTimeUtcFile: serverLive.restartTimeUtcFile,
 				startedAt: serverLive.startedAt
 			})
 			.from(serverLive)
@@ -250,6 +266,15 @@ async function hydrateIdentity(env: Env, m: ServerMemory): Promise<void> {
 			if (!m.identity.gameServerId) m.identity.gameServerId = row.gameServerId;
 			if (m.identity.reservedSlots === null) m.identity.reservedSlots = row.reservedSlots;
 			if (!m.startedAt && row.startedAt) m.startedAt = row.startedAt.getTime();
+			// The restart time the last worker found in effect, for the start it wrote with it (a
+			// restart since then is seen by refreshUptime, which asks for a new read). With no
+			// history (both empty: never read, or never set), the first read of the document is
+			// taken as in effect, though it may hold a change made since the process started.
+			if (!m.identity.restartTimeRead && (row.restartTimeUtc || row.restartTimeUtcFile)) {
+				m.identity.restartTimeUtc = row.restartTimeUtc;
+				m.identity.restartTimeUtcFile = row.restartTimeUtcFile;
+				m.identity.restartTimeRead = true;
+			}
 		}
 	} catch (e) {
 		console.warn(`[warcon] identity of ${m.server.name} not read:`, publicMessage(e));
@@ -301,8 +326,15 @@ async function refreshIdentity(client: WardogsClient, m: ServerMemory, now: numb
 	}
 	// How many player slots the server holds back for reserved players lives in its config document
 	// (MaxReservedSlots), which every build serves; the status route only reports the public cap.
+	// So does the game's daily restart time (RestartTimeUtc), which it reads when it starts.
 	try {
-		next.reservedSlots = reservedSlotsHeld((await readConfig(client)).text);
+		const text = (await readConfig(client)).text;
+		next.reservedSlots = reservedSlotsHeld(text);
+		next.restartTimeUtcFile = restartTimeFromConfig(text);
+		if (!next.restartTimeRead) {
+			next.restartTimeUtc = next.restartTimeUtcFile;
+			next.restartTimeRead = true;
+		}
 	} catch (err) {
 		retrySoon();
 		holdFor(m, err);
@@ -314,6 +346,11 @@ async function refreshIdentity(client: WardogsClient, m: ServerMemory, now: numb
 
 /** uptimeSeconds is whole seconds and the read has latency: a start time this close is the same start. */
 const START_DRIFT_MS = 5_000;
+/**
+ * A start this much later than the one on record is a restart (the look's latency through a relay
+ * moves the start by more than the drift above); as SAME_START_MS in trigger-rules.
+ */
+const NEW_START_MS = 60_000;
 
 /**
  * Reads the process uptime and keeps it as a start time. A failure keeps the previous answer
@@ -330,7 +367,14 @@ async function refreshUptime(client: WardogsClient, m: ServerMemory): Promise<vo
 		const up = Number(h?.uptimeSeconds);
 		if (!Number.isFinite(up) || up < 0) return;
 		const startedAt = now - Math.floor(up) * 1000;
-		if (Math.abs(startedAt - m.startedAt) > START_DRIFT_MS) m.startedAt = startedAt;
+		if (Math.abs(startedAt - m.startedAt) <= START_DRIFT_MS) return;
+		// A restart: the process read its config at its start, so read the document again soon,
+		// and take what it says then as the restart time in effect.
+		if (m.startedAt && startedAt - m.startedAt > NEW_START_MS) {
+			m.identity.restartTimeRead = false;
+			m.identity.checkedAt = 0;
+		}
+		m.startedAt = startedAt;
 	} catch (err) {
 		if (err instanceof GameError && err.code === 'no_route') m.healthUnserved = true;
 		else holdFor(m, err);
@@ -439,6 +483,8 @@ const liveKeyOf = (m: ServerMemory) =>
 		m.identity.build,
 		m.identity.gameServerId,
 		m.identity.reservedSlots,
+		m.identity.restartTimeUtc,
+		m.identity.restartTimeUtcFile,
 		m.startedAt,
 		idsOf(m.players)
 	]);
@@ -643,6 +689,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						profiles: risk.profiles,
 						performance: risk.performance,
 						startedAt: m.startedAt,
+						restartTimeUtc: m.identity.restartTimeUtc,
 						matchEnd,
 						recovered: wasOffline,
 						// the lines the match stage will write, for the broadcast's {mvp} and {top}

@@ -3,7 +3,7 @@ import type { StatusStyle } from './status-styles';
 import type { OrgRole } from '$lib/server/access';
 import type { BuiltinRole, Capability } from '$lib/capabilities';
 import type { BanReason } from '$lib/ban-reasons';
-import type { RestartSchedule } from '$lib/uptime';
+import type { ManualRestart } from '$lib/uptime';
 
 export type { OrgRole, Capability, BuiltinRole };
 
@@ -66,8 +66,8 @@ export interface ServerInfo {
 	publicLeaderboards: boolean;
 	/** the public status page also carries the last kills */
 	publicKills: boolean;
-	/** when the game restarts it (see $lib/uptime); null runs on the game's default */
-	restartSchedule: RestartSchedule | null;
+	/** an owner's own restart time (UTC), used instead of the game's; null: the game decides */
+	restartSchedule: ManualRestart | null;
 	/** what the site owner allows this server's organisation */
 	allowPublicStatus: boolean;
 	allowPublicLeaderboards: boolean;
@@ -148,6 +148,13 @@ export interface LiveView {
 	 * reserved players, on top of `status.maxPlayers`; null until the worker has read it
 	 */
 	reservedSlots: number | null;
+	/**
+	 * RestartTimeUtc ("HH:MM", UTC) from the config document as the running process started with
+	 * it, and as the document holds it now (in effect from the next restart); null when unset or
+	 * not read yet
+	 */
+	restartTimeUtc?: string | null;
+	restartTimeUtcFile?: string | null;
 	/** set while the listener has asked the panel to slow down (429 with Retry-After) */
 	throttledUntil: string | null;
 	status: Status | null;

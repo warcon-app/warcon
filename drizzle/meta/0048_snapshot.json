@@ -1,5 +1,5 @@
 {
-  "id": "faa3c5fa-0afc-4dc2-8c3e-7a371878a844",
+  "id": "40e744e9-b165-4a56-9019-1eec9d97cd36",
   "prevId": "c008e5aa-9b64-4436-bf90-51d6fa68af3b",
   "version": "7",
   "dialect": "postgresql",
@@ -4211,6 +4211,18 @@
         "reserved_slots": {
           "name": "reserved_slots",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "restart_time_utc": {
+          "name": "restart_time_utc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "restart_time_utc_file": {
+          "name": "restart_time_utc_file",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

@@ -26,6 +26,7 @@
 	import { watchLive } from '$lib/live';
 	import { RULE_KINDS } from '$lib/rule-kinds';
 	import RulePicker from '$lib/components/RulePicker.svelte';
+	import { identity } from '$lib/health.svelte';
 	import { restartScheduleOf } from '$lib/uptime';
 	import type {
 		DryRunResult,
@@ -39,7 +40,16 @@
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let admin = $derived(can(data.server.caps, 'automation.manage'));
-	let restartSchedule = $derived(restartScheduleOf(data.server.restartSchedule));
+	let restartNote = $derived.by(() => {
+		const s = restartScheduleOf(
+			data.server.restartSchedule,
+			(identity[data.server.id] ?? data.identity).restartTimeUtc
+		);
+		if (s.kind === 'uptime')
+			return 'The game restarts 24 hours after it started, once the round then in progress ends.';
+		const from = s.source === 'config' ? 'RestartTimeUtc in its config' : 'set on the Settings tab';
+		return `The game restarts daily at ${s.time} UTC (${from}), once the round then in progress ends.`;
+	});
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
 
 	/** A risk_kick rule's score threshold, 0 when off; rules saved with a level read as 20 or 50. */
@@ -1606,9 +1616,9 @@
 					<div class="space-y-1.5 text-[13px]">
 						<span class="field-label">When</span>
 						<p>
-							Once when you save it, then once a day: in the last round before the 24-hour restart,
-							so the server comes back up on a new order, or straight after a restart it could not
-							see coming.
+							Once when you save it, then once a day: in the last round before the scheduled
+							restart, so the server comes back up on a new order, or straight after a restart it
+							could not see coming.
 						</p>
 					</div>
 					<p class="note">
@@ -1680,16 +1690,7 @@
 					</fieldset>
 					{@render placeholders('restart_notice', [f.leadMessage, f.message])}
 					<p class="note">
-						{#if restartSchedule.kind === 'uptime'}
-							The game restarts this server {restartSchedule.hours} hours after it started, once the round
-							then in progress ends.
-						{:else if restartSchedule.kind === 'daily'}
-							The host restarts this server daily at {restartSchedule.time} ({restartSchedule.timeZone}),
-							once the round then in progress ends.
-						{:else}
-							This server has no scheduled restart, so this rule sends nothing.
-						{/if}
-						The schedule is set on the Settings tab.
+						{restartNote} See Game restart on the Settings tab.
 					</p>
 				{:else if f.kind === 'match_broadcast'}
 					<fieldset class="space-y-2">

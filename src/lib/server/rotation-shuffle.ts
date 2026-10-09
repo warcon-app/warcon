@@ -1,9 +1,9 @@
 // The Rotation shuffle rule. An Ordered rotation of every map, time of day and control zone starts
 // from the top at each game start, so a server plays the same few entries every day; a Random one
 // can put a map on several times in a row. Live builds change the rotation only through the config
-// document, so the rule writes it in a new order once a run: in the last round before the 24-hour
-// restart where it can see that coming, so the server comes back up on it, otherwise right after the
-// restart; and once when the rule is saved. The maps take turns in the rule's order and each map's
+// document, so the rule writes it in a new order once a run: in the last round before the server's
+// next restart ($lib/uptime: daily at a time UTC, or 24 hours up) where it can see that coming, so
+// the server comes back up on it, otherwise right after the restart; and once when the rule is saved. The maps take turns in the rule's order and each map's
 // control zones take turns ($lib/rotation-doc). Where a server goes next once its order changes has
 // not been seen, so the new order starts with the map after the one on and puts the entry on last
 // (a server that stays on its entry, or goes back to the top, then goes on from the top), is read
@@ -69,7 +69,7 @@ const SAME_RUN_MS = 60_000;
 /**
  * One look at the server: whether to shuffle, and the state to keep (null: nothing changes). A rule
  * with no state (new, or switched on again) shuffles at once. After that, once a run: when the
- * 24-hour restart is due (the round on is the last), for the next run to start on; or after a
+ * next restart is due (the round on is the last), for the next run to start on; or after a
  * restart that no shuffle was made for (one the rule could not see coming, or a second one in a
  * row), for the rest of that run. Nothing while the start is unknown.
  */

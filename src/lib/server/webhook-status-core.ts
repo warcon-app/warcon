@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
 import type { FactionScore, LiveView, Player } from '$lib/types';
 import { factionColor, fmtDuration, isMod, mapName, prettify, zoneLabel } from '$lib/format';
 import { mapArtCandidates } from '$lib/map-art';
-import { restartWindow, type RestartSchedule } from '$lib/uptime';
+import { restartScheduleOf, restartWindow, type ManualRestart } from '$lib/uptime';
 import { scoreCapOf } from '$lib/match';
 import type { StatusStyle } from '$lib/status-styles';
 import type { FeatureSet } from '$lib/features';
@@ -18,8 +18,8 @@ import type { DiscordPayload, Embed, EmbedField } from './webhook-delivery';
 export interface StatusServer {
 	id: string;
 	name: string;
-	/** when the game restarts it; null or absent is the game's default */
-	restartSchedule?: RestartSchedule | null;
+	/** an owner's own restart time; null or absent: the game decides */
+	restartSchedule?: ManualRestart | null;
 }
 export interface StatusOptions {
 	appName: string;
@@ -334,7 +334,7 @@ function buildBody(opts: StatusOptions, server: StatusServer, live: LiveView | n
 	const observedAt = live.observedAt;
 	// Discord renders "9 hours ago" itself, so the uptime line needs no edit to stay right; the
 	// restart note flips once, when the threshold passes.
-	const restart = restartWindow(live.startedAt, server.restartSchedule, opts.now);
+	const restart = restartWindow(live.startedAt, scheduleFor(server, live), opts.now);
 	const upLine = restart
 		? `Up since ${relative(live.startedAt!)}${restart.due ? ' · 🔁 Restarts after this round' : ''}\n`
 		: '';
@@ -409,13 +409,17 @@ function buildBody(opts: StatusOptions, server: StatusServer, live: LiveView | n
 	});
 }
 
+/** The owner's own time, else RestartTimeUtc as the running process has it, else 24 hours up. */
+const scheduleFor = (server: StatusServer, live: LiveView) =>
+	restartScheduleOf(server.restartSchedule, live.restartTimeUtc);
+
 /** What an edit is for: everything shown except the clocks. */
 function substance(server: StatusServer, live: LiveView | null, now: number): unknown {
 	if (!live || !live.observedAt) return [server.id, server.name, 'waiting'];
 	if (!live.ok || !live.status)
 		return [server.id, server.name, 'down', live.error, live.gameServerId];
 	const s = live.status;
-	const restart = restartWindow(live.startedAt, server.restartSchedule, now);
+	const restart = restartWindow(live.startedAt, scheduleFor(server, live), now);
 	return [
 		server.id,
 		server.name,

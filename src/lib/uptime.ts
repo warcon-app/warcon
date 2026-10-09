@@ -1,173 +1,115 @@
-// How long the game process has been up, and where that sits against the server's scheduled
-// restart. WARDOGS restarts a server on a schedule, but not on the mark: the restart happens when
-// the round in progress ends. So once the scheduled time passes the server is "restarting after
-// this round", and before it there is a window that opens in so many minutes. The worker derives
-// `startedAt` from `uptimeSeconds` on GET /v1/health; the header, the status cards and the
-// Restart notice rule read this.
+// How long the game process has been up, and where that sits against the server's next restart.
+// WARDOGS does not restart on the mark: the restart happens when the round in progress ends. So
+// once the time passes the server is "restarting after this round", and before it there is a
+// window that opens in so many minutes. The worker derives `startedAt` from `uptimeSeconds` on
+// GET /v1/health; the header, the status cards and the rules read this.
 //
-// What the schedule is depends on the host, so it is a per-server setting (`restart_schedule`):
-// - uptime: once the process has been up so many hours (the game's own restart, 24 by default,
-//   twelve before September 2026).
-// - daily: at a time of day the host lets the owner pick (BisectHosting since September 2026),
-//   in the host's time zone. The round then in progress still finishes first.
-// - none: no scheduled restart; the uptime shows, nothing else.
+// When the restart comes, in order (restartScheduleOf):
+// - an owner's own time, set on the Settings tab: daily at HH:MM UTC (`servers.restart_schedule`);
+// - the game's own daily time, `RestartTimeUtc=HH:MM` (UTC) in the config document's
+//   [/Script/WDGame.WDServerLifecycleSubsystem] section, as the running process read it when it
+//   started (the setting takes effect at the next restart; `server_live.restart_time_utc`);
+// - else the game's default: once the process has been up 24 hours.
+import { getScalar, parseIni } from './config-doc';
 
-/** Hours of uptime after which WARDOGS restarts a server that has no schedule of its own. */
+/** Hours of uptime after which WARDOGS restarts a server that has no daily time. Fixed in the game. */
 export const RESTART_AFTER_HOURS = 24;
 
-/** `daily`'s time is "HH:MM" on a 24-hour clock, its zone an IANA name such as America/Chicago. */
+/** The longest a restart notice's heads-up may lead by: just under a cycle. */
+export const MAX_RESTART_LEAD_MINUTES = RESTART_AFTER_HOURS * 60 - 1;
+
+/** What a server's next restart is reckoned from; `time` is "HH:MM" UTC. */
 export type RestartSchedule =
-	| { kind: 'uptime'; hours: number }
-	| { kind: 'daily'; time: string; timeZone: string }
-	| { kind: 'none' };
+	{ kind: 'uptime' } | { kind: 'daily'; time: string; source: 'config' | 'manual' };
 
-/** What a server with no `restart_schedule` of its own gets. */
-export const DEFAULT_RESTART_SCHEDULE: RestartSchedule = {
-	kind: 'uptime',
-	hours: RESTART_AFTER_HOURS
-};
+/** The game's default: 24 hours up. */
+export const DEFAULT_RESTART_SCHEDULE: RestartSchedule = { kind: 'uptime' };
 
-/** The longest uptime schedule a server may set: a week. */
-export const MAX_RESTART_HOURS = 168;
-
-/** The longest a restart notice's heads-up may lead by: just under a day, the longest daily cycle. */
-export const MAX_RESTART_LEAD_MINUTES = 24 * 60 - 1;
-
-const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
-
-export function isTimeZone(tz: string): boolean {
-	if (!tz) return false;
-	try {
-		new Intl.DateTimeFormat('en-US', { timeZone: tz });
-		return true;
-	} catch {
-		return false;
-	}
+/** An owner's own restart time, as `servers.restart_schedule` holds it and the API takes it. */
+export interface ManualRestart {
+	/** "HH:MM", UTC */
+	time: string;
 }
 
-/** A stored or submitted schedule, checked; null when it is missing or not a schedule. */
-export function readRestartSchedule(raw: unknown): RestartSchedule | null {
-	if (!raw || typeof raw !== 'object') return null;
-	const r = raw as Record<string, unknown>;
-	if (r.kind === 'none') return { kind: 'none' };
-	if (r.kind === 'uptime') {
-		const hours = Number(r.hours);
-		return Number.isInteger(hours) && hours >= 1 && hours <= MAX_RESTART_HOURS
-			? { kind: 'uptime', hours }
-			: null;
-	}
-	if (r.kind === 'daily') {
-		const time = typeof r.time === 'string' ? r.time.trim() : '';
-		const timeZone = typeof r.timeZone === 'string' ? r.timeZone.trim() : '';
-		return TIME.test(time) && isTimeZone(timeZone) ? { kind: 'daily', time, timeZone } : null;
-	}
-	return null;
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** An owner's own time, checked: `{ time: "HH:MM" }` from 00:00 to 23:59; null for anything else. */
+export function readManualRestart(raw: unknown): ManualRestart | null {
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+	const time = (raw as Record<string, unknown>).time;
+	return typeof time === 'string' && TIME.test(time) ? { time } : null;
 }
 
-/** The schedule a server runs on: its own, else the game's default. */
-export const restartScheduleOf = (raw: unknown): RestartSchedule =>
-	readRestartSchedule(raw) ?? DEFAULT_RESTART_SCHEDULE;
+const S_LIFECYCLE = '/Script/WDGame.WDServerLifecycleSubsystem';
+const RESTART_TIME_KEY = 'RestartTimeUtc';
 
-/** "after 24 hours up", "daily at 07:00 America/Chicago", "none". */
-export function describeRestartSchedule(s: RestartSchedule): string {
-	if (s.kind === 'uptime') return `after ${s.hours} hour${s.hours === 1 ? '' : 's'} up`;
-	if (s.kind === 'daily') return `daily at ${s.time} ${s.timeZone}`;
-	return 'none';
-}
-
-/** Milliseconds `timeZone` is ahead of UTC at the instant `at`. */
-function zoneOffsetMs(timeZone: string, at: number): number {
-	const parts = new Intl.DateTimeFormat('en-US', {
-		timeZone,
-		hourCycle: 'h23',
-		year: 'numeric',
-		month: 'numeric',
-		day: 'numeric',
-		hour: 'numeric',
-		minute: 'numeric',
-		second: 'numeric'
-	}).formatToParts(at);
-	const n = (type: string) => Number(parts.find((p) => p.type === type)?.value);
-	const wall = Date.UTC(
-		n('year'),
-		n('month') - 1,
-		n('day'),
-		n('hour') % 24,
-		n('minute'),
-		n('second')
-	);
-	return wall - Math.floor(at / 1000) * 1000;
+/**
+ * RestartTimeUtc in a config document, as "HH:MM"; null when the document does not set it, or not
+ * as a time. Section and key match in any case, as the game reads them; a header and the key on
+ * one line is a key of the section above, which the game strips, so it is not the setting.
+ */
+export function restartTimeFromConfig(text: string): string | null {
+	const raw = getScalar(parseIni(text), S_LIFECYCLE, RESTART_TIME_KEY);
+	const m = raw === null ? null : /^(\d{1,2}):(\d{2})$/.exec(raw.trim());
+	if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
+	return `${m[1].padStart(2, '0')}:${m[2]}`;
 }
 
 /**
- * The first moment after `after` that the clock in `timeZone` reads `time`. A time that does not
- * exist on a spring-forward day lands an hour later, the way the clock itself skips it.
+ * The schedule a server runs on: an owner's own time, else RestartTimeUtc as the running process
+ * read it, else 24 hours up.
  */
-export function nextDailyAt(after: number, time: string, timeZone: string): number {
+export function restartScheduleOf(
+	manual: unknown,
+	inEffect: string | null | undefined
+): RestartSchedule {
+	const own = readManualRestart(manual);
+	if (own) return { kind: 'daily', time: own.time, source: 'manual' };
+	if (inEffect && TIME.test(inEffect)) return { kind: 'daily', time: inEffect, source: 'config' };
+	return DEFAULT_RESTART_SCHEDULE;
+}
+
+/** "after 24 hours up", "daily at 08:00 UTC, from RestartTimeUtc in the config", … */
+export function describeRestartSchedule(s: RestartSchedule): string {
+	if (s.kind === 'uptime') return `after ${RESTART_AFTER_HOURS} hours up`;
+	return `daily at ${s.time} UTC, ${s.source === 'config' ? 'from RestartTimeUtc in the config' : 'set on the Settings tab'}`;
+}
+
+/** The first moment after `after` that the UTC clock reads `time`. */
+export function nextUtcAt(after: number, time: string): number {
 	const [hh, mm] = time.split(':').map(Number);
-	const local = new Date(after + zoneOffsetMs(timeZone, after));
-	for (let day = 0; day <= 2; day++) {
-		const wall = Date.UTC(
-			local.getUTCFullYear(),
-			local.getUTCMonth(),
-			local.getUTCDate() + day,
-			hh,
-			mm
-		);
-		// The offset at the guess, then at the answer: when a DST change falls between them, the
-		// answer with its own offset is the real one, and with neither (a skipped time) the later.
-		let at = wall - zoneOffsetMs(timeZone, wall);
-		const off = zoneOffsetMs(timeZone, at);
-		if (wall - off !== at) {
-			const alt = wall - off;
-			at = zoneOffsetMs(timeZone, alt) === off ? alt : Math.max(at, alt);
-		}
-		if (at > after) return at;
-	}
-	// unreachable for a real zone: the time recurs within two days
-	return after + 24 * 3600_000;
+	const d = new Date(after);
+	const at = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hh, mm);
+	return at > after ? at : at + 24 * 3600_000;
 }
 
 export interface RestartWindow {
 	/** milliseconds since the game process started */
 	upMs: number;
-	/** the scheduled time has passed: the server restarts when the current round ends */
+	/** the time has passed: the server restarts when the current round ends */
 	due: boolean;
-	/** milliseconds until the scheduled time; null when due, or when no restart is scheduled */
+	/** milliseconds until the time; null when due */
 	untilDueMs: number | null;
-	/** when the window opens (ms since the epoch) for this game start; null when none is scheduled */
-	dueAt: number | null;
+	/** when the window opens for this game start (ms since the epoch) */
+	dueAt: number;
 }
 
 /** Shown as "restart window in …" once the threshold is this close. */
 export const RESTART_SOON_MS = 60 * 60_000;
 
-/**
- * null when the start time is unknown. `schedule` is the server's schedule; a number is hours of
- * uptime, 0 meaning no scheduled restart (tests), and null or undefined the game's default.
- */
+/** null when the start time is unknown; no schedule is the game's default. */
 export function restartWindow(
 	startedAt: string | null | undefined,
-	schedule: RestartSchedule | number | null | undefined,
+	schedule: RestartSchedule | null | undefined,
 	now: number
 ): RestartWindow | null {
 	if (!startedAt) return null;
 	const started = Date.parse(startedAt);
 	if (!Number.isFinite(started)) return null;
 	const upMs = Math.max(0, now - started);
-	const s: RestartSchedule =
-		typeof schedule === 'number'
-			? schedule > 0
-				? { kind: 'uptime', hours: schedule }
-				: { kind: 'none' }
-			: (schedule ?? DEFAULT_RESTART_SCHEDULE);
+	const s = schedule ?? DEFAULT_RESTART_SCHEDULE;
 	const dueAt =
-		s.kind === 'uptime'
-			? started + s.hours * 3600_000
-			: s.kind === 'daily'
-				? nextDailyAt(started, s.time, s.timeZone)
-				: null;
-	if (dueAt === null) return { upMs, due: false, untilDueMs: null, dueAt: null };
+		s.kind === 'daily' ? nextUtcAt(started, s.time) : started + RESTART_AFTER_HOURS * 3600_000;
 	const untilDueMs = dueAt - now;
 	return untilDueMs <= 0
 		? { upMs, due: true, untilDueMs: null, dueAt }

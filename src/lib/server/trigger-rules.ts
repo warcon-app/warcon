@@ -142,9 +142,8 @@ export function pingKickStep(
 	return { state: next, kicks };
 }
 /**
- * Tells players about the server's scheduled restart (its restart schedule, $lib/uptime: after so
- * many hours up, or daily at a set time), which happens at the end of the round then in
- * progress. Two broadcasts per game start: a heads-up `leadMinutes` before the window opens
+ * Tells players about the server's next restart ($lib/uptime's restartScheduleOf: daily at a
+ * time UTC, or 24 hours up), which happens at the end of the round then in progress. Two broadcasts per game start: a heads-up `leadMinutes` before the window opens
  * (0 = none) and `message` once it has, repeated every `repeatMinutes` while the round drags on
  * (0 = once).
  */
@@ -612,7 +611,7 @@ export function restartNoticeStage(
 		startedAt: number;
 		playerCount: number;
 		now: number;
-		/** the server's restart schedule; null or undefined is the game's default */
+		/** the server's restart schedule (restartScheduleOf); null or undefined is 24 hours up */
 		schedule?: RestartSchedule | null;
 	}
 ): RestartNoticeStage | null {

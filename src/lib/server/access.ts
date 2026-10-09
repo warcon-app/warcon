@@ -16,7 +16,7 @@ import {
 	type Capability
 } from '../capabilities';
 import type { ListKind } from '../types';
-import { readRestartSchedule, type RestartSchedule } from '../uptime';
+import { readManualRestart, type ManualRestart } from '../uptime';
 import { accessFromCaps, resolveAccess, type ServerAccess } from './access-resolve';
 import { keyActorId, keyActorName, keyCoversServer, type ApiKeyPrincipal } from './apikeys-core';
 import {
@@ -445,8 +445,8 @@ export type ServerSummary = {
 	publicStatus: boolean;
 	publicLeaderboards: boolean;
 	publicKills: boolean;
-	/** the server's own restart schedule; null runs on the game's default */
-	restartSchedule: RestartSchedule | null;
+	/** an owner's own restart time (UTC); null: the game decides */
+	restartSchedule: ManualRestart | null;
 	allowPublicStatus: boolean;
 	allowPublicLeaderboards: boolean;
 };
@@ -474,7 +474,7 @@ export function shapeServer(
 		publicStatus: s.publicStatus,
 		publicLeaderboards: s.publicLeaderboards,
 		publicKills: s.publicKills,
-		restartSchedule: readRestartSchedule(s.restartSchedule),
+		restartSchedule: readManualRestart(s.restartSchedule),
 		allowPublicStatus: org.allowPublicStatus,
 		allowPublicLeaderboards: org.allowPublicLeaderboards
 	};
