@@ -656,7 +656,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		cap: 'players.kill',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
-		run: (c, p) => c.json('POST', `/v1/players/${steamId(p.steamId)}/kill`)
+		run: (c, p) => c.json('POST', `/v1/players/${steamId(p.steamId)}/kill`, {})
 	},
 	// As the official console does it: move the faction, then kill the player so they respawn on the
 	// new side. A failed kill is not an error; the move already happened. A kill refused for sending
@@ -678,7 +678,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 			let respawned = true;
 			let retryAfterMs = 0;
 			try {
-				await c.json('POST', `/v1/players/${id}/kill`);
+				await c.json('POST', `/v1/players/${id}/kill`, {});
 			} catch (err) {
 				if (!(err instanceof GameError)) throw err;
 				respawned = false;
