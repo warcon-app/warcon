@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { FAILURES_ONLY, ONE_PER_SERVER, RULE_GROUPS, RULE_KINDS } from './rule-kinds';
+import { FAILURES_ONLY, NO_ACTIONS, ONE_PER_SERVER, RULE_GROUPS, RULE_KINDS } from './rule-kinds';
 import { TRIGGER_KINDS, TRIGGER_LABELS } from './server/trigger-rules';
 
 describe('the kinds of rule the panel lists', () => {
@@ -11,6 +11,7 @@ describe('the kinds of rule the panel lists', () => {
 		}
 		for (const kind of FAILURES_ONLY) expect(TRIGGER_KINDS).toContain(kind);
 		for (const kind of ONE_PER_SERVER) expect(TRIGGER_KINDS).toContain(kind);
+		for (const kind of NO_ACTIONS) expect(TRIGGER_KINDS).toContain(kind);
 	});
 
 	test('listed group by group, in the order the groups are shown', () => {

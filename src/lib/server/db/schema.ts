@@ -847,7 +847,8 @@ export const triggers = pgTable(
 				'afk_protection',
 				'name_change',
 				'bounty',
-				'rotation_shuffle'
+				'rotation_shuffle',
+				'live_name'
 			]
 		}).notNull(),
 		name: text('name').notNull(),

@@ -75,6 +75,8 @@ import { observations, observationSeconds } from './metrics';
 import { notifyWatchedJoins } from './webhook-delivery';
 import { nextDue, withHold } from './poller-schedule';
 import { cashByFaction } from '$lib/cash';
+import { keepName } from './live-name-write';
+import type { NameMemory } from './live-name';
 import type { Features, LiveView, Player, Status } from '$lib/types';
 
 export type Tier = LiveView['tier'];
@@ -141,6 +143,8 @@ export interface ServerMemory {
 	startedAt: number;
 	/** the build answered "no such endpoint" to /v1/health; asked again when the identity is re-read */
 	healthUnserved: boolean;
+	/** the Live server name rule's write: its own name, to put back once it is off (live-name.ts) */
+	liveName: NameMemory | null;
 	/** observations completed */
 	count: number;
 }
@@ -223,6 +227,7 @@ export function memoryFor(server: ServerRow, org: OrgRow): ServerMemory {
 			},
 			startedAt: 0,
 			healthUnserved: false,
+			liveName: null,
 			count: 0
 		};
 		registry.set(server.id, m);
@@ -809,6 +814,11 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	const seen = players?.map((p) => p.steamId) ?? [];
 	if (isOwner() && seen.length && m.bans.size)
 		await stage('bans', m, () => kickBanned(env, server, m.org, client, seen, m.bans));
+	// The Live server name rule's name, or its own name put back once it is off: nothing for a server
+	// that has never had the rule on.
+	const nameRule = rows.find((r) => r.kind === 'live_name');
+	if (isOwner() && m.status && (nameRule || m.liveName))
+		await stage('name', m, () => keepName(env, m, client, nameRule, started, period));
 	if (diff.joined.length && steamEnabled(env))
 		void getProfiles(
 			env,

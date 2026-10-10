@@ -568,7 +568,8 @@ export type TriggerKind =
 	| 'afk_protection'
 	| 'name_change'
 	| 'bounty'
-	| 'rotation_shuffle';
+	| 'rotation_shuffle'
+	| 'live_name';
 
 export interface TriggerView {
 	id: string;
@@ -584,6 +585,17 @@ export interface TriggerView {
 	phase?: { on: boolean; since: string | null; why: string } | null;
 	/** a Bounty rule's open bounty: on whom, the run that set it, and when */
 	bounty?: { steamId: string; name: string; streak: number; setAt: string } | null;
+	/**
+	 * a Live server name rule's last write (the name and when) and why the latest try wrote nothing
+	 * ('' when it did); `restored` once its own name went back after it was switched off
+	 */
+	liveName?: {
+		name: string;
+		at: string | null;
+		refused: string;
+		since: string | null;
+		restored: boolean;
+	} | null;
 }
 
 export interface DryRunResult {
