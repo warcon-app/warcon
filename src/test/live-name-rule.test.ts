@@ -2,7 +2,7 @@
 // document, its revision, a pinned name, refusals): it writes its name into ServerName and nothing
 // else, not again within a minute, a name typed across lines stays on one line of the document, a
 // refusal is recorded in a fixed phrase, and switched off or deleted it puts the server's own name
-// back.
+// back. The Config tab is told that the rule keeps the name only by someone who may apply it.
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
@@ -14,7 +14,7 @@ import { WardogsClient } from '$lib/server/rcon';
 import { invalidateTriggers, listTriggers } from '$lib/server/triggers';
 import type { LiveNameState } from '$lib/server/live-name';
 import { hasTestDb, testEnv } from './db';
-import { callApi, stubGateway } from './call';
+import { callApi, callLoad, stubGateway } from './call';
 import { seedWorld, type World } from './world';
 
 const ROUTES = join(import.meta.dir, '..', 'routes');
@@ -346,5 +346,23 @@ describe.skipIf(!hasTestDb)('Live server name on a live look', () => {
 		aMinuteOn();
 		await look();
 		expect(game.text).toContain('ServerName="Demo\r\n');
+	});
+
+	test('the Config tab is told the rule keeps the name only by someone who may apply the document', async () => {
+		await fresh();
+		const { load } = await import(
+			join(ROUTES, '(app)', 'server', '[id]', 'config', '+page.server.ts')
+		);
+		const told = async (who: 'owner' | 'admin' | 'operator' | 'viewer') => {
+			const got = await callLoad(load, w.users[who], { params: { id: w.server.id } });
+			expect(got.status).toBe(200);
+			return (got.body as { liveName: boolean }).liveName;
+		};
+		expect(await told('owner')).toBe(false);
+		await save({ config: { base: 'Demo Clan #1' } });
+		expect(await told('owner')).toBe(true);
+		expect(await told('admin')).toBe(true);
+		expect(await told('viewer')).toBe(false);
+		expect(await told('operator')).toBe(false);
 	});
 });

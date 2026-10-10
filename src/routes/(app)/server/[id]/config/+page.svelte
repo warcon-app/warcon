@@ -6,7 +6,7 @@
 	import ConfigForm from '$lib/components/ConfigForm.svelte';
 	import TickReward from '$lib/components/TickReward.svelte';
 	import { sponsor as banners, loadSponsor } from '$lib/sponsor.svelte';
-	import { setScalarInText } from '$lib/config-doc';
+	import { getScalar, parseIni, setScalarInText } from '$lib/config-doc';
 	import { lockedKeys, S_SESSION } from '$lib/config-fields';
 	import { fmtTime } from '$lib/format';
 	import type { ConfigDoc, ConfigResult, Status } from '$lib/types';
@@ -232,17 +232,38 @@
 		if (failure) return;
 		await loadBanner(true);
 	}
+	const nameIn = (t: string) => getScalar(parseIni(t), S_SESSION, 'ServerName');
+	const nameless = (t: string) => setScalarInText(t, S_SESSION, 'ServerName', '');
+	/**
+	 * While a Live server name rule keeps the name, the document changes under an open page about
+	 * once a minute. A conflict where that line is all that changed since the page loaded, and not one
+	 * this page edited, is applied again over the newer revision with the name the rule wrote.
+	 */
+	async function overTheName(): Promise<ConfigResult | null> {
+		if (!doc || !data.liveName || nameIn(text) !== nameIn(doc.text)) return null;
+		const live = await rconGet<ConfigDoc>(id, 'config');
+		if (nameless(live.text) !== nameless(doc.text)) return null;
+		const merged = setScalarInText(text, S_SESSION, 'ServerName', nameIn(live.text) ?? '');
+		const r = await rconPost<ConfigResult>(id, 'configApply', {
+			text: merged,
+			revision: live.revision,
+			force: false
+		});
+		if (!r.conflict) text = merged;
+		return r;
+	}
 	async function runConfig(action: 'configValidate' | 'configApply') {
 		busy = true;
 		result = null;
 		failure = '';
 		lineErrors = [];
 		try {
-			const r = await rconPost<ConfigResult>(
+			let r = await rconPost<ConfigResult>(
 				id,
 				action,
 				action === 'configApply' ? { text, revision: doc?.revision, force } : { text }
 			);
+			if (r.conflict) r = (await overTheName()) ?? r;
 			if (r.conflict) {
 				failure = `${r.errorMessage || 'The config changed on the server since you loaded it.'} Reload to see the current version, or tick Force to overwrite.`;
 				return;
@@ -477,6 +498,7 @@
 			disabled={readOnly}
 			tickRange={tickKnown ? { min: tickMin, max: tickMax } : null}
 			liveRoutes={data.features.liveSettings}
+			nameRule={data.liveName ? `/server/${encodeURIComponent(id)}/automation` : null}
 		/>
 		<p class="note mt-4">
 			Fields edit the file one line at a time, so keys the form does not know (rotation entries, ban
