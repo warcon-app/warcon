@@ -5,7 +5,7 @@ import { getOrg, getServer, requireUser, serverAccessFor, shapeServer } from '$l
 import { publicMessage } from '$lib/server/http';
 import { gateway } from '$lib/server/gateway';
 import { cachedCatalog, rememberCatalog } from '$lib/server/catalog-cache';
-import type { Occupancy } from '$lib/health.svelte';
+import type { Identity, Occupancy } from '$lib/health.svelte';
 import type { Catalog, Features, ServerInfo } from '$lib/types';
 
 const EMPTY: Catalog = { maps: [], lightings: [], experiences: [] };
@@ -59,10 +59,12 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 	}
 	// What the worker last learned about the build: never a game request from a page load, and
 	// never a reason for the page to fail (the worker may be down or the relay slow).
-	let identity: { build: string; gameServerId: string; startedAt: string | null } = {
+	let identity: Identity = {
 		build: '',
 		gameServerId: '',
-		startedAt: null
+		startedAt: null,
+		restartTimeUtc: null,
+		restartTimeUtcFile: null
 	};
 	let occupancy: Occupancy | null = null;
 	try {
@@ -70,7 +72,9 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 		identity = {
 			build: live?.build ?? '',
 			gameServerId: live?.gameServerId ?? '',
-			startedAt: live?.startedAt ?? null
+			startedAt: live?.startedAt ?? null,
+			restartTimeUtc: live?.restartTimeUtc ?? null,
+			restartTimeUtcFile: live?.restartTimeUtcFile ?? null
 		};
 		if (live?.ok && live.status)
 			occupancy = { players: live.status.playerCount, max: live.status.maxPlayers };

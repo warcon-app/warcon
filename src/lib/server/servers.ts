@@ -17,6 +17,7 @@ import { rolesOf } from './roles';
 import { assertCanAddServer } from './orgs';
 import { ensureServerLists, lockOrg } from './lists';
 import { allowed, FEATURE_LABELS, NOT_ALLOWED, type PublicFeature } from '$lib/features';
+import { readManualRestart } from '$lib/uptime';
 
 export interface TargetFields {
 	name?: string;
@@ -287,6 +288,13 @@ export async function updateServer(
 		if (!org) throw new ApiError(404, 'Organisation not found.', 'not_found');
 		Object.assign(set, publicSwitches(org, body));
 	}
+	// An owner's own restart time, { time: 'HH:MM' } UTC; null hands the restart back to the game
+	if (body.restartSchedule !== undefined) {
+		const own = body.restartSchedule === null ? null : readManualRestart(body.restartSchedule);
+		if (body.restartSchedule !== null && !own)
+			throw new ApiError(400, 'The restart time is not valid: a UTC time from 00:00 to 23:59.');
+		set.restartSchedule = own;
+	}
 	if (typeof body.password === 'string' && body.password)
 		set.passwordEnc = encryptSecret(env, body.password);
 	if (!Object.keys(set).length) throw new ApiError(400, 'Nothing to update.');
@@ -315,6 +323,7 @@ export async function updateServer(
 			publicStatus: set.publicStatus,
 			publicLeaderboards: set.publicLeaderboards,
 			publicKills: set.publicKills,
+			restartSchedule: set.restartSchedule,
 			credentialRotated: !!body.password
 		}
 	});

@@ -178,7 +178,13 @@ import {
 	type BountyReplayEvent,
 	type OpenBounty
 } from './bounty';
-import { fmtUptime, RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
+import {
+	describeRestartSchedule,
+	fmtUptime,
+	restartScheduleOf,
+	restartWindow,
+	type RestartSchedule
+} from '$lib/uptime';
 import {
 	ROTATION_SHUFFLE,
 	rotationShuffleState,
@@ -571,6 +577,8 @@ export interface TickContext {
 	performance: Map<string, RiskPerformance>;
 	/** when the game process started (ms), from GET /v1/health; 0 while unknown */
 	startedAt: number;
+	/** RestartTimeUtc the process started with ("HH:MM", UTC); null or absent when unset */
+	restartTimeUtc?: string | null;
 	/** the match that ended between the previous look and this one, or null */
 	matchEnd: MatchEnd | null;
 	/** the first look after the server was out of reach: what happened meanwhile is unknown (a match
@@ -1401,7 +1409,8 @@ function evalRestartNotice(
 	const hit = restartNoticeStage(cfg, row.state as RestartNoticeState | null, {
 		startedAt: ctx.startedAt,
 		playerCount: ctx.status.playerCount,
-		now: ctx.ts.getTime()
+		now: ctx.ts.getTime(),
+		schedule: restartScheduleOf(ctx.server.restartSchedule, ctx.restartTimeUtc)
 	});
 	if (!hit) return;
 	const message = renderTemplate(
@@ -1445,7 +1454,11 @@ function evalRotationShuffle(
 ) {
 	const now = ctx.ts.getTime();
 	const w = ctx.startedAt
-		? restartWindow(new Date(ctx.startedAt).toISOString(), RESTART_AFTER_HOURS, now)
+		? restartWindow(
+				new Date(ctx.startedAt).toISOString(),
+				restartScheduleOf(ctx.server.restartSchedule, ctx.restartTimeUtc),
+				now
+			)
 		: null;
 	const prev = rotationShuffleState(row.state);
 	const step = shuffleStep(prev, { startedAt: ctx.startedAt, restartDue: !!w?.due });
@@ -1574,7 +1587,7 @@ function evalAfkProtection(
  * A Bounty rule at each look: a match end starts the runs over, and an open bounty lapses when the
  * match ends, when its player's session closes (gone past the leave grace, so a map change's empty
  * list is no leave), or at the first look after the server was out of reach (whatever happened
- * meanwhile, its 24-hour restart among it, is unknown). Kills set and claim bounties as they arrive
+ * meanwhile, its restart among it, is unknown). Kills set and claim bounties as they arrive
  * (feed-events.ts). The bounty is let go here, before the look is written, so no kill claims it
  * meanwhile; a look whose write fails leaves it open on the rule's row only, where a restart reads
  * it back and the next look or claim lapses it (a claim checks the bounty's match).
@@ -2051,6 +2064,10 @@ async function matchStartBefore(env: Env, serverId: string, from: Date): Promise
 		)
 	);
 }
+
+/** A dry run's word on a daily restart time ("Restarts daily at 08:00 UTC, …. "); none for 24 hours up. */
+const restartsNote = (s: RestartSchedule): string =>
+	s.kind === 'daily' ? `Restarts ${describeRestartSchedule(s)}. ` : '';
 
 /** Replays the last 24 hours of this server's history against a rule. Touches nobody. */
 export async function dryRun(
@@ -2664,22 +2681,23 @@ export async function dryRun(
 	if (kind === 'rotation_shuffle') {
 		const c = cfg as RotationShuffleConfig;
 		const [live] = await env.db
-			.select({ startedAt: serverLive.startedAt })
+			.select({ startedAt: serverLive.startedAt, restartTimeUtc: serverLive.restartTimeUtc })
 			.from(serverLive)
 			.where(eq(serverLive.serverId, server.id))
 			.limit(1);
+		const schedule = restartScheduleOf(server.restartSchedule, live?.restartTimeUtc);
 		const w = live?.startedAt
-			? restartWindow(live.startedAt.toISOString(), RESTART_AFTER_HOURS, to.getTime())
+			? restartWindow(live.startedAt.toISOString(), schedule, to.getTime())
 			: null;
 		if (!w || !live?.startedAt)
 			result.notes.push(
 				'The worker has not read this server’s uptime yet (GET /v1/health), so there is nothing to project.'
 			);
 		else {
-			const dueAt = new Date(live.startedAt.getTime() + RESTART_AFTER_HOURS * 3600_000);
-			push(w.due ? to : dueAt, 'shuffle in the last round, for after the restart');
+			push(w.due ? to : new Date(w.dueAt), 'shuffle in the last round, for after the restart');
+			const restart = schedule.kind === 'daily' ? 'the daily restart' : 'the 24-hour restart';
 			result.notes.push(
-				`Up ${fmtUptime(w.upMs)}; ${w.due ? 'the 24-hour restart comes when this round ends' : `the 24-hour restart is due in ${fmtUptime(w.untilDueMs ?? 0)}`}. A restart that comes first (a set restart time, a crash, one from the host's panel) is followed by a shuffle once the server is back.`
+				`${restartsNote(schedule)}Up ${fmtUptime(w.upMs)}; ${w.due ? `${restart} comes when this round ends` : `${restart} is due in ${fmtUptime(w.untilDueMs ?? 0)}`}. A restart that comes first (a set restart time, a crash, one from the host's panel) is followed by a shuffle once the server is back.`
 			);
 		}
 		result.notes.push(
@@ -2690,12 +2708,17 @@ export async function dryRun(
 	if (kind === 'restart_notice') {
 		const c = cfg as RestartNoticeConfig;
 		const [live] = await env.db
-			.select({ startedAt: serverLive.startedAt, players: serverLive.playerCount })
+			.select({
+				startedAt: serverLive.startedAt,
+				players: serverLive.playerCount,
+				restartTimeUtc: serverLive.restartTimeUtc
+			})
 			.from(serverLive)
 			.where(eq(serverLive.serverId, server.id))
 			.limit(1);
+		const schedule = restartScheduleOf(server.restartSchedule, live?.restartTimeUtc);
 		const w = live?.startedAt
-			? restartWindow(live.startedAt.toISOString(), RESTART_AFTER_HOURS, to.getTime())
+			? restartWindow(live.startedAt.toISOString(), schedule, to.getTime())
 			: null;
 		if (!w || !live?.startedAt) {
 			result.notes.push(
@@ -2703,7 +2726,7 @@ export async function dryRun(
 			);
 			return result;
 		}
-		const dueAt = new Date(live.startedAt.getTime() + RESTART_AFTER_HOURS * 3600_000);
+		const dueAt = new Date(w.dueAt);
 		const v = dryRunVars(server.name, null, {
 			players: live.players,
 			uptime: fmtUptime(w.upMs)
@@ -2720,7 +2743,7 @@ export async function dryRun(
 			`${w.due ? 'already ' : ''}broadcast: ${renderTemplate(c.message, { ...v, minutes: 0 }, MAX_CHAT)}`
 		);
 		result.notes.push(
-			`Up ${fmtUptime(w.upMs)}; the restart window ${w.due ? 'is open: the game restarts when this round ends' : `opens in ${fmtUptime(w.untilDueMs ?? 0)}`}. Times shown are the coming cycle, not a replay; each stage goes once per game start${c.repeatMinutes ? `, the main message again every ${c.repeatMinutes} min while the window stays open` : ''}, and only with at least ${c.minPlayers} on.`
+			`${restartsNote(schedule)}Up ${fmtUptime(w.upMs)}; the restart window ${w.due ? 'is open: the game restarts when this round ends' : `opens in ${fmtUptime(w.untilDueMs ?? 0)}`}. Times shown are the coming cycle, not a replay; each stage goes once per game start${c.repeatMinutes ? `, the main message again every ${c.repeatMinutes} min while the window stays open` : ''}, and only with at least ${c.minPlayers} on.`
 		);
 		return result;
 	}

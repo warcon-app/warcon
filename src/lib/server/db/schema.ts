@@ -377,6 +377,11 @@ export const servers = pgTable('servers', {
 	publicLeaderboards: boolean('public_leaderboards').notNull().default(false),
 	/** the public status page also shows the last kills (needs the feed and the status page on) */
 	publicKills: boolean('public_kills').notNull().default(false),
+	/**
+	 * An owner's own restart time, `{ time: 'HH:MM' }` (UTC, $lib/uptime's ManualRestart), used
+	 * instead of the game's: null = the game decides (RestartTimeUtc, else 24 hours up).
+	 */
+	restartSchedule: jsonb('restart_schedule'),
 	createdBy: text('created_by'),
 	createdAt: ts('created_at').notNull().defaultNow(),
 	updatedAt: ts('updated_at').notNull().defaultNow()
@@ -1183,6 +1188,10 @@ export const serverLive = pgTable('server_live', {
 	startedAt: ts('started_at'),
 	/** MaxReservedSlots from the config document: player slots held back for reserved players; null until read */
 	reservedSlots: integer('reserved_slots'),
+	/** RestartTimeUtc ("HH:MM") the running process started with; null when unset or not yet read */
+	restartTimeUtc: text('restart_time_utc'),
+	/** RestartTimeUtc as the config document holds it now (in effect from the next restart) */
+	restartTimeUtcFile: text('restart_time_utc_file'),
 	/** Status as the action registry shapes it */
 	status: jsonb('status'),
 	/** Player[] as the action registry shapes it */

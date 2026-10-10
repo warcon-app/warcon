@@ -719,6 +719,19 @@ describe('restartNoticeStage', () => {
 		expect(restartNoticeStage({ ...cfg, leadMinutes: 0 }, null, at(23.9))).toBeNull();
 		expect(restartNoticeStage({ ...cfg, leadMinutes: 0 }, null, at(24))!.stage).toBe('due');
 	});
+	test('a daily time opens the window at that time UTC, not 24 hours up', () => {
+		// the start is midnight UTC, so 12:00 UTC comes twelve hours later
+		for (const source of ['config', 'manual'] as const) {
+			const schedule = { kind: 'daily', time: '12:00', source } as const;
+			const on = (hours: number) => ({ ...at(hours), schedule });
+			const lead = restartNoticeStage(cfg, null, on(11.6))!;
+			expect(lead.stage).toBe('lead');
+			expect(lead.minutes).toBe(24);
+			expect(restartNoticeStage(cfg, lead.state, on(12.1))!.stage).toBe('due');
+		}
+		// 24 hours up would still be twelve hours off
+		expect(restartNoticeStage(cfg, null, at(12.1))).toBeNull();
+	});
 });
 
 describe('team_kill', () => {

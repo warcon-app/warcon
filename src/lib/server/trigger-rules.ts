@@ -12,7 +12,7 @@ import { validateNameChange, type NameChangeConfig } from './name-change';
 import { validateBounty, type BountyConfig } from './bounty';
 import { validateRotationShuffle, type RotationShuffleConfig } from './rotation-shuffle';
 import { causeTags } from './cause-tags';
-import { RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
+import { MAX_RESTART_LEAD_MINUTES, restartWindow, type RestartSchedule } from '$lib/uptime';
 import { MAX_CHAT } from '$lib/chat';
 import { isVehicleCrash, TEAM_KILL_NOT_COUNTED, VEHICLE_CRASH } from '$lib/causes';
 import { mapName } from '$lib/format';
@@ -142,10 +142,10 @@ export function pingKickStep(
 	return { state: next, kicks };
 }
 /**
- * Tells players about the game's own restart: WARDOGS restarts a server once it has been up for
- * 24 hours, at the end of the round then in progress. Two broadcasts per uptime cycle: a
- * heads-up `leadMinutes` before the window opens (0 = none) and `message` once it has, repeated
- * every `repeatMinutes` while the round drags on (0 = once).
+ * Tells players about the server's next restart ($lib/uptime's restartScheduleOf: daily at a
+ * time UTC, or 24 hours up), which happens at the end of the round then in progress. Two broadcasts per game start: a heads-up `leadMinutes` before the window opens
+ * (0 = none) and `message` once it has, repeated every `repeatMinutes` while the round drags on
+ * (0 = once).
  */
 export interface RestartNoticeConfig {
 	message: string;
@@ -330,7 +330,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 		case 'restart_notice': {
 			const message = str(c.message, MAX_CHAT);
 			if (!message) throw new ApiError(400, 'The restart message is empty.');
-			const leadMinutes = int(c.leadMinutes, 0, 0, RESTART_AFTER_HOURS * 60 - 1);
+			const leadMinutes = int(c.leadMinutes, 0, 0, MAX_RESTART_LEAD_MINUTES);
 			const leadMessage = str(c.leadMessage, MAX_CHAT);
 			if (leadMinutes && !leadMessage)
 				throw new ApiError(400, 'Add the heads-up message, or set the heads-up to 0 minutes.');
@@ -607,10 +607,16 @@ const SAME_START_MS = 60_000;
 export function restartNoticeStage(
 	cfg: Pick<RestartNoticeConfig, 'leadMinutes' | 'repeatMinutes' | 'minPlayers'>,
 	prev: RestartNoticeState | null | undefined,
-	input: { startedAt: number; playerCount: number; now: number }
+	input: {
+		startedAt: number;
+		playerCount: number;
+		now: number;
+		/** the server's restart schedule (restartScheduleOf); null or undefined is 24 hours up */
+		schedule?: RestartSchedule | null;
+	}
 ): RestartNoticeStage | null {
 	if (!input.startedAt || input.playerCount < cfg.minPlayers) return null;
-	const w = restartWindow(new Date(input.startedAt).toISOString(), RESTART_AFTER_HOURS, input.now);
+	const w = restartWindow(new Date(input.startedAt).toISOString(), input.schedule, input.now);
 	if (!w) return null;
 	// The start is derived from the uptime at each look, so it moves by the look's latency: a
 	// start within SAME_START_MS of the one on record is the same run, not a restart.

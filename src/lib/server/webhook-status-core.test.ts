@@ -365,6 +365,23 @@ describe('uptime', () => {
 			`Up since <t:${ts('2026-09-12T11:30:00Z')}:R> · 🔁 Restarts after this round`
 		);
 	});
+	test("a daily time says so from that time UTC: an owner's own, else the config in effect", () => {
+		// 11:30 UTC is half an hour before opts.now, 23 hours into this start
+		const started = '2026-09-12T13:00:00Z';
+		const line = (srv: typeof server & { restartSchedule?: { time: string } }, over = {}) =>
+			buildStatusEmbed(opts, srv, live({ startedAt: started, ...over })).fields?.at(-1)?.value;
+		expect(line(server)).not.toContain('Restarts');
+		expect(line(server, { restartTimeUtc: '11:30' })).toContain('🔁 Restarts after this round');
+		// only what the process started with counts, not a change waiting in the file
+		expect(line(server, { restartTimeUtcFile: '11:30' })).not.toContain('Restarts');
+		expect(line({ ...server, restartSchedule: { time: '11:30' } })).toContain(
+			'🔁 Restarts after this round'
+		);
+		// an owner's own time comes first
+		expect(
+			line({ ...server, restartSchedule: { time: '12:30' } }, { restartTimeUtc: '11:30' })
+		).not.toContain('Restarts');
+	});
 	test('the start time and the restart note are in the change key; the ticking uptime is not', () => {
 		const k = (now: number, at: string | null) =>
 			statusMessage({ ...opts, now }, server, live({ startedAt: at })).key;
