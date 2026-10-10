@@ -122,6 +122,13 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 		group: 'Server',
 		label: 'Rotation shuffle',
 		blurb: 'A new rotation order every day, the maps in turn so none plays twice in a row.'
+	},
+	{
+		kind: 'live_name',
+		group: 'Server',
+		label: 'Live server name',
+		blurb:
+			"Add the match score, map or player count to the end of the server's name in the browser."
 	}
 ];
 
@@ -129,14 +136,16 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
  * Kinds a server holds one rule of (createTrigger refuses a second): seed time is one count per
  * server, two Team balance rules would move players back and forth, two AFK protection rules would
  * kill everyone twice a round, two Bounty rules would mark two players at once, two Rotation shuffle
- * rules would each undo the other's order. The picker opens the one a server has.
+ * rules would each undo the other's order, two Live server name rules would each write their own
+ * name over the other's. The picker opens the one a server has.
  */
 export const ONE_PER_SERVER: TriggerKind[] = [
 	'seed_reward',
 	'two_teams',
 	'afk_protection',
 	'bounty',
-	'rotation_shuffle'
+	'rotation_shuffle',
+	'live_name'
 ];
 
 /**
@@ -145,3 +154,9 @@ export const ONE_PER_SERVER: TriggerKind[] = [
  * those that fail (webhook-delivery.ts).
  */
 export const FAILURES_ONLY: TriggerKind[] = ['two_teams', 'afk_protection'];
+
+/**
+ * Rules that queue no actions, so a Discord webhook has nothing of theirs to carry: the Live server
+ * name rule writes the name at the worker's look (live-name.ts). The webhook editor leaves them out.
+ */
+export const NO_ACTIONS: TriggerKind[] = ['live_name'];

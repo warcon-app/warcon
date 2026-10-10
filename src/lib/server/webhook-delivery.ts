@@ -162,6 +162,7 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.name_change': 'Trigger · name change watch',
 	'trigger.bounty': 'Trigger · bounty',
 	'trigger.rotation_shuffle': 'Trigger · rotation shuffle',
+	'trigger.live_name': 'Trigger · live server name',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',

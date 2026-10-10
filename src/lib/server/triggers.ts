@@ -193,6 +193,8 @@ import {
 	type ShuffleWhen
 } from './rotation-shuffle';
 import { DEFAULT_SCORE_CAP } from '$lib/match';
+import { liveName, type LiveNameConfig } from '$lib/live-name';
+import { liveNameState } from './live-name';
 import { mapName } from '$lib/format';
 import { statsIn, usesStats } from '$lib/placeholders';
 import { settings } from './settings';
@@ -233,8 +235,18 @@ const shape = (t: TriggerRow): TriggerView => ({
 	fireCount: t.fireCount,
 	createdAt: t.createdAt ? t.createdAt.toISOString() : null,
 	...(t.kind === 'afk_protection' ? { phase: afkPhase(t.state) } : {}),
-	...(t.kind === 'bounty' ? { bounty: openBounty(t) } : {})
+	...(t.kind === 'bounty' ? { bounty: openBounty(t) } : {}),
+	...(t.kind === 'live_name' ? { liveName: lastName(t.state) } : {})
 });
+
+/** A Live server name rule's last write and latest refusal, as its row shows them. */
+function lastName(state: unknown): TriggerView['liveName'] {
+	const s = liveNameState(state);
+	const iso = (ms: number) => (ms ? new Date(ms).toISOString() : null);
+	return s
+		? { name: s.name, at: iso(s.at), refused: s.refused, since: iso(s.since), restored: s.restored }
+		: null;
+}
 
 /** A Bounty rule's open bounty, as its row shows it: the one its last save holds, if any. */
 function openBounty(t: TriggerRow): TriggerView['bounty'] {
@@ -292,7 +304,8 @@ const RULE_NEEDS: Record<
 	two_teams: ['players.move', 'moves players between teams'],
 	afk_protection: ['players.kill', 'kills players'],
 	name_change: ['players.kick', 'flags or kicks players'],
-	rotation_shuffle: ['config.apply', 'rewrites the rotation in the config document']
+	rotation_shuffle: ['config.apply', 'rewrites the rotation in the config document'],
+	live_name: ['config.apply', 'writes the server name in the config document']
 };
 
 /** What a reserved slot a rule hands out needs: one here, or on the organisation's list. */
@@ -484,14 +497,22 @@ export async function updateTrigger(
 	return shape(updated);
 }
 
+/**
+ * Kinds whose deletion acts on the server: a Live server name rule's own name is written back to the
+ * config document, so deleting one needs what switching it off does.
+ */
+const ACTS_WHEN_DELETED: TriggerKind[] = ['live_name'];
+
 export async function deleteTrigger(
 	env: Env,
 	req: Request,
 	user: SessionUser,
 	server: ServerRow,
+	access: ServerAccess,
 	id: string
 ): Promise<void> {
 	const row = await triggerOf(env, server.id, id);
+	if (ACTS_WHEN_DELETED.includes(row.kind)) requireRuleCaps(row.kind, row.config, server, access);
 	await env.db.delete(triggers).where(eq(triggers.id, row.id));
 	if (SETTINGS_KEYS[row.kind])
 		await dropQueued(env, row.id, 'The rule was deleted before this was sent.');
@@ -830,6 +851,9 @@ export async function evaluateTriggers(
 					break;
 				case 'rotation_shuffle':
 					evalRotationShuffle(ctx, row, row.config as RotationShuffleConfig, out);
+					break;
+				case 'live_name':
+					// Written at the look itself, after the rules (live-name-write.ts): no action is queued.
 					break;
 			}
 		} catch (err) {
@@ -2676,6 +2700,21 @@ export async function dryRun(
 			result.notes.push(
 				`Read the first ${NAME_SESSIONS_MAX.toLocaleString('en')} sessions of the window only; players of later ones were not judged.`
 			);
+		return result;
+	}
+	if (kind === 'live_name') {
+		const [live] = await env.db
+			.select({ status: serverLive.status })
+			.from(serverLive)
+			.where(eq(serverLive.serverId, server.id))
+			.limit(1);
+		const status = live?.status as Status | null | undefined;
+		if (status) push(to, `name: ${liveName(cfg as LiveNameConfig, status)}`);
+		else
+			result.notes.push('The worker has not seen this server yet, so there is no score to show.');
+		result.notes.push(
+			'Nothing to replay: the rule writes the name from what the server shows at each look, whenever it changes and at most once a minute. Switched off, it puts the name back without the appended part.'
+		);
 		return result;
 	}
 	if (kind === 'rotation_shuffle') {

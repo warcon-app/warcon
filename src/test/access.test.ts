@@ -539,7 +539,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['seed_reward', { minutes: 60, scope: 'server' }, 'slots.manage'],
 				['seed_reward', { minutes: 60, scope: 'org' }, 'lists.reserve'],
 				['bounty', { reward: 'none' }, 'chat.send'],
-				['rotation_shuffle', { maps: ['Europe', 'Kavkazi'] }, 'config.apply']
+				['rotation_shuffle', { maps: ['Europe', 'Kavkazi'] }, 'config.apply'],
+				['live_name', { base: 'Demo Clan #1' }, 'config.apply']
 			];
 			for (const [kind, config, cap] of rules) {
 				await holds([]);
@@ -1281,6 +1282,36 @@ describe.skipIf(!hasTestDb)('access', () => {
 			expect((await save(w, 'viewer')).status).toBe(201);
 		});
 
+		test('a Live server name rule is deleted only by someone who could switch it off: deleting it writes the name back', async () => {
+			const w = await seedWorld(env);
+			const params = { id: w.server.id };
+			const make = async (kind: string, config: Record<string, unknown>) => {
+				const made = await api(w, 'owner', 'POST api/servers/[id]/triggers', {
+					params,
+					body: { kind, config }
+				});
+				expect(made.status).toBe(201);
+				return {
+					id: w.server.id,
+					triggerId: (made.body as { trigger: { id: string } }).trigger.id
+				};
+			};
+			const holds = (caps: string[]) =>
+				env.db
+					.update(orgRoles)
+					.set({ capabilities: ['server.view', 'automation.manage', ...caps] })
+					.where(eq(orgRoles.id, w.roles.viewer));
+			const remove = (ids: { id: string; triggerId: string }) =>
+				api(w, 'viewer', 'DELETE api/servers/[id]/triggers/[triggerId]', { params: ids });
+			const named = await make('live_name', { base: 'Demo Clan #1' });
+			await holds([]);
+			expect((await remove(named)).status).toBe(403);
+			// any other rule still goes with Automation alone
+			expect((await remove(await make('welcome', { message: 'Hi' }))).status).toBe(200);
+			await holds(['config.apply']);
+			expect((await remove(named)).status).toBe(200);
+		});
+
 		test('two Team balance rules saved at once for one server: one of them is refused', async () => {
 			const w = await seedWorld(env);
 			const save = (closedFaction: string) =>
@@ -1299,7 +1330,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				two_teams: { closedFaction: 'Lonestar' },
 				afk_protection: {},
 				bounty: {},
-				rotation_shuffle: {}
+				rotation_shuffle: {},
+				live_name: { base: 'Demo Clan #1' }
 			};
 			const save = (kind: string, name: string, config: Record<string, unknown>) =>
 				api(w, 'owner', 'POST api/servers/[id]/triggers', {

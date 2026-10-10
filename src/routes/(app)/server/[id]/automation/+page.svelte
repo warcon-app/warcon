@@ -28,10 +28,12 @@
 	import RulePicker from '$lib/components/RulePicker.svelte';
 	import { identity } from '$lib/health.svelte';
 	import { restartScheduleOf } from '$lib/uptime';
+	import { LIVE_NAME_APPEND_DEFAULT, LIVE_NAME_PLACEHOLDERS, liveName } from '$lib/live-name';
 	import type {
 		DryRunResult,
 		MapSelection,
 		OutboxView,
+		Status,
 		TriggerKind,
 		TriggerView
 	} from '$lib/types';
@@ -104,6 +106,8 @@
 		actionsPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 	let deliveriesTimer: ReturnType<typeof setTimeout> | undefined;
+	/** what the server shows now, for a Live server name rule's preview */
+	let liveStatus = $state<Status | null>(null);
 	async function refreshDeliveries() {
 		try {
 			deliveries = (
@@ -118,7 +122,17 @@
 		void refreshDeliveries();
 		return watchLive(
 			[id],
-			() => {},
+			(v) => {
+				const was = liveStatus?.serverName;
+				liveStatus = v.status;
+				// a Live server name rule's row says what it last wrote: re-read it when the name moves
+				if (
+					was !== undefined &&
+					v.status?.serverName !== was &&
+					untrack(() => data.triggers.some((t) => t.kind === 'live_name'))
+				)
+					void invalidate('warcon:triggers');
+			},
 			() => {
 				clearTimeout(deliveriesTimer);
 				deliveriesTimer = setTimeout(() => {
@@ -193,6 +207,10 @@
 				return canConfig
 					? ''
 					: 'Saving needs the Config & settings capability as well as Automation: the rule rewrites the rotation in the config document.';
+			case 'live_name':
+				return canConfig
+					? ''
+					: 'Saving needs the Config & settings capability as well as Automation: the rule writes the server name in the config document.';
 			default:
 				return '';
 		}
@@ -299,7 +317,7 @@
 						? 'Needs a Steam key'
 						: kind === 'seed_reward'
 							? 'Needs Reserved slots'
-							: kind === 'rotation_shuffle'
+							: kind === 'rotation_shuffle' || kind === 'live_name'
 								? 'Needs Config & settings'
 								: '';
 	/** A Bounty rule's texts until they are written: a slot is named, an announcement-only rule asks. */
@@ -473,6 +491,9 @@
 		whisper: string;
 		/** a Rotation shuffle rule's map ids, in the order they take turns */
 		mapOrder: string[];
+		/** a Live server name rule's own name and what it appends */
+		liveBase: string;
+		liveAppend: string;
 	}
 	/** WARDOGS' factions, offered for Team balance; a name the game adds later can still be typed. */
 	const FACTIONS = ['Lonestar', 'Valkyra', 'Manticore'];
@@ -699,7 +720,10 @@
 			setMessage: s('setMessage', bountyTexts(bountyReward).setMessage),
 			claimMessage: s('claimMessage', bountyTexts(bountyReward).claimMessage),
 			whisper: s('whisper', bountyTexts(bountyReward).whisper),
-			mapOrder: mapTurn(c.maps)
+			mapOrder: mapTurn(c.maps),
+			// a new rule starts from the name the server shows now
+			liveBase: s('base', liveStatus?.serverName ?? ''),
+			liveAppend: s('append', LIVE_NAME_APPEND_DEFAULT)
 		};
 		dry = null;
 		pendingSel =
@@ -880,6 +904,8 @@
 				};
 			case 'rotation_shuffle':
 				return { maps: f.mapOrder };
+			case 'live_name':
+				return { base: f.liveBase, append: f.liveAppend };
 		}
 	}
 
@@ -1109,6 +1135,8 @@
 				const maps = Array.isArray(c.maps) ? (c.maps as string[]) : [];
 				return `${maps.length ? maps.map((m) => mapLabel(data.catalog, m)).join(', ') : 'The maps'} in turn · zones in turn · a new order every day`;
 			}
+			case 'live_name':
+				return `${c.base} + ${c.append} · at most once a minute`;
 		}
 	}
 </script>
@@ -1197,7 +1225,13 @@
 						<span class="chip">{label(t.kind)}</span>
 					</div>
 					<div class="mt-0.5 line-clamp-2 text-[13px] text-mist-400">
-						{describe(t.kind, t.config)}
+						{#if t.kind === 'live_name'}
+							<span class="font-mono text-[12.5px]">{t.config.base}</span> +
+							<span class="font-mono text-[12.5px] text-mist-100">{t.config.append}</span> · at most once
+							a minute
+						{:else}
+							{describe(t.kind, t.config)}
+						{/if}
 					</div>
 					{#if t.kind === 'bounty' && t.enabled && t.bounty}
 						{@const b = t.bounty}
@@ -1223,41 +1257,66 @@
 							{/if}
 						</div>
 					{/if}
-					<!-- One of four shapes, most urgent first: failing, off, fired, never fired. -->
-					<div class="mt-0.5 text-[12px] {h?.failing ? 'text-mist-100' : 'text-mist-600'}">
-						{#if h?.failing}
-							Latest actions failed · <span class="font-mono text-[11.5px] text-mist-400"
-								>{h.outcome}</span
-							>
-							· <span title={fmtTime(h.latest)}>{fmtAgo(h.latest, now)}</span>
-							<button type="button" class="ml-1 btn btn-sm" onclick={() => seeActions(t)}
-								>See actions</button
-							>
-						{:else if !t.enabled}
-							Off · {#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
-									>{fmtAgo(t.lastFiredAt, now)}</span
-								>{:else}never fired{/if}
-						{:else if t.lastFiredAt}
-							Fired <span title={fmtTime(t.lastFiredAt)}>{fmtAgo(t.lastFiredAt, now)}</span>
-							{#if h?.count}· {countLine(h)}{:else if t.fireCount}· {t.fireCount} action{t.fireCount ===
-								1
-									? ''
-									: 's'} so far{/if}
-						{:else}
-							Never fired{#if needs(t.kind)}
-								· {needs(t.kind)}{/if}
-						{/if}
-					</div>
+					{#if t.kind === 'live_name'}
+						<!-- What it last wrote, why it could not, or that its own name went back once off. -->
+						{@const ln = t.liveName}
+						<div
+							class="mt-0.5 text-[12px] {t.enabled && ln?.refused ? 'text-warn' : 'text-mist-600'}"
+						>
+							{#if !t.enabled}
+								Off{#if ln?.restored && ln.at}
+									· name put back to <span class="font-mono text-mist-400">{ln.name}</span>
+									<span title={fmtTime(ln.at)}>{fmtAgo(ln.at, now)}</span>{/if}
+							{:else if ln?.refused}
+								Not written: {ln.refused}{#if ln.since}
+									· <span title={fmtTime(ln.since)}>{fmtAgo(ln.since, now)}</span>{/if}
+							{:else if ln?.at}
+								Now <span class="font-mono text-mist-400">{ln.name}</span> · written
+								<span title={fmtTime(ln.at)}>{fmtAgo(ln.at, now)}</span>
+							{:else}
+								Nothing written yet{#if needs(t.kind)}
+									· {needs(t.kind)}{/if}
+							{/if}
+						</div>
+					{:else}
+						<!-- One of four shapes, most urgent first: failing, off, fired, never fired. -->
+						<div class="mt-0.5 text-[12px] {h?.failing ? 'text-mist-100' : 'text-mist-600'}">
+							{#if h?.failing}
+								Latest actions failed · <span class="font-mono text-[11.5px] text-mist-400"
+									>{h.outcome}</span
+								>
+								· <span title={fmtTime(h.latest)}>{fmtAgo(h.latest, now)}</span>
+								<button type="button" class="ml-1 btn btn-sm" onclick={() => seeActions(t)}
+									>See actions</button
+								>
+							{:else if !t.enabled}
+								Off · {#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
+										>{fmtAgo(t.lastFiredAt, now)}</span
+									>{:else}never fired{/if}
+							{:else if t.lastFiredAt}
+								Fired <span title={fmtTime(t.lastFiredAt)}>{fmtAgo(t.lastFiredAt, now)}</span>
+								{#if h?.count}· {countLine(h)}{:else if t.fireCount}· {t.fireCount} action{t.fireCount ===
+									1
+										? ''
+										: 's'} so far{/if}
+							{:else}
+								Never fired{#if needs(t.kind)}
+									· {needs(t.kind)}{/if}
+							{/if}
+						</div>
+					{/if}
 				</div>
 				{#if admin}
 					<RowMenu label="Actions for {t.name}">
-						<button
-							type="button"
-							class="menu-item"
-							role="menuitem"
-							disabled={dryBusy}
-							onclick={() => dryRun(t.kind, t.config, t.id, t.name)}>{dryLabel(t.kind)}</button
-						>
+						{#if t.kind !== 'live_name'}
+							<button
+								type="button"
+								class="menu-item"
+								role="menuitem"
+								disabled={dryBusy}
+								onclick={() => dryRun(t.kind, t.config, t.id, t.name)}>{dryLabel(t.kind)}</button
+							>
+						{/if}
 						<button type="button" class="menu-item" role="menuitem" onclick={() => open(t.kind, t)}
 							>Edit</button
 						>
@@ -1626,6 +1685,65 @@
 						Only the rotation in the config document is written, as Apply on the Map rotation tab
 						does. The new order is turned so the map that follows the one on comes next. One rule
 						per server.
+					</p>
+				{:else if f.kind === 'live_name'}
+					<label class="block"
+						><span class="field-label">Server name</span><input
+							class="input"
+							type="text"
+							name="base"
+							maxlength="100"
+							spellcheck="false"
+							required
+							data-plain
+							bind:value={f.liveBase}
+						/></label
+					>
+					<p class="note">The server's name now. It goes back to this when the rule is off.</p>
+					<label class="block"
+						><span class="field-label">Append</span><input
+							class="input font-mono text-[12.5px] pointer-coarse:text-[16px]"
+							type="text"
+							name="append"
+							maxlength="60"
+							spellcheck="false"
+							required
+							bind:value={f.liveAppend}
+						/></label
+					>
+					<div class="space-y-1 text-[12px] text-mist-600">
+						{#each [['Rule', LIVE_NAME_PLACEHOLDERS.slice(0, 1)], ['Server', LIVE_NAME_PLACEHOLDERS.slice(1)]] as const as [row, names] (row)}
+							<div class="flex items-baseline gap-1">
+								<span class="w-16 shrink-0">{row}</span>
+								<div class="flex flex-wrap gap-1">
+									{#each names as n (n)}
+										<button
+											type="button"
+											class="chip cursor-pointer text-mist-100 transition hover:bg-white/12"
+											title="Insert {'{' + n + '}'} at the caret"
+											onclick={() => insert(n)}>{'{' + n + '}'}</button
+										>
+									{/each}
+								</div>
+							</div>
+						{/each}
+					</div>
+					<p class="note">
+						{'{scoreline}'} is each faction's score in the order the game lists them{#if liveStatus?.scores.length}:
+							{liveStatus.scores.map((s) => `${s.name} ${s.score}`).join(', ')} now{/if}. It reads
+						0-0-0 as a new match starts.
+					</p>
+					<div class="space-y-1.5 text-[13px]">
+						<span class="field-label">When</span>
+						<p>
+							Whenever the name it fills in changes, at most once a minute. The browser listing
+							follows on the server's next heartbeat.
+						</p>
+					</div>
+					<p class="note">
+						Only ServerName in the config document is written, as Apply on the Config tab does.
+						Switched off or deleted, the rule writes the name back without the appended part. One
+						rule per server.
 					</p>
 				{:else if f.kind === 'restart_notice'}
 					<fieldset class="space-y-2">
@@ -2738,8 +2856,26 @@
 				{/if}
 
 				<div class="rounded-ctl border border-black bg-ink-950 px-3 py-2 text-[13px]">
-					<span class="mr-2 caps text-accent">Reads as</span>
-					<span class="text-mist-100">{describe(f.kind, config(f))}</span>
+					{#if f.kind === 'live_name'}
+						{@const base = f.liveBase.trim()}
+						{@const name = liveStatus
+							? liveName({ base: f.liveBase, append: f.liveAppend }, liveStatus)
+							: `${base} ${f.liveAppend.trim()}`}
+						<div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+							<span class="caps text-accent">Reads as</span>
+							<span class="min-w-0 font-mono text-[12.5px] break-all"
+								><span class="text-mist-400">{name.slice(0, base.length)}</span><span
+									class="text-mist-100">{name.slice(base.length)}</span
+								></span
+							>
+							<span class="ml-auto text-[12px] text-mist-600 tabular"
+								>{Array.from(name).length} characters</span
+							>
+						</div>
+					{:else}
+						<span class="mr-2 caps text-accent">Reads as</span>
+						<span class="text-mist-100">{describe(f.kind, config(f))}</span>
+					{/if}
 				</div>
 			</div>
 
@@ -2750,18 +2886,21 @@
 			{/if}
 
 			<div class="flex flex-wrap justify-end gap-2 pt-2">
-				<button
-					type="button"
-					class="mr-auto btn"
-					disabled={dryBusy}
-					onclick={() =>
-						dry && dryFor === 'form' ? (dry = null) : dryRun(f.kind, config(f), 'form', f.name)}
-					>{dryBusy
-						? 'Working…'
-						: dry && dryFor === 'form'
-							? 'Back to the form'
-							: dryLabel(f.kind)}</button
-				>
+				<!-- A Live server name rule has its preview above, from what the server shows now. -->
+				{#if f.kind !== 'live_name'}
+					<button
+						type="button"
+						class="mr-auto btn"
+						disabled={dryBusy}
+						onclick={() =>
+							dry && dryFor === 'form' ? (dry = null) : dryRun(f.kind, config(f), 'form', f.name)}
+						>{dryBusy
+							? 'Working…'
+							: dry && dryFor === 'form'
+								? 'Back to the form'
+								: dryLabel(f.kind)}</button
+					>
+				{/if}
 				<button type="button" class="btn" data-close onclick={() => (form = null)}>Cancel</button>
 				<button type="submit" class="btn btn-primary" disabled={busy}
 					>{f.id ? 'Save' : 'Add rule'}</button
