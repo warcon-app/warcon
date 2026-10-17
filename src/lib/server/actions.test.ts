@@ -35,6 +35,50 @@ test('changeTeam moves the faction then kills the player', async () => {
 	expect(r.message).toContain('respawn');
 });
 
+test('kill sends an empty JSON body', async () => {
+	const calls: { method: string; path: string; body: unknown }[] = [];
+	const client: any = {
+		json: async (method: string, path: string, body?: unknown) => {
+			calls.push({ method, path, body });
+			return { message: 'OK: killed Player.' };
+		}
+	};
+	await ACTIONS.kill.run(client, { steamId: '76561198000000001' });
+	expect(calls).toEqual([
+		{
+			method: 'POST',
+			path: '/v1/players/76561198000000001/kill',
+			body: {}
+		}
+	]);
+});
+
+test('changeTeam sends an empty JSON body with its respawn kill', async () => {
+	const calls: { method: string; path: string; body: unknown }[] = [];
+	const client: any = {
+		json: async (method: string, path: string, body?: unknown) => {
+			calls.push({ method, path, body });
+			return { message: 'OK.' };
+		}
+	};
+	await ACTIONS.changeTeam.run(client, {
+		steamId: '76561198000000001',
+		faction: 'Valkyra'
+	});
+	expect(calls).toEqual([
+		{
+			method: 'PATCH',
+			path: '/v1/players/76561198000000001',
+			body: { faction: 'Valkyra' }
+		},
+		{
+			method: 'POST',
+			path: '/v1/players/76561198000000001/kill',
+			body: {}
+		}
+	]);
+});
+
 test('changeTeam with kill: false sends the move alone', async () => {
 	const { client, calls } = fakeClient(false);
 	const r: any = await ACTIONS.changeTeam.run(client, {
