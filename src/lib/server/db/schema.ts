@@ -709,7 +709,9 @@ export const matchPlayers = pgTable(
 		/** null without a feed or a distance */
 		longestM: real('longest_m'),
 		killStreak: integer('kill_streak').notNull().default(0),
-		deathStreak: integer('death_streak').notNull().default(0)
+		deathStreak: integer('death_streak').notNull().default(0),
+		/** of `seconds`, the time on before any side had scored: the match waiting for its players */
+		idleSeconds: integer('idle_seconds').notNull().default(0)
 	},
 	(t) => [
 		primaryKey({ columns: [t.matchId, t.steamId] }),
@@ -753,7 +755,9 @@ export const playerTotals = pgTable(
 		deathStreak: integer('death_streak').notNull().default(0),
 		wins: integer('wins').notNull().default(0),
 		losses: integer('losses').notNull().default(0),
-		draws: integer('draws').notNull().default(0)
+		draws: integer('draws').notNull().default(0),
+		/** the lines' idle_seconds */
+		idleSeconds: bigint('idle_seconds', { mode: 'number' }).notNull().default(0)
 	},
 	(t) => [primaryKey({ columns: [t.serverId, t.steamId] })]
 );
@@ -796,7 +800,9 @@ export const playerDays = pgTable(
 		deathStreak: integer('death_streak').notNull().default(0),
 		wins: integer('wins').notNull().default(0),
 		losses: integer('losses').notNull().default(0),
-		draws: integer('draws').notNull().default(0)
+		draws: integer('draws').notNull().default(0),
+		/** the idle_seconds of lines of matches that ended on the day */
+		idleSeconds: bigint('idle_seconds', { mode: 'number' }).notNull().default(0)
 	},
 	(t) => [primaryKey({ columns: [t.serverId, t.day, t.steamId] })]
 );

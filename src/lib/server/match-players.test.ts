@@ -21,8 +21,20 @@ const player = (steamId: string, kills: number, deaths: number, cash = 0): Playe
 const TEAMS = ['Red', 'Blue', 'Green'];
 // Each look's gap is the time since the look before it, as the worker measures it.
 let prevNow = 0;
-const look = (t: Tallies, players: Player[], now: number, stayed: string[] = []) => {
-	tallyLook(t, players, { now, gapMs: now - prevNow, stayed: new Set(stayed), teams: TEAMS });
+const look = (
+	t: Tallies,
+	players: Player[],
+	now: number,
+	stayed: string[] = [],
+	scored?: boolean
+) => {
+	tallyLook(t, players, {
+		now,
+		gapMs: now - prevNow,
+		stayed: new Set(stayed),
+		teams: TEAMS,
+		scored
+	});
 	prevNow = now;
 };
 
@@ -36,6 +48,7 @@ describe('a match tally', () => {
 			name: 'a',
 			faction: 'Red',
 			seconds: 2,
+			idleSeconds: 0,
 			kills: 5,
 			deaths: 2,
 			cashDelta: 150
@@ -64,6 +77,15 @@ describe('a match tally', () => {
 		expect(t.get('b')!.ms).toBe(0);
 	});
 
+	test('time on before any side has scored is idle time too; unknown scores make none', () => {
+		const t: Tallies = new Map();
+		look(t, [player('a', 0, 0)], 1000, [], false);
+		look(t, [player('a', 0, 0)], 61_000, ['a'], false); // waiting for players
+		look(t, [player('a', 2, 0)], 91_000, ['a'], true); // a side has scored
+		look(t, [player('a', 2, 0)], 101_000, ['a']); // no status to read the scores from
+		expect(tallyRow(t.get('a')!)).toMatchObject({ seconds: 100, idleSeconds: 60 });
+	});
+
 	test('keeps the last side that was a team, and the last name', () => {
 		const t: Tallies = new Map();
 		look(t, [{ ...player('a', 0, 0), faction: 'White', name: 'a' }], 1000);
@@ -83,7 +105,16 @@ describe('closing a match', () => {
 		look(t, [player('a', 6, 3, 400)], 9000, ['a']);
 		const { rows, carried } = closeTallies(t, 8000);
 		expect(rows).toEqual([
-			{ steamId: 'a', name: 'a', faction: 'Red', seconds: 8, kills: 10, deaths: 4, cashDelta: 300 }
+			{
+				steamId: 'a',
+				name: 'a',
+				faction: 'Red',
+				seconds: 8,
+				idleSeconds: 0,
+				kills: 10,
+				deaths: 4,
+				cashDelta: 300
+			}
 		]);
 		expect(carried.size).toBe(0);
 	});
@@ -96,7 +127,16 @@ describe('closing a match', () => {
 		look(t, [player('a', 1, 0, 50)], 7000, ['a']);
 		const { rows, carried } = closeTallies(t, 6000);
 		expect(rows).toEqual([
-			{ steamId: 'a', name: 'a', faction: 'Red', seconds: 6, kills: 9, deaths: 4, cashDelta: 200 }
+			{
+				steamId: 'a',
+				name: 'a',
+				faction: 'Red',
+				seconds: 6,
+				idleSeconds: 0,
+				kills: 9,
+				deaths: 4,
+				cashDelta: 200
+			}
 		]);
 		const next = carried.get('a')!;
 		expect(next.banked).toEqual({ kills: 0, deaths: 0, cash: 0 });

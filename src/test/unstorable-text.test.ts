@@ -201,6 +201,7 @@ describe.skipIf(!hasTestDb)('text Postgres refuses, from a caller or the game', 
 				name: `Half${HIGH}`,
 				faction: 'Red',
 				seconds: 60,
+				idleSeconds: 0,
 				kills: 1,
 				deaths: 0,
 				cashDelta: 0
@@ -210,6 +211,7 @@ describe.skipIf(!hasTestDb)('text Postgres refuses, from a caller or the game', 
 				name: `N${NUL}l`,
 				faction: 'Blue',
 				seconds: 30,
+				idleSeconds: 0,
 				kills: 0,
 				deaths: 1,
 				cashDelta: 0
@@ -319,7 +321,7 @@ describe.skipIf(!hasTestDb)('text Postgres refuses, from a caller or the game', 
 			.insert(matches)
 			.values({ serverId: w.server.id, startedAt: new Date(), map: 'Zestafona', peakPlayers: 2 })
 			.returning({ id: matches.id });
-		const line = { faction: 'Red', seconds: 1, kills: 0, deaths: 0, cashDelta: 0 };
+		const line = { faction: 'Red', seconds: 1, idleSeconds: 0, kills: 0, deaths: 0, cashDelta: 0 };
 		await writeMatchPlayers(env.db, w.server.id, match.id, [
 			{ ...line, steamId: '76561198000000501', name: sqlish },
 			{ ...line, steamId: '76561198000000502', name: jsonish }

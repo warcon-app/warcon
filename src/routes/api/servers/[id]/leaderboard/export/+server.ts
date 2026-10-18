@@ -32,7 +32,7 @@ const COLUMNS: [string, (r: BoardRow) => unknown][] = [
 	['kills', (r) => r.kills],
 	['deaths', (r) => r.deaths],
 	['kd', (r) => round(kdRatio(r.kills, r.deaths), 2)],
-	['kills_per_hour', (r) => round(perHour(r.kills, r.minutes, r.seedMinutes), 1)],
+	['kills_per_hour', (r) => round(perHour(r.kills, r.minutes, r.seedMinutes, r.idleMinutes), 1)],
 	['headshots', (r) => r.headshots],
 	['team_kills', (r) => r.teamKills],
 	['suicides', (r) => r.suicides],
@@ -45,7 +45,7 @@ const COLUMNS: [string, (r: BoardRow) => unknown][] = [
 	['draws', (r) => r.draws],
 	['win_pct', (r) => percent(winRate(r.wins, r.losses, r.draws))],
 	['cash', (r) => r.cash],
-	['cash_per_min', (r) => round(perMinute(r.cash, r.cashMinutes, r.seedMinutes), 1)],
+	['cash_per_min', (r) => round(perMinute(r.cash, r.cashMinutes, r.seedMinutes, r.idleMinutes), 1)],
 	['last_seen', (r) => r.lastSeen]
 ];
 

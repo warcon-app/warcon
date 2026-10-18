@@ -742,13 +742,15 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	// Memory follows every player observation; the database only when something is due.
 	for (const { player: p, session: s } of diff.stayed) followPlayer(s, p, started, teams);
 	// The match tallies follow the same look: everyone on the list, time for those on since the
-	// previous trusted look, and a leaver's row is due at the next match stage.
+	// previous trusted look (idle while no side has scored), and a leaver's row is due at the next
+	// match stage.
 	if (players) {
 		tallyLook(m.tallies, players, {
 			now: started,
 			gapMs,
 			stayed: joinsTrusted ? new Set(diff.stayed.map((x) => x.player.steamId)) : new Set(),
-			teams
+			teams,
+			scored: m.status ? m.status.scores.some((s) => s.score > 0) : undefined
 		});
 		for (const s of diff.left) {
 			const t = m.tallies.get(s.steamId);

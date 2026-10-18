@@ -249,7 +249,9 @@
 					{#if show('deaths')}<td class="num">{fmtNum(r.deaths)}</td>{/if}
 					{#if show('kd')}<td class="num">{ratio(kdRatio(r.kills, r.deaths))}</td>{/if}
 					{#if show('perHour')}
-						<td class="num">{ratio(perHour(r.kills, r.minutes, r.seedMinutes), 1)}</td>
+						<td class="num"
+							>{ratio(perHour(r.kills, r.minutes, r.seedMinutes, r.idleMinutes), 1)}</td
+						>
 					{/if}
 					{#if show('headshots')}<td class="num">{r.headshots}</td>{/if}
 					{#if show('teamKills')}
@@ -262,7 +264,9 @@
 					{#if show('winRate')}<td class="num">{pct(winRate(r.wins, r.losses, r.draws))}</td>{/if}
 					{#if show('cash')}<td class="num">{fmtCash(r.cash)}</td>{/if}
 					{#if show('cashPerMin')}
-						<td class="num">{fmtCash(perMinute(r.cash, r.cashMinutes, r.seedMinutes))}</td>
+						<td class="num"
+							>{fmtCash(perMinute(r.cash, r.cashMinutes, r.seedMinutes, r.idleMinutes))}</td
+						>
 					{/if}
 					{#if show('lastSeen')}
 						<!-- A clock time may wrap after its date: the panel's rows are two lines (name, SteamID) anyway. -->

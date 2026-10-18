@@ -33,7 +33,7 @@ import {
 import { writeMatchPlayers } from '$lib/server/match-players';
 import { purgeServerStats } from '$lib/server/stats';
 import { lockTotals } from '$lib/server/totals';
-import { hasTestDb, testEnv } from './db';
+import { hasTestDb, insertEarlyLines, testEnv } from './db';
 import { seedWorld, type World } from './world';
 import { oracleBase, oracleRangeBase, rangeRows, totalsRows } from './totals-oracle';
 
@@ -239,8 +239,26 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 		await exact([A]);
 		// an upsert of an ended match's lines fires both statement triggers
 		await writeMatchPlayers(env.db, A, m, [
-			{ steamId: P, name: 'p', faction: 'Valkyra', seconds: 1, kills: 1, deaths: 1, cashDelta: 0 },
-			{ steamId: R, name: 'r', faction: 'White', seconds: 1, kills: 2, deaths: 0, cashDelta: 0 }
+			{
+				steamId: P,
+				name: 'p',
+				faction: 'Valkyra',
+				seconds: 1,
+				idleSeconds: 0,
+				kills: 1,
+				deaths: 1,
+				cashDelta: 0
+			},
+			{
+				steamId: R,
+				name: 'r',
+				faction: 'White',
+				seconds: 1,
+				idleSeconds: 0,
+				kills: 2,
+				deaths: 0,
+				cashDelta: 0
+			}
 		]);
 		await exact([A]);
 		// a line moved to another player, a match moved to another server, a line deleted
@@ -531,6 +549,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 						name: 'q',
 						faction: 'Lonestar',
 						seconds: 9,
+						idleSeconds: 0,
 						kills: 7,
 						deaths: 1,
 						cashDelta: 5
@@ -543,6 +562,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 						name: 'q',
 						faction: 'Lonestar',
 						seconds: 9,
+						idleSeconds: 0,
 						kills: 7,
 						deaths: 1,
 						cashDelta: 5
@@ -552,6 +572,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 						name: 'r',
 						faction: 'Valkyra',
 						seconds: 9,
+						idleSeconds: 0,
 						kills: 1,
 						deaths: 4,
 						cashDelta: 0
@@ -574,6 +595,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 						name: 'q',
 						faction: 'Lonestar',
 						seconds: 9,
+						idleSeconds: 0,
 						kills: 7,
 						deaths: 1,
 						cashDelta: 5
@@ -811,16 +833,14 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 					deaths: 1,
 					killStreak: kills
 				});
-				await db
-					.insert(matchPlayers)
-					.values([
-						l(won.id, 'a', P, 'Valkyra', 5),
-						l(won.id, 'a', Q, 'White', 2),
-						l(drawn.id, 'a', P, 'Lonestar', 3),
-						l(drawn.id, 'a', 'lines-only-player', 'Valkyra', 7),
-						l(abandoned.id, 'b', P, 'Valkyra', 4),
-						l(open.id, 'a', Q, 'Lonestar', 9)
-					]);
+				await insertEarlyLines(db, [
+					l(won.id, 'a', P, 'Valkyra', 5),
+					l(won.id, 'a', Q, 'White', 2),
+					l(drawn.id, 'a', P, 'Lonestar', 3),
+					l(drawn.id, 'a', 'lines-only-player', 'Valkyra', 7),
+					l(abandoned.id, 'b', P, 'Valkyra', 4),
+					l(open.id, 'a', Q, 'Lonestar', 9)
+				]);
 				// a negative streak merged the 0038 way where 0038 is in: a session closed first (the
 				// pair's row has no match yet), then a match ended with the player's line at -1
 				const [late] = await db
@@ -834,9 +854,9 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 					.insert(matches)
 					.values({ serverId: 'a', startedAt: at(4.6), map: 'Europe' })
 					.returning({ id: matches.id });
-				await db
-					.insert(matchPlayers)
-					.values({ ...l(negative.id, 'a', S, 'Valkyra', 0), killStreak: -1, deathStreak: -2 });
+				await insertEarlyLines(db, [
+					{ ...l(negative.id, 'a', S, 'Valkyra', 0), killStreak: -1, deathStreak: -2 }
+				]);
 				await db.execute(sql`
 					UPDATE matches SET ended_at = ${at(5.5)}, final_scores = ${JSON.stringify(scores)}::jsonb,
 					       winner = 'Valkyra'

@@ -22,7 +22,7 @@ const lines = (
 	lines AS (
 		SELECT p.steam_id, p.match_id, p.server_id, p.faction, p.seconds, p.kills, p.deaths, p.cash_delta,
 		       p.headshots, p.team_kills, p.suicides, p.vehicle_kills, p.longest_m, p.kill_streak, p.death_streak,
-		       m.started_at, m.ended_at, m.map,
+		       p.idle_seconds, m.started_at, m.ended_at, m.map,
 		       CASE WHEN p.faction IS NULL THEN NULL
 		            WHEN jsonb_typeof(m.final_scores) = 'array' AND jsonb_array_length(m.final_scores) > 0
 		                 AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(m.final_scores) e WHERE e->>'name' = p.faction)
@@ -57,7 +57,8 @@ const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sq
 		       MAX(kill_streak) AS kill_streak, MAX(death_streak) AS death_streak,
 		       COUNT(*) FILTER (WHERE result = 'win') AS wins,
 		       COUNT(*) FILTER (WHERE result = 'loss') AS losses,
-		       COUNT(*) FILTER (WHERE result = 'draw') AS draws
+		       COUNT(*) FILTER (WHERE result = 'draw') AS draws,
+		       SUM(idle_seconds) / 60.0 AS idle_minutes
 		  FROM lines GROUP BY steam_id),
 	base AS (
 		SELECT steam_id,
@@ -68,7 +69,8 @@ const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sq
 		       COALESCE(mt.suicides, 0) AS suicides, COALESCE(mt.vehicle_kills, 0) AS vehicle_kills,
 		       COALESCE(mt.kill_streak, 0) AS kill_streak, COALESCE(mt.death_streak, 0) AS death_streak,
 		       COALESCE(mt.matches, 0) AS matches, COALESCE(mt.wins, 0) AS wins,
-		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws
+		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws,
+		       COALESCE(mt.idle_minutes, 0) AS idle_minutes
 		  FROM sess FULL JOIN mt USING (steam_id))`;
 
 /**
@@ -96,7 +98,8 @@ const seasonSums = (ids: string[], from: Date, to: Date) => sql`
 		       MAX(kill_streak) AS kill_streak, MAX(death_streak) AS death_streak,
 		       COUNT(*) FILTER (WHERE result = 'win') AS wins,
 		       COUNT(*) FILTER (WHERE result = 'loss') AS losses,
-		       COUNT(*) FILTER (WHERE result = 'draw') AS draws
+		       COUNT(*) FILTER (WHERE result = 'draw') AS draws,
+		       SUM(idle_seconds) / 60.0 AS idle_minutes
 		  FROM lines GROUP BY steam_id),
 	base AS (
 		SELECT steam_id,
@@ -108,21 +111,24 @@ const seasonSums = (ids: string[], from: Date, to: Date) => sql`
 		       COALESCE(mt.suicides, 0) AS suicides, COALESCE(mt.vehicle_kills, 0) AS vehicle_kills,
 		       COALESCE(mt.kill_streak, 0) AS kill_streak, COALESCE(mt.death_streak, 0) AS death_streak,
 		       COALESCE(mt.matches, 0) AS matches, COALESCE(mt.wins, 0) AS wins,
-		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws
+		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws,
+		       COALESCE(mt.idle_minutes, 0) AS idle_minutes
 		  FROM sess FULL JOIN mt USING (steam_id))`;
 
 const METRIC_SQL: Record<BoardMetric, SQL> = {
 	kills: sql`kills`,
 	deaths: sql`deaths`,
 	kd: sql`CASE WHEN deaths > 0 THEN kills::float / deaths WHEN kills > 0 THEN kills::float ELSE NULL END`,
-	perHour: sql`CASE WHEN minutes - seed_minutes > 0 THEN kills::float / ((minutes - seed_minutes) / 60) ELSE NULL END`,
+	perHour: sql`CASE WHEN minutes - GREATEST(seed_minutes, idle_minutes) > 0
+	                  THEN kills::float / ((minutes - GREATEST(seed_minutes, idle_minutes)) / 60) ELSE NULL END`,
 	playtime: sql`minutes`,
 	seeded: sql`seed_minutes`,
 	matches: sql`matches`,
 	wins: sql`wins`,
 	winRate: sql`CASE WHEN wins + losses + draws > 0 THEN wins::float / (wins + losses + draws) ELSE NULL END`,
 	cash: sql`cash`,
-	cashPerMin: sql`CASE WHEN cash_minutes - seed_minutes > 0 THEN cash::float / (cash_minutes - seed_minutes) ELSE NULL END`
+	cashPerMin: sql`CASE WHEN cash_minutes - GREATEST(seed_minutes, idle_minutes) > 0
+	                     THEN cash::float / (cash_minutes - GREATEST(seed_minutes, idle_minutes)) ELSE NULL END`
 };
 
 /** Every all-time base row over these servers (or these players), each column as text. */
@@ -147,7 +153,7 @@ export async function oracleRangeBase(
 		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
 		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
-		       death_streak::text, matches::text, wins::text, losses::text, draws::text
+		       death_streak::text, matches::text, wins::text, losses::text, draws::text, idle_minutes::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
 }
 
@@ -177,7 +183,7 @@ export async function oracleBoard(
 		       r.last_seen AS "lastSeen", r.kills::text, r.headshots::text, r.team_kills::text AS "teamKills",
 		       r.deaths::text, r.suicides::text, r.vehicle_kills::text AS "vehicleKills",
 		       r.kill_streak::text AS "killStreak", r.death_streak::text AS "deathStreak", r.matches::text,
-		       r.wins::text, r.losses::text, r.draws::text, r.total::text,
+		       r.wins::text, r.losses::text, r.draws::text, r.idle_minutes::text AS "idleMinutes", r.total::text,
 		       (SELECT name FROM player_sessions ps WHERE ps.steam_id = r.steam_id AND ps.server_id IN ${ids}
 		         ORDER BY ps.joined_at DESC, ps.id DESC LIMIT 1) AS name
 		  FROM page r`)) as Record<string, unknown>[];
@@ -230,7 +236,7 @@ export async function totalsRows(
 		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
 		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
-		       death_streak::text, matches::text, wins::text, losses::text, draws::text
+		       death_streak::text, matches::text, wins::text, losses::text, draws::text, idle_minutes::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
 }
 
@@ -247,7 +253,7 @@ export async function oracleSeasonBase(
 		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
 		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
-		       death_streak::text, matches::text, wins::text, losses::text, draws::text
+		       death_streak::text, matches::text, wins::text, losses::text, draws::text, idle_minutes::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
 }
 
@@ -263,7 +269,7 @@ export async function rangeRows(
 		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
 		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
-		       death_streak::text, matches::text, wins::text, losses::text, draws::text
+		       death_streak::text, matches::text, wins::text, losses::text, draws::text, idle_minutes::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
 }
 
@@ -280,6 +286,6 @@ export async function seasonRows(
 		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
 		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
-		       death_streak::text, matches::text, wins::text, losses::text, draws::text
+		       death_streak::text, matches::text, wins::text, losses::text, draws::text, idle_minutes::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
 }

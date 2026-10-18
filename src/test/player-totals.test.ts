@@ -292,7 +292,9 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 							faction: r.pick(FACTIONS),
 							kills: r.int(20),
 							deaths: r.int(20),
-							killStreak: r.int(6)
+							killStreak: r.int(6),
+							// fixed, not drawn: another draw would change every step after it
+							idleSeconds: 420
 						})
 						.onConflictDoNothing();
 				return;
@@ -352,7 +354,8 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 							name: 'odd',
 							faction: i ? 'Lonestar' : 'White',
 							kills: r.int(9),
-							deaths: r.int(9)
+							deaths: r.int(9),
+							idleSeconds: 90
 						}))
 				);
 				return;
@@ -570,6 +573,7 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 						minutes: Math.round(Number(o.minutes)),
 						cashMinutes: Math.round(Number(o.cashMinutes)),
 						seedMinutes: Math.round(Number(o.seedMinutes)),
+						idleMinutes: Math.round(Number(o.idleMinutes)),
 						kills: Number(o.kills),
 						deaths: Number(o.deaths),
 						headshots: Number(o.headshots),
@@ -658,7 +662,7 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 			        (SELECT array_agg(c ORDER BY c) FROM unnest(d.crossings) c),
 			        d.sessions, d.seed_seconds, d.cash, d.last_seen, d.matches, d.kills, d.deaths, d.headshots,
 			        d.team_kills, d.suicides, d.vehicle_kills, d.kill_streak, d.death_streak, d.wins,
-			        d.losses, d.draws)::text AS row
+			        d.losses, d.draws, d.idle_seconds)::text AS row
 			  FROM player_days d WHERE server_id IN ${sets()[4]} ORDER BY server_id, day, steam_id`)) as {
 			row: string;
 		}[];

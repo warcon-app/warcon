@@ -35,6 +35,8 @@ export interface MatchTally {
 	droppedAt: number;
 	/** time on during the match: the gaps between trusted looks the player was on for */
 	ms: number;
+	/** of `ms`, the gaps when no side had scored yet: the match waiting for its players */
+	idleMs: number;
 	lastSeen: number;
 	/** the row is due at the next match stage: the player left (their part is then safe from a
 	 *  worker restart), or the row is being closed */
@@ -49,6 +51,8 @@ export interface TallyRow {
 	name: string;
 	faction: string | null;
 	seconds: number;
+	/** of `seconds`, the time on before any side had scored */
+	idleSeconds: number;
 	kills: number;
 	deaths: number;
 	/** the cash earned over the match: each run of the counters' last look less its first */
@@ -57,13 +61,20 @@ export interface TallyRow {
 
 /**
  * Applies one look at the player list. `stayed` names the players who were also on at the
- * previous look, when that look was recent enough to trust: they earn `gapMs` of time on.
+ * previous look, when that look was recent enough to trust: they earn `gapMs` of time on, and of
+ * idle time too while no side has scored (`scored` false: the match is waiting for its players).
  * Everyone on the list gets a tally; a newcomer starts from the counters as they stand.
  */
 export function tallyLook(
 	tallies: Tallies,
 	players: Player[],
-	opts: { now: number; gapMs: number; stayed: ReadonlySet<string>; teams?: readonly string[] }
+	opts: {
+		now: number;
+		gapMs: number;
+		stayed: ReadonlySet<string>;
+		teams?: readonly string[];
+		scored?: boolean;
+	}
 ): void {
 	for (const p of players) {
 		if (!p.steamId) continue;
@@ -79,6 +90,7 @@ export function tallyLook(
 				cashLast: p.cash,
 				droppedAt: 0,
 				ms: 0,
+				idleMs: 0,
 				lastSeen: opts.now,
 				dirty: false
 			});
@@ -95,7 +107,10 @@ export function tallyLook(
 		t.cashLast = p.cash;
 		t.name = p.name;
 		if (isTeam(p.faction, opts.teams)) t.faction = p.faction;
-		if (opts.stayed.has(p.steamId)) t.ms += opts.gapMs;
+		if (opts.stayed.has(p.steamId)) {
+			t.ms += opts.gapMs;
+			if (opts.scored === false) t.idleMs += opts.gapMs;
+		}
 		t.lastSeen = opts.now;
 	}
 }
@@ -106,6 +121,7 @@ export const tallyRow = (t: MatchTally): TallyRow => ({
 	name: t.name,
 	faction: t.faction,
 	seconds: Math.round(t.ms / 1000),
+	idleSeconds: Math.round(t.idleMs / 1000),
 	kills: t.banked.kills + t.last.kills,
 	deaths: t.banked.deaths + t.last.deaths,
 	cashDelta: t.banked.cash + t.cashLast - t.cashFirst
@@ -135,6 +151,7 @@ export function closeTallies(
 			name: t.name,
 			faction: t.faction,
 			seconds: Math.round(t.ms / 1000),
+			idleSeconds: Math.round(t.idleMs / 1000),
 			kills: t.banked.kills,
 			deaths: t.banked.deaths,
 			cashDelta: t.banked.cash
@@ -145,6 +162,7 @@ export function closeTallies(
 			last: { ...t.last },
 			droppedAt: 0,
 			ms: 0,
+			idleMs: 0,
 			dirty: false
 		});
 	}
@@ -160,22 +178,27 @@ export async function writeMatchPlayers(
 ): Promise<void> {
 	if (!rows.length) return;
 	await db.execute(sql`
-		INSERT INTO match_players (match_id, server_id, steam_id, name, faction, seconds, kills, deaths, cash_delta)
-		SELECT ${matchId}::bigint, ${serverId}, v.steam_id, v.name, v.faction, v.seconds, v.kills, v.deaths, v.cash_delta
+		INSERT INTO match_players (match_id, server_id, steam_id, name, faction, seconds, idle_seconds, kills, deaths,
+		                           cash_delta)
+		SELECT ${matchId}::bigint, ${serverId}, v.steam_id, v.name, v.faction, v.seconds, v.idle_seconds, v.kills,
+		       v.deaths, v.cash_delta
 		  FROM jsonb_to_recordset(${json(
 				rows.map((r) => ({
 					steam_id: r.steamId,
 					name: r.name,
 					faction: r.faction,
 					seconds: r.seconds,
+					idle_seconds: r.idleSeconds,
 					kills: r.kills,
 					deaths: r.deaths,
 					cash_delta: r.cashDelta
 				}))
-			)}) AS v(steam_id text, name text, faction text, seconds int, kills int, deaths int, cash_delta int)
+			)}) AS v(steam_id text, name text, faction text, seconds int, idle_seconds int, kills int,
+			        deaths int, cash_delta int)
 		ON CONFLICT (match_id, steam_id) DO UPDATE
 		   SET name = EXCLUDED.name, faction = EXCLUDED.faction, seconds = EXCLUDED.seconds,
-		       kills = EXCLUDED.kills, deaths = EXCLUDED.deaths, cash_delta = EXCLUDED.cash_delta`);
+		       idle_seconds = EXCLUDED.idle_seconds, kills = EXCLUDED.kills, deaths = EXCLUDED.deaths,
+		       cash_delta = EXCLUDED.cash_delta`);
 }
 
 /** One kill of the match, in match order, as the feed pass reads it. */

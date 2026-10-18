@@ -93,24 +93,24 @@ export const rangeBase = (ids: string[], from: Date) => sql`
 	parts AS (
 		SELECT d.steam_id, d.sessions AS n, d.seconds AS sec, d.seconds AS cs, d.seed_seconds AS seed, d.cash,
 		       d.last_seen AS ls, d.matches AS m, d.kills, d.deaths, d.headshots, d.team_kills, d.suicides,
-		       d.vehicle_kills, d.kill_streak, d.death_streak, d.wins, d.losses, d.draws
+		       d.vehicle_kills, d.kill_streak, d.death_streak, d.wins, d.losses, d.draws, d.idle_seconds AS idle
 		  FROM player_days d, edge WHERE d.server_id IN ${ids} AND d.day >= edge.d1
 		UNION ALL
 		SELECT d.steam_id, 0, EXTRACT(EPOCH FROM (edge.m1 - GREATEST(j, edge.f))), EXTRACT(EPOCH FROM (edge.m1 - j)),
-		       0, 0, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		       0, 0, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 		  FROM player_days d CROSS JOIN edge CROSS JOIN LATERAL unnest(d.crossings) j
 		 WHERE d.server_id IN ${ids} AND d.day = edge.d1 AND d.crossings IS NOT NULL
 		UNION ALL
 		SELECT s.steam_id, 1, EXTRACT(EPOCH FROM (COALESCE(s.left_at, now()) - GREATEST(s.joined_at, edge.f))),
 		       EXTRACT(EPOCH FROM (COALESCE(s.left_at, now()) - s.joined_at)),
-		       s.seed_seconds, s.cash, s.last_seen, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		       s.seed_seconds, s.cash, s.last_seen, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 		  FROM player_sessions s, edge
 		 WHERE s.server_id IN ${ids} AND s.last_seen >= edge.f
 		   AND (s.left_at IS NULL OR (s.left_at >= edge.f AND s.left_at < edge.m1))
 		UNION ALL
 		SELECT p.steam_id, 0, 0, 0, 0, 0, NULL, 1, p.kills, p.deaths, p.headshots, p.team_kills, p.suicides,
 		       p.vehicle_kills, p.kill_streak, p.death_streak, CASE WHEN x.r = 'win' THEN 1 ELSE 0 END,
-		       CASE WHEN x.r = 'loss' THEN 1 ELSE 0 END, CASE WHEN x.r = 'draw' THEN 1 ELSE 0 END
+		       CASE WHEN x.r = 'loss' THEN 1 ELSE 0 END, CASE WHEN x.r = 'draw' THEN 1 ELSE 0 END, p.idle_seconds
 		  FROM edge, matches mt
 		  JOIN match_players p ON p.match_id = mt.id AND p.server_id = mt.server_id
 		  CROSS JOIN LATERAL (SELECT match_result(mt.final_scores, mt.winner, p.faction) AS r) x
@@ -121,7 +121,7 @@ export const rangeBase = (ids: string[], from: Date) => sql`
 		       SUM(headshots) AS headshots, SUM(team_kills) AS team_kills, SUM(suicides) AS suicides,
 		       SUM(vehicle_kills) AS vehicle_kills, MAX(kill_streak) FILTER (WHERE m > 0) AS kill_streak,
 		       MAX(death_streak) FILTER (WHERE m > 0) AS death_streak,
-		       SUM(wins) AS wins, SUM(losses) AS losses, SUM(draws) AS draws
+		       SUM(wins) AS wins, SUM(losses) AS losses, SUM(draws) AS draws, SUM(idle) AS idle
 		  FROM parts GROUP BY steam_id HAVING SUM(n) > 0 OR SUM(m) > 0),
 	base AS (
 		SELECT steam_id,
@@ -137,7 +137,8 @@ export const rangeBase = (ids: string[], from: Date) => sql`
 		       CASE WHEN m > 0 THEN kill_streak ELSE 0 END AS kill_streak,
 		       CASE WHEN m > 0 THEN death_streak ELSE 0 END AS death_streak,
 		       CASE WHEN m > 0 THEN m ELSE 0 END AS matches, CASE WHEN m > 0 THEN wins ELSE 0 END AS wins,
-		       CASE WHEN m > 0 THEN losses ELSE 0 END AS losses, CASE WHEN m > 0 THEN draws ELSE 0 END AS draws
+		       CASE WHEN m > 0 THEN losses ELSE 0 END AS losses, CASE WHEN m > 0 THEN draws ELSE 0 END AS draws,
+		       CASE WHEN m > 0 THEN idle / 60.0 ELSE 0 END AS idle_minutes
 		  FROM player)`;
 
 /**
@@ -167,12 +168,12 @@ export const seasonBase = (ids: string[], from: Date, to: Date) => sql`
 	parts AS (
 		SELECT d.steam_id, d.sessions AS n, d.seconds AS sec, d.seconds AS cs, d.seed_seconds AS seed, d.cash,
 		       d.matches AS m, d.kills, d.deaths, d.headshots, d.team_kills, d.suicides, d.vehicle_kills,
-		       d.kill_streak, d.death_streak, d.wins, d.losses, d.draws
+		       d.kill_streak, d.death_streak, d.wins, d.losses, d.draws, d.idle_seconds AS idle
 		  FROM player_days d, edge WHERE d.server_id IN ${ids} AND d.day >= edge.d1 AND d.day < edge.dt
 		UNION ALL
 		SELECT d.steam_id, 0, EXTRACT(EPOCH FROM (LEAST(edge.m1, edge.t) - GREATEST(j, edge.f))),
 		       CASE WHEN edge.late THEN EXTRACT(EPOCH FROM (edge.m1 - j)) ELSE 0 END, 0, 0,
-		       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 		  FROM player_days d CROSS JOIN edge CROSS JOIN LATERAL unnest(d.crossings) j
 		 WHERE d.server_id IN ${ids} AND d.day = edge.d1 AND d.crossings IS NOT NULL AND j < edge.t
 		UNION ALL
@@ -180,14 +181,14 @@ export const seasonBase = (ids: string[], from: Date, to: Date) => sql`
 		       EXTRACT(EPOCH FROM (LEAST(s.left_at, edge.t) - GREATEST(s.joined_at, edge.f))),
 		       CASE WHEN s.left_at < edge.t THEN EXTRACT(EPOCH FROM (s.left_at - s.joined_at)) ELSE 0 END,
 		       CASE WHEN s.left_at < edge.t THEN s.seed_seconds ELSE 0 END,
-		       CASE WHEN s.left_at < edge.t THEN s.cash ELSE 0 END, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		       CASE WHEN s.left_at < edge.t THEN s.cash ELSE 0 END, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 		  FROM player_sessions s, edge
 		 WHERE s.server_id IN ${ids} AND s.left_at >= edge.f AND s.left_at < edge.m1
 		   AND (s.left_at < edge.t OR s.joined_at < edge.t)
 		UNION ALL
 		SELECT d.steam_id, 0, EXTRACT(EPOCH FROM (edge.t - GREATEST(j, edge.mt))),
 		       -GREATEST(EXTRACT(EPOCH FROM (edge.mt - j)), 0), 0, 0,
-		       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 		  FROM player_days d CROSS JOIN edge CROSS JOIN LATERAL unnest(d.crossings) j
 		 WHERE edge.late AND d.server_id IN ${ids} AND d.day = edge.dt + 1 AND d.crossings IS NOT NULL
 		   AND j < edge.t
@@ -197,20 +198,20 @@ export const seasonBase = (ids: string[], from: Date, to: Date) => sql`
 		       CASE WHEN s.left_at < edge.t THEN EXTRACT(EPOCH FROM (s.left_at - GREATEST(s.joined_at, edge.mt)))
 		            ELSE -GREATEST(EXTRACT(EPOCH FROM (edge.mt - s.joined_at)), 0) END,
 		       CASE WHEN s.left_at < edge.t THEN s.seed_seconds ELSE 0 END,
-		       CASE WHEN s.left_at < edge.t THEN s.cash ELSE 0 END, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		       CASE WHEN s.left_at < edge.t THEN s.cash ELSE 0 END, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 		  FROM player_sessions s, edge
 		 WHERE edge.late AND s.server_id IN ${ids} AND s.left_at >= edge.mt AND s.left_at < edge.mn
 		   AND (s.left_at < edge.t OR s.joined_at < edge.t)
 		UNION ALL
 		SELECT s.steam_id, 1, EXTRACT(EPOCH FROM (LEAST(now(), edge.t) - GREATEST(s.joined_at, edge.f))),
-		       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 		  FROM player_sessions s, edge
 		 WHERE s.server_id IN ${ids} AND s.left_at IS NULL AND s.last_seen >= edge.f
 		   AND s.joined_at < edge.t
 		UNION ALL
 		SELECT p.steam_id, 0, 0, 0, 0, 0, 1, p.kills, p.deaths, p.headshots, p.team_kills, p.suicides,
 		       p.vehicle_kills, p.kill_streak, p.death_streak, CASE WHEN x.r = 'win' THEN 1 ELSE 0 END,
-		       CASE WHEN x.r = 'loss' THEN 1 ELSE 0 END, CASE WHEN x.r = 'draw' THEN 1 ELSE 0 END
+		       CASE WHEN x.r = 'loss' THEN 1 ELSE 0 END, CASE WHEN x.r = 'draw' THEN 1 ELSE 0 END, p.idle_seconds
 		  FROM edge, matches mt
 		  JOIN match_players p ON p.match_id = mt.id AND p.server_id = mt.server_id
 		  CROSS JOIN LATERAL (SELECT match_result(mt.final_scores, mt.winner, p.faction) AS r) x
@@ -223,7 +224,7 @@ export const seasonBase = (ids: string[], from: Date, to: Date) => sql`
 		       SUM(team_kills) AS team_kills, SUM(suicides) AS suicides, SUM(vehicle_kills) AS vehicle_kills,
 		       MAX(kill_streak) FILTER (WHERE m > 0) AS kill_streak,
 		       MAX(death_streak) FILTER (WHERE m > 0) AS death_streak,
-		       SUM(wins) AS wins, SUM(losses) AS losses, SUM(draws) AS draws
+		       SUM(wins) AS wins, SUM(losses) AS losses, SUM(draws) AS draws, SUM(idle) AS idle
 		  FROM parts GROUP BY steam_id HAVING SUM(n) > 0 OR SUM(sec) <> 0 OR SUM(m) > 0),
 	base AS (
 		SELECT steam_id,
@@ -239,7 +240,8 @@ export const seasonBase = (ids: string[], from: Date, to: Date) => sql`
 		       CASE WHEN m > 0 THEN kill_streak ELSE 0 END AS kill_streak,
 		       CASE WHEN m > 0 THEN death_streak ELSE 0 END AS death_streak,
 		       CASE WHEN m > 0 THEN m ELSE 0 END AS matches, CASE WHEN m > 0 THEN wins ELSE 0 END AS wins,
-		       CASE WHEN m > 0 THEN losses ELSE 0 END AS losses, CASE WHEN m > 0 THEN draws ELSE 0 END AS draws
+		       CASE WHEN m > 0 THEN losses ELSE 0 END AS losses, CASE WHEN m > 0 THEN draws ELSE 0 END AS draws,
+		       CASE WHEN m > 0 THEN idle / 60.0 ELSE 0 END AS idle_minutes
 		  FROM player)`;
 
 /**
@@ -267,7 +269,8 @@ export const totalsBase = (ids: string[], steamIds: string[] | null = null) => s
 		       SUM(kills) AS kills, SUM(deaths) AS deaths, SUM(headshots) AS headshots,
 		       SUM(team_kills) AS team_kills, SUM(suicides) AS suicides, SUM(vehicle_kills) AS vehicle_kills,
 		       MAX(kill_streak) AS kill_streak, MAX(death_streak) AS death_streak,
-		       SUM(wins) AS wins, SUM(losses) AS losses, SUM(draws) AS draws
+		       SUM(wins) AS wins, SUM(losses) AS losses, SUM(draws) AS draws,
+		       SUM(idle_seconds) / 60.0 AS idle_minutes
 		  FROM player_totals WHERE server_id IN ${ids} AND matches > 0
 		   ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}
 		 GROUP BY steam_id),
@@ -280,7 +283,8 @@ export const totalsBase = (ids: string[], steamIds: string[] | null = null) => s
 		       COALESCE(mt.suicides, 0) AS suicides, COALESCE(mt.vehicle_kills, 0) AS vehicle_kills,
 		       COALESCE(mt.kill_streak, 0) AS kill_streak, COALESCE(mt.death_streak, 0) AS death_streak,
 		       COALESCE(mt.matches, 0) AS matches, COALESCE(mt.wins, 0) AS wins,
-		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws
+		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws,
+		       COALESCE(mt.idle_minutes, 0) AS idle_minutes
 		  FROM sess FULL JOIN mt USING (steam_id))`;
 
 /** All recorded games on these servers, batched for the connected-player risk badges. */
@@ -349,14 +353,18 @@ const METRIC_SQL: Record<BoardMetric, ReturnType<typeof sql>> = {
 	kills: sql`kills`,
 	deaths: sql`deaths`,
 	kd: sql`CASE WHEN deaths > 0 THEN kills::float / deaths WHEN kills > 0 THEN kills::float ELSE NULL END`,
-	perHour: sql`CASE WHEN minutes - seed_minutes > 0 THEN kills::float / ((minutes - seed_minutes) / 60) ELSE NULL END`,
+	// as perHour and perMinute in $lib/leaderboard: seed time and idle time both count the wait for
+	// players, so the larger goes
+	perHour: sql`CASE WHEN minutes - GREATEST(seed_minutes, idle_minutes) > 0
+	                  THEN kills::float / ((minutes - GREATEST(seed_minutes, idle_minutes)) / 60) ELSE NULL END`,
 	playtime: sql`minutes`,
 	seeded: sql`seed_minutes`,
 	matches: sql`matches`,
 	wins: sql`wins`,
 	winRate: sql`CASE WHEN wins + losses + draws > 0 THEN wins::float / (wins + losses + draws) ELSE NULL END`,
 	cash: sql`cash`,
-	cashPerMin: sql`CASE WHEN cash_minutes - seed_minutes > 0 THEN cash::float / (cash_minutes - seed_minutes) ELSE NULL END`
+	cashPerMin: sql`CASE WHEN cash_minutes - GREATEST(seed_minutes, idle_minutes) > 0
+	                     THEN cash::float / (cash_minutes - GREATEST(seed_minutes, idle_minutes)) ELSE NULL END`
 };
 
 interface BaseRow extends Record<string, unknown> {
@@ -365,6 +373,7 @@ interface BaseRow extends Record<string, unknown> {
 	minutes: string;
 	cashMinutes: string;
 	seedMinutes: string;
+	idleMinutes: string;
 	cash: string;
 	lastSeen: Date | null;
 	kills: string;
@@ -427,7 +436,7 @@ async function boardSlice(
 			 ORDER BY ${METRIC_SQL[q.sort]} ${order}, kills DESC, steam_id
 			 LIMIT ${limit} OFFSET ${offset})
 		SELECT r.steam_id AS "steamId", r.minutes, r.cash_minutes AS "cashMinutes", r.seed_minutes AS "seedMinutes",
-		       r.cash, r.last_seen AS "lastSeen",
+		       r.idle_minutes AS "idleMinutes", r.cash, r.last_seen AS "lastSeen",
 		       r.kills, r.headshots, r.team_kills AS "teamKills", r.deaths, r.suicides,
 		       r.vehicle_kills AS "vehicleKills", r.kill_streak AS "killStreak", r.death_streak AS "deathStreak",
 		       r.matches, r.wins, r.losses, r.draws, r.total,
@@ -642,6 +651,7 @@ const shapeRow = (r: BaseRow, rank: number): BoardRow => ({
 	minutes: Math.round(num(r.minutes)),
 	cashMinutes: Math.round(num(r.cashMinutes)),
 	seedMinutes: Math.round(num(r.seedMinutes)),
+	idleMinutes: Math.round(num(r.idleMinutes)),
 	kills: num(r.kills),
 	deaths: num(r.deaths),
 	headshots: num(r.headshots),

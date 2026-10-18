@@ -38,19 +38,46 @@ describe.skipIf(!hasTestDb)('match rows', () => {
 
 	test('a write sets the row; a second write of the same player replaces it', async () => {
 		await writeMatchPlayers(env.db, serverId, matchId, [
-			{ steamId: A, name: 'a', faction: 'Red', seconds: 60, kills: 3, deaths: 1, cashDelta: 150 },
-			{ steamId: B, name: 'b', faction: 'Blue', seconds: 30, kills: 0, deaths: 2, cashDelta: -20 }
+			{
+				steamId: A,
+				name: 'a',
+				faction: 'Red',
+				seconds: 60,
+				idleSeconds: 40,
+				kills: 3,
+				deaths: 1,
+				cashDelta: 150
+			},
+			{
+				steamId: B,
+				name: 'b',
+				faction: 'Blue',
+				seconds: 30,
+				idleSeconds: 30,
+				kills: 0,
+				deaths: 2,
+				cashDelta: -20
+			}
 		]);
 		await writeMatchPlayers(env.db, serverId, matchId, [
-			{ steamId: A, name: 'a2', faction: 'Red', seconds: 600, kills: 12, deaths: 4, cashDelta: 900 }
+			{
+				steamId: A,
+				name: 'a2',
+				faction: 'Red',
+				seconds: 600,
+				idleSeconds: 120,
+				kills: 12,
+				deaths: 4,
+				cashDelta: 900
+			}
 		]);
 		const rows = await rowsOf();
-		expect(rows.map((r) => [r.steamId, r.name, r.seconds, r.kills, r.deaths, r.cashDelta])).toEqual(
-			[
-				[A, 'a2', 600, 12, 4, 900],
-				[B, 'b', 30, 0, 2, -20]
-			]
-		);
+		expect(
+			rows.map((r) => [r.steamId, r.name, r.seconds, r.idleSeconds, r.kills, r.deaths, r.cashDelta])
+		).toEqual([
+			[A, 'a2', 600, 120, 12, 4, 900],
+			[B, 'b', 30, 30, 0, 2, -20]
+		]);
 		expect(rows[0].serverId).toBe(serverId);
 		expect(rows[0].headshots).toBe(0);
 	});

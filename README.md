@@ -928,7 +928,11 @@ streaks. A match counts once it has ended (the match in progress is on the live 
 result (win, loss, draw) is read from the match's winner and final scores against the side the
 player played; a match with no winner and nobody scoring, or one abandoned by a restart, has no
 result. Playtime and seed time come from player sessions; kills per hour and cash per minute leave
-seed time out; cash is summed over sessions, each banked across its matches like kills, so money
+seed time out. They also leave out idle time, a player's time on in a match before any side had
+scored (the match waiting for its players), so hours spent seeding are not counted as played on a
+server without a Seeding reward; as both count the same wait, they leave out whichever of the two
+is longer. Idle time is kept from this release on, so earlier matches have none. Cash
+is summed over sessions, each banked across its matches like kills, so money
 spent in a match lowers it. Cash per minute divides that cash by the whole time of the sessions it
 came from: a session that began before a range or season counts all of its cash there, so all of
 its time too, though Playtime shows only the time inside. Names link to the dossier.

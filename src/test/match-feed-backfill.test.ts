@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { connect, runMigrations, type Db } from '$lib/server/db';
 import { kills, matches, matchPlayers, playerSessions } from '$lib/server/db/schema';
-import { hasTestDb } from './db';
+import { hasTestDb, insertEarlyLines } from './db';
 import { oracleBase, oracleRangeBase, rangeRows, totalsRows } from './totals-oracle';
 
 const FEED = '0047_match_players_from_feed';
@@ -367,15 +367,13 @@ describe.skipIf(!hasTestDb)('the match rows from the feed', () => {
 				session(B, R, -0.9, -0.1, 'White', 3, 1)
 			]);
 		await run(db, '0032_match_players_backfill');
-		await db
-			.insert(matchPlayers)
-			.values([
-				worker(m[14].id, A, 9, 9, 700),
-				worker(m[15].id, A, 1, 0, 0),
-				{ ...worker(m[13].id, A, 6, 2, 0), steamId: WK },
-				worker(o[1].id, B, 1, 0, 0),
-				worker(o[2].id, B, 4, 4, 300)
-			]);
+		await insertEarlyLines(db, [
+			worker(m[14].id, A, 9, 9, 700),
+			worker(m[15].id, A, 1, 0, 0),
+			{ ...worker(m[13].id, A, 6, 2, 0), steamId: WK },
+			worker(o[1].id, B, 1, 0, 0),
+			worker(o[2].id, B, 4, 4, 300)
+		]);
 		await db.insert(playerSessions).values(session(A, WK, 9.5, 11.5, 'Lonestar', 6, 2));
 		await runMigrations(db, 'drizzle');
 	}, 60_000);
@@ -574,7 +572,7 @@ describe.skipIf(!hasTestDb)(
 					session(S, B2, 2.2, 2.8, 'Lonestar', 1, 0)
 				]);
 			await run(db, '0032_match_players_backfill');
-			await db.insert(matchPlayers).values(worker(k[3].id, S, 3, 3, 200));
+			await insertEarlyLines(db, [worker(k[3].id, S, 3, 3, 200)]);
 			await runMigrations(db, 'drizzle');
 		}, 60_000);
 

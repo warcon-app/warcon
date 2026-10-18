@@ -8,6 +8,8 @@
 // Without it the database suites are skipped (CI sets it, and fails when it is missing).
 import { SQL } from 'bun';
 import { randomBytes } from 'node:crypto';
+import { sql as query } from 'drizzle-orm';
+import type { DbOrTx } from '$lib/server/db';
 import type { Env } from '$lib/server/env';
 
 const PREFIX = 'warcon_test_';
@@ -18,6 +20,23 @@ if (!base && process.env.CI)
 
 /** False when there is no test database to use; suites pass it to describe.skipIf. */
 export const hasTestDb = !!base;
+
+/**
+ * Match lines for a database migrated only part of the way, with just the columns each one gives:
+ * Drizzle's insert names every column the schema has, and one a later migration adds is not there
+ * yet.
+ */
+export async function insertEarlyLines(db: DbOrTx, rows: Record<string, unknown>[]): Promise<void> {
+	for (const r of rows) {
+		const columns = Object.keys(r).map((k) =>
+			query.identifier(k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`))
+		);
+		const values = Object.values(r).map((v) => query`${v}`);
+		await db.execute(
+			query`INSERT INTO match_players (${query.join(columns, query`, `)}) VALUES (${query.join(values, query`, `)})`
+		);
+	}
+}
 
 type Shared = { env: Promise<Env>; name: string };
 // One database per `bun test` process, shared by every file: the module registry is per file for
