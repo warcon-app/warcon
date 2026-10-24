@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { validateWebhookUrl } from './webhooks';
 import { RULE_KINDS } from '../rule-kinds';
+import { auditMessage } from './audit';
 import {
 	buildEmbed,
 	buildTeamKillEmbed,
@@ -107,6 +108,31 @@ describe('buildEmbed', () => {
 		});
 		expect(e.description).toContain('Outcome: **denied** (403)');
 		expect(e.color).toBe(0x8a8a90);
+	});
+	test('manual whisper summaries reach Discord as escaped text with their delivery result', () => {
+		for (const action of ['rcon.whisper', 'rcon.whisperMany']) {
+			const message = auditMessage({
+				action,
+				message: 'Sent to 2 of 3 players.',
+				detail: { message: 'Please **switch** teams <@&1>\nhttps://example.com' }
+			});
+			const e = buildEmbed('Warcon', { ...row, action, message });
+			expect(e.description).toContain('Sent to 2 of 3 players.');
+			expect(e.description).toContain('Whisper: Please \\*\\*switch\\*\\* teams \\<@&1\\>');
+			expect(e.description).not.toContain('https://example.com');
+			expect(e.description).toContain('https:\u200B//example.com');
+		}
+	});
+	test('Discord keeps the full whisper even when the game returns a long result', () => {
+		const text = 'm'.repeat(256);
+		const message = auditMessage({
+			action: 'rcon.whisper',
+			message: 'x'.repeat(1000),
+			detail: { message: text }
+		});
+		expect(buildEmbed('Warcon', { ...row, action: 'rcon.whisper', message }).description).toContain(
+			`Whisper: ${text}`
+		);
 	});
 	test('a server added, refused or deleted never says where RCON listens', () => {
 		for (const action of ['server.create', 'server.update', 'server.delete']) {
