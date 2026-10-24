@@ -19,6 +19,7 @@ import { auditLog, user, type AuditRow } from './db/schema';
 import { storableText } from './db/storable';
 import { notifyWebhooks } from './webhook-delivery';
 import { OWNERS_ROWS } from './audit-rows';
+import { MAX_CHAT } from '../chat';
 
 export type { AuditRow };
 export type Outcome = 'ok' | 'error' | 'denied';
@@ -73,6 +74,22 @@ export function redact(value: unknown, depth = 0): unknown {
 	return value;
 }
 
+/** Manual whispers belong in every audit summary; rule messages remain private. */
+export function auditMessage(ev: Pick<AuditEvent, 'action' | 'message' | 'detail'>): string {
+	const summary = str(ev.message, 1000);
+	if (ev.action !== 'rcon.whisper' && ev.action !== 'rcon.whisperMany') return summary;
+	const detail = ev.detail;
+	if (!detail || typeof detail !== 'object' || !('message' in detail)) return summary;
+	if (typeof detail.message !== 'string') return summary;
+	const text = str(detail.message, MAX_CHAT);
+	if (!text) return summary;
+	// Scrub before adding the label so a credential on the first line is still recognised.
+	const whisper = `Whisper: ${redact(text)}`;
+	return [whisper, String(redact(summary)).slice(0, 1000 - whisper.length - 1)]
+		.filter(Boolean)
+		.join('\n');
+}
+
 export async function writeAudit(env: Env, req: Request | null, ev: AuditEvent): Promise<void> {
 	// Session-create hooks only know the user id; fill the name from the user table.
 	let actorName = ev.actor?.username ?? ev.actorName ?? '';
@@ -101,7 +118,7 @@ export async function writeAudit(env: Env, req: Request | null, ev: AuditEvent):
 			detail: ev.detail === undefined || ev.detail === null ? null : redact(ev.detail),
 			outcome: ev.outcome,
 			status: ev.status ?? null,
-			message: storableText(str(ev.message, 1000)),
+			message: storableText(auditMessage(ev)),
 			userAgent: storableText(ev.userAgent ?? (req ? userAgent(req) : '')),
 			durationMs: ev.durationMs ?? null
 		})

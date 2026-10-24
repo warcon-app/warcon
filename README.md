@@ -540,6 +540,10 @@ its own short line ("Kicked …: 3 team kills this match"), never the text a rul
 holds the newest 50 rows you may read in the audit trail; **All in the audit trail** opens them
 all, with the trail's filters by action and by person.
 
+Manual whispers, including group whispers, also include their message text beside the delivery
+result in new audit entries and the Discord command mirror. Credential-looking lines are redacted
+as in audit details. Automated whispers still keep only their short result, not their message text.
+
 With a [Seeding reward](#automation-triggers) switched on for the server, people with _Automation_
 there see where the player stands with it: the seed time banked on that server over the rule's
 window against the minutes it asks for and what is left, or the reserved slot they hold, which the

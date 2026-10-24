@@ -1,5 +1,65 @@
 import { describe, expect, test } from 'bun:test';
-import { redact } from './audit';
+import { auditMessage, redact } from './audit';
+import { MAX_CHAT } from '../chat';
+
+describe('manual whisper audit summaries', () => {
+	test('single and group whispers include the text without replacing the delivery result', () => {
+		for (const action of ['rcon.whisper', 'rcon.whisperMany']) {
+			for (const message of ['Message sent.', 'Sent to 2 of 3 players.', 'Player not found.']) {
+				expect(auditMessage({ action, message, detail: { message: 'Please switch teams.' } })).toBe(
+					`Whisper: Please switch teams.\n${message}`
+				);
+			}
+		}
+	});
+
+	test('only includes the bounded text the action sends, leaving room after a long result', () => {
+		const result = auditMessage({
+			action: 'rcon.whisper',
+			message: 'x'.repeat(1000),
+			detail: { message: `  ${'m'.repeat(400)}  ` }
+		});
+		expect(result).toStartWith(`Whisper: ${'m'.repeat(MAX_CHAT)}\n`);
+		expect(result.length).toBeLessThanOrEqual(1000);
+	});
+
+	test('redacts credential lines before labelling the whisper', () => {
+		const result = auditMessage({
+			action: 'rcon.whisper',
+			message: 'Sent.',
+			detail: { message: 'Password=hunter2\nPlease reconnect.\nToken=secret-value' }
+		});
+		expect(result).toBe('Whisper: Password=[redacted]\nPlease reconnect.\nToken=[redacted]\nSent.');
+	});
+
+	test('does not expose automated text or change other action summaries', () => {
+		for (const action of [
+			'trigger.welcome',
+			'trigger.faction_change',
+			'rcon.broadcast',
+			'rcon.kick'
+		]) {
+			expect(auditMessage({ action, message: 'Done.', detail: { message: 'private stats' } })).toBe(
+				'Done.'
+			);
+		}
+	});
+
+	test('missing, empty and malformed text leaves the existing summary alone', () => {
+		for (const detail of [
+			null,
+			undefined,
+			{},
+			{ message: '' },
+			{ message: '  ' },
+			{ message: 42 }
+		]) {
+			expect(auditMessage({ action: 'rcon.whisper', message: 'Not sent.', detail })).toBe(
+				'Not sent.'
+			);
+		}
+	});
+});
 
 describe('redact', () => {
 	test('replaces values whose key looks like a credential', () => {
