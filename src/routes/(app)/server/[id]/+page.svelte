@@ -45,6 +45,8 @@
 	let teamFilter = $state('');
 	let now = $state(Date.now());
 	let showPicker = $state(false);
+	/** the time of day & weather to set on the match in progress; '' until one is picked */
+	let weather = $state('');
 	let broadcast = $state('');
 	/** who the message goes to: '' is everyone (a broadcast), else a faction (a whisper to each on it) */
 	let to = $state('');
@@ -438,6 +440,25 @@
 				? 'Both travel when the match-end screen finishes, not when the button is pressed.'
 				: 'You have view-only access to this server.'}
 		</p>
+		<form
+			class="mt-4"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void act('setWeather', { lighting: weather }, { after: refreshStatus });
+			}}
+		>
+			<label class="field-label" for="weather">Time of day &amp; weather</label>
+			<div class="join w-full">
+				<select id="weather" class="input" bind:value={weather} disabled={!match}>
+					<option value="" disabled>Pick one…</option>
+					{#each data.catalog.lightings as l (l.id)}<option value={l.id}
+							>{lightingLabel(data.catalog, l.id)}</option
+						>{/each}
+				</select>
+				<button class="btn" type="submit" disabled={!match || !weather}>Set now</button>
+			</div>
+			<p class="note">Changes the match in progress at once; the map does not reload.</p>
+		</form>
 		<form
 			class="mt-4"
 			onsubmit={(e) => {
