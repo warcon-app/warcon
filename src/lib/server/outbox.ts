@@ -11,6 +11,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { DbOrTx } from './db';
 import { outbox, triggers, type OutboxRow } from './db/schema';
+import { storable, storableText } from './db/storable';
 import { ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { ApiError, forLog, str } from './http';
@@ -84,6 +85,8 @@ export async function enqueueIntents(
 	watched?: number[]
 ): Promise<number> {
 	if (!intents.length) return 0;
+	// A rule's texts carry names the game sent, which can hold NUL or half an emoji: either fails the
+	// whole insert, and with it every action of the look or batch (db/storable.ts).
 	const rows = await db
 		.insert(outbox)
 		.values(
@@ -93,14 +96,18 @@ export async function enqueueIntents(
 				triggerName: i.trigger.name,
 				triggerKind: i.trigger.kind,
 				action: i.action,
-				params: i.params,
-				target: i.target.slice(0, 300),
-				detail: i.detail,
+				params: storable(i.params),
+				target: storableText(i.target.slice(0, 300)),
+				detail: storable(i.detail),
 				steamId: i.steamId,
-				okMessage: i.okMessage,
+				okMessage: storableText(i.okMessage),
 				dedupeKey: i.dedupeKey,
 				...(i.watchOnly
-					? { state: 'skipped', outcome: i.watchOnly.slice(0, 300), doneAt: new Date() }
+					? {
+							state: 'skipped',
+							outcome: storableText(i.watchOnly.slice(0, 300)),
+							doneAt: new Date()
+						}
 					: {})
 			}))
 		)
@@ -116,8 +123,9 @@ export async function applyTriggerUpdates(db: DbOrTx, updates: TriggerUpdate[]):
 			.update(triggers)
 			.set({
 				lastFiredAt: u.lastFiredAt,
-				lastResult: u.lastResult?.slice(0, 300),
-				state: u.state === undefined ? undefined : u.state
+				lastResult:
+					u.lastResult === undefined ? undefined : storableText(u.lastResult.slice(0, 300)),
+				state: u.state === undefined ? undefined : storable(u.state)
 			})
 			.where(eq(triggers.id, u.id));
 }
