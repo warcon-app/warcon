@@ -27,8 +27,11 @@
 //                in a live match (afk-watch.ts)
 //   weather_cycle  change the time of day and weather every few minutes, in the match being played
 //                (weather-cycle.ts)
+//   death_whisper  whisper a player killed one of the rule's messages while they wait to respawn,
+//                at most once in a cooldown (death-whisper.ts, acted on in feed-events.ts)
 // The worker evaluates them on every observation and writes the actions they want to the outbox
-// (outbox.ts delivers, and every delivery lands in the audit trail as category "trigger"). A dry
+// (outbox.ts delivers, and every delivery lands in the audit trail as category "trigger", but for a
+// Death whisper that went: $lib/rule-kinds TRAIL_FAILURES_ONLY). A dry
 // run replays the last 24 hours from the samples and sessions tables so a rule can be checked
 // before it touches anyone.
 import { randomUUID } from 'node:crypto';
@@ -229,6 +232,13 @@ import {
 	weatherCycleSettingsKey,
 	type WeatherCycleConfig
 } from './weather-cycle';
+import {
+	deathBlanks,
+	deathVars,
+	deathWhisperStep,
+	type DeathWhisperConfig,
+	type WhisperedTracks
+} from './death-whisper';
 import { mapName } from '$lib/format';
 import { statsIn, usesStats } from '$lib/placeholders';
 import { settings } from './settings';
@@ -326,6 +336,7 @@ const RULE_NEEDS: Record<
 > = {
 	welcome: ['chat.send', 'messages players'],
 	faction_change: ['chat.send', 'messages players'],
+	death_whisper: ['chat.send', 'whispers players'],
 	broadcast: ['chat.send', 'messages players'],
 	restart_notice: ['chat.send', 'messages players'],
 	match_broadcast: ['chat.send', 'messages players'],
@@ -880,6 +891,7 @@ export async function evaluateTriggers(
 				case 'kill_rate':
 				case 'kill_distance':
 				case 'name_change':
+				case 'death_whisper':
 					// Acted on as kills arrive (feed-events.ts), not per observation.
 					break;
 				case 'seed_reward':
@@ -2346,20 +2358,23 @@ export async function recordDelivery(
 	target: string,
 	outcome: 'ok' | 'error',
 	message: string,
-	detail: Record<string, unknown>
+	detail: Record<string, unknown>,
+	/** false: the rule's row only, no audit row (a delivered Death whisper: TRAIL_FAILURES_ONLY) */
+	audit = true
 ): Promise<void> {
-	await writeAudit(env, null, {
-		actorName: `trigger: ${row.triggerName}`,
-		server: { id: server.id, name: server.name },
-		orgId: server.orgId,
-		category: 'trigger',
-		action: `trigger.${row.triggerKind}`,
-		target,
-		outcome,
-		status: outcome === 'ok' ? 200 : 502,
-		message,
-		detail: { triggerId: row.triggerId, ...detail }
-	});
+	if (audit)
+		await writeAudit(env, null, {
+			actorName: `trigger: ${row.triggerName}`,
+			server: { id: server.id, name: server.name },
+			orgId: server.orgId,
+			category: 'trigger',
+			action: `trigger.${row.triggerKind}`,
+			target,
+			outcome,
+			status: outcome === 'ok' ? 200 : 502,
+			message,
+			detail: { triggerId: row.triggerId, ...detail }
+		});
 	if (row.triggerId)
 		await env.db
 			.update(triggers)
@@ -2708,6 +2723,112 @@ export async function dryRun(
 		if (rows.length >= KILL_RATE_REPLAY_MAX)
 			result.notes.push(
 				`Replayed the first ${KILL_RATE_REPLAY_MAX.toLocaleString('en')} kills of the window only.`
+			);
+		return result;
+	}
+	if (kind === 'death_whisper') {
+		const c = cfg as DeathWhisperConfig;
+		// Every death of the window through the live rule's own step, batch by batch as they came in,
+		// each batch judged against the player count of the server's last sample before it; the
+		// reserved slots are the list as it stands now. A message is picked at random, as live.
+		type DeathRow = {
+			ts: Date;
+			eventId: string;
+			map: string;
+			killer: string | null;
+			killerName: string | null;
+			victim: string;
+			victimName: string;
+			cause: string | null;
+			distanceM: number | null;
+			suicide: boolean;
+		};
+		const rows = await env.db.execute<DeathRow>(sql`
+			SELECT ts, event_id AS "eventId", map, killer_steam_id AS killer, killer_name AS "killerName",
+			       victim_steam_id AS victim, victim_name AS "victimName", cause,
+			       distance_m AS "distanceM", suicide
+			  FROM kills
+			 WHERE server_id = ${server.id} AND ts >= ${from}
+			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
+		const counts = await env.db.execute<{ ts: Date; n: number | null }>(sql`
+			SELECT ts, player_count AS n FROM samples
+			 WHERE server_id = ${server.id} AND ok AND ts >= ${new Date(from.getTime() - 10 * 60_000)}
+			 ORDER BY ts ASC`);
+		let reserved = new Set<string>();
+		if (c.spareReserved && readReserved) {
+			try {
+				reserved = new Set(await readReserved());
+			} catch {
+				result.notes.push('Could not read the reserved slots; nobody was spared for one.');
+			}
+		}
+		const sampled = counts.map((r) => ({ at: new Date(r.ts).getTime(), n: Number(r.n ?? 0) }));
+		const tracks: WhisperedTracks = new Map();
+		const passed = { few: 0, listed: 0, reserved: 0, cooling: 0 };
+		const players = new Set<string>();
+		let next = 0;
+		let on = 0;
+		for (let i = 0; i < rows.length;) {
+			const at = new Date(rows[i].ts).getTime();
+			let j = i;
+			while (j < rows.length && new Date(rows[j].ts).getTime() === at) j++;
+			for (; next < sampled.length && sampled[next].at <= at; next++) on = sampled[next].n;
+			const batch = (rows.slice(i, j) as DeathRow[]).map((r) => ({
+				...r,
+				own: deathVars({
+					killer: r.killer ? { steamId: r.killer, name: r.killerName ?? '' } : null,
+					victim: { steamId: r.victim },
+					cause: r.cause,
+					distanceM: r.distanceM === null ? null : Number(r.distanceM),
+					suicide: !!r.suicide
+				})
+			}));
+			const step = deathWhisperStep(
+				c,
+				tracks,
+				batch.map((r) => ({ steamId: r.victim, eventId: r.eventId, blank: deathBlanks(r.own) })),
+				{ now: at, on, reserved }
+			);
+			for (const k of Object.keys(passed) as (keyof typeof passed)[]) passed[k] += step.passed[k];
+			for (const p of step.picks) {
+				const r = batch.find((b) => b.eventId === p.eventId)!;
+				players.add(p.steamId);
+				const v = dryRunVars(
+					server.name,
+					{ name: r.victimName, steamId: r.victim },
+					{ ...r.own, ...(r.map ? { map: mapName(r.map) } : {}) }
+				);
+				push(
+					new Date(at),
+					`whisper ${r.victimName || r.victim} (${r.victim}): ${renderTemplate(c.messages[p.index], v, MAX_CHAT)}`
+				);
+			}
+			i = j;
+		}
+		const [feed] = await env.db
+			.select({ configured: sql<boolean>`feed_token_hash IS NOT NULL` })
+			.from(servers)
+			.where(eq(servers.id, server.id));
+		if (!feed?.configured)
+			result.notes.push(
+				'This server has no kill feed set up (Config tab), so the rule cannot see any deaths.'
+			);
+		const n = (x: number, one: string, many = `${one}s`) => `${x} ${x === 1 ? one : many}`;
+		result.notes.push(
+			`${n(rows.length, 'death')} in the window: ${n(result.fires, 'whisper')} to ${n(players.size, 'player')}.`
+		);
+		const why = [
+			passed.cooling && `${passed.cooling} inside a player's ${c.cooldownMinutes}-minute cooldown`,
+			passed.listed && `${passed.listed} of players on the rule's list`,
+			passed.reserved && `${passed.reserved} of players with a reserved slot`,
+			passed.few && `${passed.few} while fewer than ${c.minPlayers} were on`
+		].filter(Boolean);
+		if (why.length) result.notes.push(`Passed over: ${why.join(', ')}.`);
+		if (c.messages.length > 1)
+			result.notes.push('Each message is picked at random, so another run may show others.');
+		if (rows.length >= KILL_RATE_REPLAY_MAX)
+			result.notes.push(
+				`Replayed the first ${KILL_RATE_REPLAY_MAX.toLocaleString('en')} deaths of the window only.`
 			);
 		return result;
 	}

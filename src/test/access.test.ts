@@ -516,6 +516,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 					.where(eq(orgRoles.id, w.roles.viewer));
 			const rules: [string, Record<string, unknown>, string][] = [
 				['welcome', { message: 'hello' }, 'chat.send'],
+				['death_whisper', { messages: ['Join our Discord.'] }, 'chat.send'],
 				['empty_reset', { map: 'Bakurani', afterMinutes: 10 }, 'match.control'],
 				['restart_skip', {}, 'match.control'],
 				['weather_cycle', { lightings: ['DayClear', 'DayLateRain'] }, 'match.control'],
@@ -746,12 +747,14 @@ describe.skipIf(!hasTestDb)('access', () => {
 			expect(second.status).toBe(409);
 		});
 
-		// All three kick, so all need Kick as well as Automation; each keeps a list of players it never
-		// acts on, which nobody who could not save the rule can change.
+		// The first three kick, so they need Kick as well as Automation, and the Death whisper Chat;
+		// each keeps a list of players it never acts on, which nobody who could not save the rule can
+		// change.
 		for (const [what, kind, rule] of [
 			['a Name filter rule', 'name_filter', { characters: 'ascii', action: 'alert' }],
 			['a Kick on connect risk rule', 'risk_kick', { watchlist: true }],
-			['an AFK watch rule', 'afk_watch', { minutes: 10 }]
+			['an AFK watch rule', 'afk_watch', { minutes: 10 }],
+			['a Death whisper rule', 'death_whisper', { messages: ['Join our Discord.'] }]
 		] as const)
 			test(`${what}: who may save, dry-run, switch it on and say whom it leaves alone`, async () => {
 				const w = await seedWorld(env);
@@ -763,7 +766,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 				});
 				expect(made.status).toBe(201);
 				const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
-				// Automation without Kick: the rule is not theirs to make, replay or enable.
+				// Automation alone: the rule is not theirs to make, replay or enable.
 				await env.db
 					.update(orgRoles)
 					.set({ capabilities: ['server.view', 'automation.manage'] })

@@ -50,6 +50,8 @@ import {
 	AFK_ROUND_MAX_PLAYERS
 } from './afk-protection';
 import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
+import { DEATH_WHISPER_MAX_AGE_MS } from './death-whisper';
+import { TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
 import { MAX_CHAT } from '$lib/chat';
 import type { OutboxView } from '$lib/types';
 
@@ -322,6 +324,10 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 	// A rule's kill goes soon or not at all (a player off the list at a map change waits for no
 	// longer than this either).
 	if (row.action === RULE_KILL && age > RULE_KILL_MAX_AGE_MS)
+		return `Stale (${Math.round(age / 1000)}s old).`;
+	// A Death whisper goes while the player waits to respawn, or not at all: later, it lands in the
+	// middle of play.
+	if (row.triggerKind === 'death_whisper' && age > DEATH_WHISPER_MAX_AGE_MS)
 		return `Stale (${Math.round(age / 1000)}s old).`;
 	// An AFK protection round goes only while what the worker last saw still says the server seeds:
 	// a round in a live match kills everyone mid-fight. It goes soon or not at all.
@@ -1015,6 +1021,9 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 	return def.run(client, params);
 }
 
+/** Kinds whose delivered actions the audit trail leaves out ($lib/rule-kinds says why). */
+const TRAIL_ONLY_FAILED = new Set<string>(TRAIL_FAILURES_ONLY);
+
 async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string): Promise<void> {
 	stats[state]++;
 	deliveries.inc({ outcome: state });
@@ -1047,7 +1056,9 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 				outboxId: row.id,
 				state,
 				...((row.detail as Record<string, unknown>) ?? {})
-			}
+			},
+			// a rule that acts at nearly every death keeps its trail to what failed: the row is the record
+			state !== 'delivered' || !TRAIL_ONLY_FAILED.has(row.triggerKind)
 		).catch((err) => console.error('[warcon] delivery audit', forLog(err)));
 	emit({ type: 'outbox', serverId: row.serverId, id: row.id, state });
 }

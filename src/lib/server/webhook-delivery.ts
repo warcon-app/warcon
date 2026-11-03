@@ -168,6 +168,7 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.rotation_shuffle': 'Trigger · rotation shuffle',
 	'trigger.live_name': 'Trigger · live server name',
 	'trigger.weather_cycle': 'Trigger · weather cycle',
+	'trigger.death_whisper': 'Trigger · death whisper',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',
@@ -610,9 +611,9 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
 /**
  * Rules whose actions come by the hundred as a matter of course: a Team balance sort at every match
  * start, an AFK protection round every few minutes while a server seeds, a Weather cycle change every
- * few minutes all day. The audit trail keeps each
- * one; Discord hears only of those that fail, so they neither flood a staff channel nor push another
- * rule's card out of the webhook's queue.
+ * few minutes all day, a Death whisper at nearly every death. The audit trail keeps each
+ * one (a Death whisper only when it fails); Discord hears only of those that fail, so they neither
+ * flood a staff channel nor push another rule's card out of the webhook's queue.
  */
 const QUIET_WHEN_OK = new Set(FAILURES_ONLY.map((kind) => `trigger.${kind}`));
 /** A delivery that only notes what a rule saw and let be: the audit trail keeps it, Discord does not. */
