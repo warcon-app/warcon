@@ -793,6 +793,10 @@ choose a side after joining, so a whisper on join can land while they are still 
 first poll after a restart or an outage never fires join rules, since everyone present looks like a
 joiner then.
 
+**Recent actions**, under the rules, lists what they did and how each went, newest first: the
+server's last 40 actions, or, with one rule picked, that rule's own from the last 7 days, so a busy
+rule (a Death whisper acts at nearly every death) cannot hide a quiet one's.
+
 #### Placeholders
 
 Every message and kick reason a rule sends can carry placeholders, filled as it goes out, in any
@@ -1645,7 +1649,7 @@ A kill, as the kills route and the event stream carry it (`ts` is when the panel
 | `PATCH /api/servers/:id/triggers/:triggerId`   | the same; `{"enabled": false}` switches a rule off                                                                                                                                                               |
 | `DELETE /api/servers/:id/triggers/:triggerId`  | _Automation_                                                                                                                                                                                                     |
 | `POST /api/servers/:id/triggers/dry-run`       | as for `POST`: `{"kind", "config"}`, and the answer is what the rule would have done over the last 24 hours                                                                                                      |
-| `GET /api/servers/:id/outbox`                  | _Automation_: the last 40 actions the rules took, and how each went                                                                                                                                              |
+| `GET /api/servers/:id/outbox`                  | _Automation_: the last 40 actions the rules took, and how each went; `rule` (a rule's id, up to ten) narrows them to those rules' own from the last 7 days                                                       |
 | `GET /api/audit`                               | the key's own actions, and every row on servers where it holds _Audit trail_: `server`, `actor`, `category`, `action`, `outcome`, `q`, `from`, `to`, `limit` (up to 500); the next page is `before=<nextBefore>` |
 | `GET /api/audit/export?format=csv` (or `json`) | the same rows as a file, up to 10,000                                                                                                                                                                            |
 

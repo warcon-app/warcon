@@ -7,7 +7,7 @@
 // says what is known. A server that refuses the panel for sending too fast gets no more trigger
 // actions until the time it gave has passed (observations and people's commands are not held;
 // the hold is this worker's, and a worker that takes over starts without it).
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { DbOrTx } from './db';
 import { outbox, triggers, type OutboxRow } from './db/schema';
@@ -1065,14 +1065,35 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 
 // ---- reads --------------------------------------------------------------------------------------
 
-export async function recentOutbox(env: Env, serverId: string, limit = 30): Promise<OutboxView[]> {
+/** How far back the rows of chosen rules are looked for: the walk is over all of the server's rows. */
+const RULE_ROWS_DAYS = 7;
+
+/**
+ * The server's newest rows, or with `rules` only theirs from the last RULE_ROWS_DAYS: a busy rule
+ * (a Death whisper at nearly every death) fills the server's newest in minutes, and a quiet rule's
+ * rows would not be among them. A rule id is only ever matched among this server's own rows.
+ */
+export async function recentOutbox(
+	env: Env,
+	serverId: string,
+	limit = 30,
+	rules: string[] = []
+): Promise<OutboxView[]> {
 	// Newest first in the order outbox_server_idx keeps (created_at DESC NULLS LAST, as Drizzle
 	// writes it): by id the read walked the whole outbox, kept for good, back to the server's last
 	// row, which on a quiet server is most of the table.
 	const rows = await env.db
 		.select()
 		.from(outbox)
-		.where(eq(outbox.serverId, serverId))
+		.where(
+			rules.length
+				? and(
+						eq(outbox.serverId, serverId),
+						inArray(outbox.triggerId, rules),
+						gte(outbox.createdAt, new Date(Date.now() - RULE_ROWS_DAYS * 86400_000))
+					)
+				: eq(outbox.serverId, serverId)
+		)
 		.orderBy(sql`${outbox.createdAt} desc nulls last`, desc(outbox.id))
 		.limit(limit);
 	return rows.map((r) => ({

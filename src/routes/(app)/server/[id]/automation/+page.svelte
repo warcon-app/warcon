@@ -86,12 +86,53 @@
 		'pending',
 		'sending'
 	];
-	let ruleNames = $derived([...new Set(deliveries.map((d) => d.triggerName))].sort());
+	// this server's rules, and the names of deleted ones still among the rows
+	let ruleNames = $derived(
+		[
+			...new Set([...data.triggers.map((t) => t.name), ...deliveries.map((d) => d.triggerName)])
+		].sort()
+	);
+	/** the server's rules under the chosen name, whose own rows are read from the server */
+	let ruleIds = $derived(
+		ruleFilter ? data.triggers.filter((t) => t.name === ruleFilter).map((t) => t.id) : []
+	);
+	/**
+	 * Those rules' own rows, the newest 40 of the last week: the server's newest 40, which the page
+	 * loads, can hold none of a quiet rule's once a busy one (a Death whisper) acts at every death.
+	 * Null while no such rule is chosen.
+	 */
+	let ruleRows = $state<OutboxView[] | null>(null);
+	let ruleRowsFor = '';
+	async function refreshRuleRows() {
+		const ids = untrack(() => ruleIds);
+		const key = ids.join(',');
+		ruleRowsFor = key;
+		if (!ids.length) {
+			ruleRows = null;
+			return;
+		}
+		const query = ids.map((r) => `rule=${encodeURIComponent(r)}`).join('&');
+		try {
+			const { items } = await api<{ items: OutboxView[] }>(
+				'GET',
+				`/api/servers/${encodeURIComponent(id)}/outbox?${query}`
+			);
+			// a later choice wins over an answer that comes back after it
+			if (ruleRowsFor === key) ruleRows = items;
+		} catch {
+			if (ruleRowsFor === key) ruleRows = null;
+		}
+	}
+	$effect(() => {
+		void ruleIds;
+		void refreshRuleRows();
+	});
 	let deliveryRows = $derived(
 		deliverySort.sorted(
-			deliveries.filter(
+			(ruleRows ?? deliveries).filter(
 				(d) =>
-					(!ruleFilter || d.triggerName === ruleFilter) &&
+					// read by id when it is one of the server's rules, so rows from before a rename show too
+					(ruleRows || !ruleFilter || d.triggerName === ruleFilter) &&
 					(!stateFilter || d.state === stateFilter) &&
 					matches(deliverySearch, d.triggerName, d.action, d.target, d.state, d.outcome)
 			)
@@ -109,6 +150,7 @@
 	/** what the server shows now, for a Live server name rule's preview */
 	let liveStatus = $state<Status | null>(null);
 	async function refreshDeliveries() {
+		if (untrack(() => ruleIds.length)) void refreshRuleRows();
 		try {
 			deliveries = (
 				await api<{ items: OutboxView[] }>('GET', `/api/servers/${encodeURIComponent(id)}/outbox`)
@@ -3469,7 +3511,11 @@
 	<div class="mt-4 scroll-mt-4 panel" bind:this={actionsPanel}>
 		<div class="mb-3 flex flex-wrap items-center gap-2">
 			<span class="label-sm mb-0">Recent actions</span>
-			<span class="text-[12.5px] text-mist-600">what the rules did, newest first</span>
+			<span class="text-[12.5px] text-mist-600"
+				>{ruleRows
+					? 'what this rule did in the last 7 days, newest first'
+					: 'what the rules did, newest first'}</span
+			>
 			<div class="flex w-full flex-wrap gap-2 sm:ml-auto sm:w-auto">
 				<select
 					class="input w-auto pr-[30px] {ruleFilter ? 'border-accent' : ''}"
@@ -3534,7 +3580,13 @@
 					{:else}
 						<tr
 							><td colspan="6" class="py-6 text-center text-mist-600"
-								>{deliveries.length ? 'Nothing matches.' : 'No actions yet.'}</td
+								>{ruleRows
+									? ruleRows.length
+										? 'Nothing matches.'
+										: 'Nothing from this rule in the last 7 days.'
+									: deliveries.length
+										? 'Nothing matches.'
+										: 'No actions yet.'}</td
 							></tr
 						>
 					{/each}
