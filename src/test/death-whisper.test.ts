@@ -6,7 +6,7 @@
 // within 30 seconds is dropped. One that goes leaves no audit row and no Discord card; one that
 // fails leaves both. The dry run replays the day's deaths the same way.
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import {
 	auditLog,
@@ -122,8 +122,19 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 			return new Response('{"id":"1"}', { status: 200 });
 		}) as typeof fetch;
 	});
+	/** the servers whose memory the file made: every file shares the worker and the database */
+	const watched = new Set<string>();
 	afterAll(async () => {
 		await stopDelivery();
+		// Whispers a test queued and never delivered would go out from the next file's delivery loop,
+		// to its stand-in game: they are dropped, and the servers forgotten, as other rules' tests do.
+		if (watched.size)
+			await env.db
+				.update(outbox)
+				.set({ state: 'skipped', outcome: 'Test over.', doneAt: new Date() })
+				.where(and(inArray(outbox.serverId, [...watched]), sql`${outbox.state} = 'pending'`));
+		for (const id of watched) forgetMemory(id);
+		forgetDeathWhispers();
 		spy.mockRestore();
 		globalThis.fetch = realFetch;
 		resetWebhookQueues();
@@ -135,6 +146,7 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 		const [server] = await env.db.select().from(servers).where(eq(servers.id, w.server.id));
 		const [org] = await env.db.select().from(organizations).where(eq(organizations.id, w.org.id));
 		forgetMemory(server.id);
+		watched.add(server.id);
 		return memoryFor(server, org);
 	};
 	/** A look at the server with these players on. */
