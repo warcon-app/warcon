@@ -269,6 +269,8 @@ describe.skipIf(!hasTestDb)('text Postgres refuses, from a caller or the game', 
 		const [after] = await env.db.select().from(triggers).where(eq(triggers.id, rule.id));
 		expect(after.lastResult).toBe(`Whispering Half${R}${R}`);
 		expect(after.state).toEqual({ last: `Half${R}` });
+		// nothing left queued for another file's delivery loop to send
+		await env.db.update(outbox).set({ state: 'skipped' }).where(eq(outbox.id, row.id));
 	});
 
 	// What the walk must not open: a key named __proto__, text shaped like SQL or JSON, depth.
