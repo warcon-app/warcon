@@ -2,9 +2,10 @@
 // event bus (the SSE route fans them to browsers; in the split roles every web process gets them
 // through the relay stream), and the team-kill rules get their turn. Their intents go through
 // the same outbox as every other trigger, so delivery, audit and the Discord mirror are shared.
-// The Kill rate, Kill distance, Name change and Bounty rules see every batch; the rest of the work is
-// for batches with team kills.
+// The Kill rate, Kill distance, Name change, Bounty and Death whisper rules see every batch; the
+// rest of the work is for batches with team kills.
 import { and, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { forLog } from './http';
 import type { Env } from './env';
 import { emit } from './events';
 import { kills, matches } from './db/schema';
@@ -19,8 +20,19 @@ import {
 	statsReader,
 	teamKillStage,
 	type Evaluation,
-	type StatsRead
+	type StatsRead,
+	type TriggerUpdate
 } from './triggers';
+import {
+	DEATH_WHISPER_KEEP_MS,
+	deathBlanks,
+	deathVars,
+	deathWhisperStep,
+	pruneWhispered,
+	type DeathWhisperConfig,
+	type DeathWhisperPick,
+	type WhisperedTracks
+} from './death-whisper';
 import { keptVars, messageVars, serverVars, type MessageVars } from './message-vars';
 import { mapName } from '$lib/format';
 import { countsForTeamKill, MAX_REASON, type TeamKillConfig } from './trigger-rules';
@@ -80,7 +92,7 @@ import {
 import { isDemoServer } from './env';
 import { drainMockFeed } from './mockgame';
 import { ingestBatch } from './feed';
-import { servers, type ServerRow } from './db/schema';
+import { outbox, servers, type ServerRow, type TriggerRow } from './db/schema';
 import type { KillView, Player } from '$lib/types';
 
 export async function onKillsIngested(
@@ -122,6 +134,12 @@ export async function onKillsIngested(
 	} catch (err) {
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] bounty rules on ${serverId}:`, publicMessage(err));
+	}
+	try {
+		await actOnDeathWhisper(env, serverId, kills, vars);
+	} catch (err) {
+		if (!(err instanceof LostOwnership))
+			console.warn(`[warcon] death whisper rules on ${serverId}:`, publicMessage(err));
 	}
 	const teamKills = kills.filter((k) => k.teamKill && k.killer);
 	if (!teamKills.length) return;
@@ -781,6 +799,207 @@ async function actOnBounty(
 		row.state = state;
 		if (queued) wakeDelivery();
 		void notifyBounty(env, serverId, serverName, cards);
+	}
+}
+
+/**
+ * Each Death whisper rule's memory, by rule: the players it whispered within their cooldown and the
+ * hour after (death-whisper.ts). It is filled from the rule's outbox rows the first time the rule
+ * acts in this worker's ownership period, so a restart, a deploy or a handover keeps the cooldowns.
+ * Kept only for servers with the rule on: switching a rule off drops its memory, switching it on
+ * fills it again.
+ */
+interface WhisperMemory {
+	serverId: string;
+	tracks: WhisperedTracks;
+	/** settles once the rule's outbox rows are in `tracks`: false when they could not be read */
+	filled: Promise<boolean>;
+	prunedAt: number;
+	/** what the rule's row last said it waits for, so it is said once */
+	held: '' | 'reserved';
+}
+const whisperMemory = new Map<string, WhisperMemory>();
+/** How often a rule's memory is swept of players it no longer needs. */
+const WHISPER_PRUNE_MS = 60_000;
+
+/** Forgets the Death whisper memory of one server (removed from the worker), or of every server. */
+export function forgetDeathWhispers(serverId?: string): void {
+	if (!serverId) return whisperMemory.clear();
+	for (const [id, t] of whisperMemory) if (t.serverId === serverId) whisperMemory.delete(id);
+}
+
+/**
+ * Who the rule whispered within its cooldown and the hour after, and with which message, from its
+ * own outbox rows (`outbox_server_idx` over that span of the server's rows). A row counts from when
+ * the rule decided it, as the memory does, whatever became of it.
+ */
+async function whisperedBefore(env: Env, row: TriggerRow, now: number): Promise<WhisperedTracks> {
+	const cfg = row.config as DeathWhisperConfig;
+	const since = new Date(now - cfg.cooldownMinutes * 60_000 - DEATH_WHISPER_KEEP_MS);
+	const rows = await env.db
+		.selectDistinctOn([outbox.steamId], {
+			steamId: outbox.steamId,
+			at: outbox.createdAt,
+			index: sql<string | null>`${outbox.detail} ->> 'index'`
+		})
+		.from(outbox)
+		.where(
+			and(
+				eq(outbox.serverId, row.serverId),
+				eq(outbox.triggerId, row.id),
+				gte(outbox.createdAt, since)
+			)
+		)
+		.orderBy(outbox.steamId, sql`${outbox.createdAt} DESC`);
+	const tracks: WhisperedTracks = new Map();
+	for (const r of rows) {
+		if (!r.steamId) continue;
+		const index = Number(r.index);
+		tracks.set(r.steamId, {
+			at: r.at.getTime(),
+			index: r.index !== null && Number.isInteger(index) ? index : -1
+		});
+	}
+	return tracks;
+}
+
+/** The rule's memory, its fill started the first time it is asked for. */
+function whisperMemoryOf(env: Env, row: TriggerRow, now: number): WhisperMemory {
+	const known = whisperMemory.get(row.id);
+	if (known) return known;
+	const mem: WhisperMemory = {
+		serverId: row.serverId,
+		tracks: new Map(),
+		filled: Promise.resolve(false),
+		prunedAt: now,
+		held: ''
+	};
+	mem.filled = whisperedBefore(env, row, now).then(
+		(read) => {
+			// a whisper decided while the read ran is newer than anything it found
+			for (const [id, t] of read) if (!mem.tracks.has(id)) mem.tracks.set(id, t);
+			return true;
+		},
+		(err) => {
+			// Asked again at the next batch; until then the rule whispers nobody rather than early.
+			console.warn(`[warcon] death whisper memory on ${row.serverId}:`, forLog(err));
+			if (whisperMemory.get(row.id) === mem) whisperMemory.delete(row.id);
+			return false;
+		}
+	);
+	whisperMemory.set(row.id, mem);
+	return mem;
+}
+
+/**
+ * The Death whisper rules over a batch: each player killed is whispered one of the rule's messages
+ * at random, unless the rule whispered them within its cooldown, lists them, spares their reserved
+ * slot, or fewer than its count are on. A server's batches are not serialised (gateway-local.ts),
+ * so every rule decides and moves its memory with no await in between, and a batch that came in
+ * meanwhile decides after it, from the moved memory. If the whispers cannot be written, the memory
+ * goes back to what it was.
+ */
+async function actOnDeathWhisper(
+	env: Env,
+	serverId: string,
+	batch: KillView[],
+	vars: KillerVars
+): Promise<void> {
+	const rows = (await enabledTriggers(env, serverId)).filter((r) => r.kind === 'death_whisper');
+	const live = new Set(rows.map((r) => r.id));
+	for (const [id, t] of whisperMemory)
+		if (t.serverId === serverId && !live.has(id)) whisperMemory.delete(id);
+	if (!rows.length) return;
+	const now = Date.now();
+	const mems = rows.map((row) => whisperMemoryOf(env, row, now));
+	const filled = await Promise.all(mems.map((m) => m.filled));
+	// From here to the first await below, every rule decides.
+	const m = memoryOf(serverId);
+	// The most anyone says is on: a status a few seconds old must not hide a full list.
+	const on = Math.max(m?.status?.playerCount || 0, m?.players.length ?? 0);
+	const reserved = m?.reservedAt ? m.reserved : null;
+	const sorted = [...batch].sort((a, b) => a.eventTime - b.eventTime);
+	const byEvent = new Map(sorted.map((k) => [k.eventId, k]));
+	const deaths = sorted
+		.filter((k) => k.victim.steamId)
+		.map((k) => ({
+			steamId: k.victim.steamId,
+			eventId: k.eventId,
+			blank: deathBlanks(deathVars(k))
+		}));
+	const decided: { row: TriggerRow; cfg: DeathWhisperConfig; picks: DeathWhisperPick[] }[] = [];
+	const undos: (() => void)[] = [];
+	const updates: TriggerUpdate[] = [];
+	const noted: (() => void)[] = [];
+	rows.forEach((row, i) => {
+		if (!filled[i]) return;
+		const cfg = row.config as DeathWhisperConfig;
+		const mem = mems[i];
+		if (now - mem.prunedAt >= WHISPER_PRUNE_MS) {
+			pruneWhispered(cfg, mem.tracks, now);
+			mem.prunedAt = now;
+		}
+		const { picks, held, undo } = deathWhisperStep(cfg, mem.tracks, deaths, { now, on, reserved });
+		undos.push(undo);
+		if (held !== mem.held) {
+			if (held)
+				updates.push({ id: row.id, lastResult: 'Waiting for the reserved slots to be read' });
+			noted.push(() => (mem.held = held));
+		}
+		if (picks.length) decided.push({ row, cfg, picks });
+	});
+	if (!decided.length && !updates.length) return;
+	try {
+		const out: Evaluation = { intents: [], updates };
+		for (const { row, cfg, picks } of decided) {
+			// a whisper to the player alone: their stats, here and across the organisation
+			const stats = await vars.stats(
+				picks.map((p) => ({ steamId: p.steamId, text: cfg.messages[p.index] }))
+			);
+			for (const p of picks) {
+				const k = byEvent.get(p.eventId)!;
+				const name = k.victim.name || p.steamId;
+				const message = renderTemplate(
+					cfg.messages[p.index],
+					vars.about(k.victim, stats, {
+						...deathVars(k),
+						...(k.map ? { map: mapName(k.map) } : {})
+					}),
+					MAX_CHAT
+				);
+				out.intents.push({
+					trigger: row,
+					action: 'whisper',
+					params: { steamId: p.steamId, message },
+					target: p.steamId,
+					okMessage: `Whispered ${name}.`,
+					// which message, so the memory filled after a restart knows it; never the text, which
+					// stays in the row's params as every rule whisper's does
+					detail: { name, index: p.index, eventId: p.eventId },
+					steamId: p.steamId,
+					dedupeKey: [row.id, p.steamId, p.eventId].join(':')
+				});
+			}
+			const first = byEvent.get(picks[0].eventId)!;
+			out.updates.push({
+				id: row.id,
+				lastFiredAt: new Date(now),
+				lastResult:
+					picks.length === 1
+						? `Whispering ${first.victim.name || first.victim.steamId}`
+						: `Whispering ${picks.length} players`
+			});
+		}
+		let queued = 0;
+		await withOwnedTransaction(env, async (tx) => {
+			queued = await enqueueIntents(tx, serverId, out.intents);
+			await applyTriggerUpdates(tx, out.updates);
+		});
+		for (const n of noted) n();
+		if (queued) wakeDelivery();
+	} catch (err) {
+		for (const undo of undos.reverse()) undo();
+		throw err;
 	}
 }
 

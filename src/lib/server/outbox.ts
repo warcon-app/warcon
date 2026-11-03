@@ -7,10 +7,11 @@
 // says what is known. A server that refuses the panel for sending too fast gets no more trigger
 // actions until the time it gave has passed (observations and people's commands are not held;
 // the hold is this worker's, and a worker that takes over starts without it).
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { DbOrTx } from './db';
 import { outbox, triggers, type OutboxRow } from './db/schema';
+import { storable, storableText } from './db/storable';
 import { ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { ApiError, forLog, str } from './http';
@@ -49,6 +50,8 @@ import {
 	AFK_ROUND_MAX_PLAYERS
 } from './afk-protection';
 import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
+import { DEATH_WHISPER_MAX_AGE_MS } from './death-whisper';
+import { TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
 import { MAX_CHAT } from '$lib/chat';
 import type { OutboxView } from '$lib/types';
 
@@ -84,6 +87,8 @@ export async function enqueueIntents(
 	watched?: number[]
 ): Promise<number> {
 	if (!intents.length) return 0;
+	// A rule's texts carry names the game sent, which can hold NUL or half an emoji: either fails the
+	// whole insert, and with it every action of the look or batch (db/storable.ts).
 	const rows = await db
 		.insert(outbox)
 		.values(
@@ -93,14 +98,18 @@ export async function enqueueIntents(
 				triggerName: i.trigger.name,
 				triggerKind: i.trigger.kind,
 				action: i.action,
-				params: i.params,
-				target: i.target.slice(0, 300),
-				detail: i.detail,
+				params: storable(i.params),
+				target: storableText(i.target.slice(0, 300)),
+				detail: storable(i.detail),
 				steamId: i.steamId,
-				okMessage: i.okMessage,
+				okMessage: storableText(i.okMessage),
 				dedupeKey: i.dedupeKey,
 				...(i.watchOnly
-					? { state: 'skipped', outcome: i.watchOnly.slice(0, 300), doneAt: new Date() }
+					? {
+							state: 'skipped',
+							outcome: storableText(i.watchOnly.slice(0, 300)),
+							doneAt: new Date()
+						}
 					: {})
 			}))
 		)
@@ -116,8 +125,9 @@ export async function applyTriggerUpdates(db: DbOrTx, updates: TriggerUpdate[]):
 			.update(triggers)
 			.set({
 				lastFiredAt: u.lastFiredAt,
-				lastResult: u.lastResult?.slice(0, 300),
-				state: u.state === undefined ? undefined : u.state
+				lastResult:
+					u.lastResult === undefined ? undefined : storableText(u.lastResult.slice(0, 300)),
+				state: u.state === undefined ? undefined : storable(u.state)
 			})
 			.where(eq(triggers.id, u.id));
 }
@@ -314,6 +324,10 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 	// A rule's kill goes soon or not at all (a player off the list at a map change waits for no
 	// longer than this either).
 	if (row.action === RULE_KILL && age > RULE_KILL_MAX_AGE_MS)
+		return `Stale (${Math.round(age / 1000)}s old).`;
+	// A Death whisper goes while the player waits to respawn, or not at all: later, it lands in the
+	// middle of play.
+	if (row.triggerKind === 'death_whisper' && age > DEATH_WHISPER_MAX_AGE_MS)
 		return `Stale (${Math.round(age / 1000)}s old).`;
 	// An AFK protection round goes only while what the worker last saw still says the server seeds:
 	// a round in a live match kills everyone mid-fight. It goes soon or not at all.
@@ -1007,6 +1021,9 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 	return def.run(client, params);
 }
 
+/** Kinds whose delivered actions the audit trail leaves out ($lib/rule-kinds says why). */
+const TRAIL_ONLY_FAILED = new Set<string>(TRAIL_FAILURES_ONLY);
+
 async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string): Promise<void> {
 	stats[state]++;
 	deliveries.inc({ outcome: state });
@@ -1039,21 +1056,44 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 				outboxId: row.id,
 				state,
 				...((row.detail as Record<string, unknown>) ?? {})
-			}
+			},
+			// a rule that acts at nearly every death keeps its trail to what failed: the row is the record
+			state !== 'delivered' || !TRAIL_ONLY_FAILED.has(row.triggerKind)
 		).catch((err) => console.error('[warcon] delivery audit', forLog(err)));
 	emit({ type: 'outbox', serverId: row.serverId, id: row.id, state });
 }
 
 // ---- reads --------------------------------------------------------------------------------------
 
-export async function recentOutbox(env: Env, serverId: string, limit = 30): Promise<OutboxView[]> {
+/** How far back the rows of chosen rules are looked for: the walk is over all of the server's rows. */
+const RULE_ROWS_DAYS = 7;
+
+/**
+ * The server's newest rows, or with `rules` only theirs from the last RULE_ROWS_DAYS: a busy rule
+ * (a Death whisper at nearly every death) fills the server's newest in minutes, and a quiet rule's
+ * rows would not be among them. A rule id is only ever matched among this server's own rows.
+ */
+export async function recentOutbox(
+	env: Env,
+	serverId: string,
+	limit = 30,
+	rules: string[] = []
+): Promise<OutboxView[]> {
 	// Newest first in the order outbox_server_idx keeps (created_at DESC NULLS LAST, as Drizzle
 	// writes it): by id the read walked the whole outbox, kept for good, back to the server's last
 	// row, which on a quiet server is most of the table.
 	const rows = await env.db
 		.select()
 		.from(outbox)
-		.where(eq(outbox.serverId, serverId))
+		.where(
+			rules.length
+				? and(
+						eq(outbox.serverId, serverId),
+						inArray(outbox.triggerId, rules),
+						gte(outbox.createdAt, new Date(Date.now() - RULE_ROWS_DAYS * 86400_000))
+					)
+				: eq(outbox.serverId, serverId)
+		)
 		.orderBy(sql`${outbox.createdAt} desc nulls last`, desc(outbox.id))
 		.limit(limit);
 	return rows.map((r) => ({

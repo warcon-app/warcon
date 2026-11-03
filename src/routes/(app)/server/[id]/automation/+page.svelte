@@ -86,12 +86,53 @@
 		'pending',
 		'sending'
 	];
-	let ruleNames = $derived([...new Set(deliveries.map((d) => d.triggerName))].sort());
+	// this server's rules, and the names of deleted ones still among the rows
+	let ruleNames = $derived(
+		[
+			...new Set([...data.triggers.map((t) => t.name), ...deliveries.map((d) => d.triggerName)])
+		].sort()
+	);
+	/** the server's rules under the chosen name, whose own rows are read from the server */
+	let ruleIds = $derived(
+		ruleFilter ? data.triggers.filter((t) => t.name === ruleFilter).map((t) => t.id) : []
+	);
+	/**
+	 * Those rules' own rows, the newest 40 of the last week: the server's newest 40, which the page
+	 * loads, can hold none of a quiet rule's once a busy one (a Death whisper) acts at every death.
+	 * Null while no such rule is chosen.
+	 */
+	let ruleRows = $state<OutboxView[] | null>(null);
+	let ruleRowsFor = '';
+	async function refreshRuleRows() {
+		const ids = untrack(() => ruleIds);
+		const key = ids.join(',');
+		ruleRowsFor = key;
+		if (!ids.length) {
+			ruleRows = null;
+			return;
+		}
+		const query = ids.map((r) => `rule=${encodeURIComponent(r)}`).join('&');
+		try {
+			const { items } = await api<{ items: OutboxView[] }>(
+				'GET',
+				`/api/servers/${encodeURIComponent(id)}/outbox?${query}`
+			);
+			// a later choice wins over an answer that comes back after it
+			if (ruleRowsFor === key) ruleRows = items;
+		} catch {
+			if (ruleRowsFor === key) ruleRows = null;
+		}
+	}
+	$effect(() => {
+		void ruleIds;
+		void refreshRuleRows();
+	});
 	let deliveryRows = $derived(
 		deliverySort.sorted(
-			deliveries.filter(
+			(ruleRows ?? deliveries).filter(
 				(d) =>
-					(!ruleFilter || d.triggerName === ruleFilter) &&
+					// read by id when it is one of the server's rules, so rows from before a rename show too
+					(ruleRows || !ruleFilter || d.triggerName === ruleFilter) &&
 					(!stateFilter || d.state === stateFilter) &&
 					matches(deliverySearch, d.triggerName, d.action, d.target, d.state, d.outcome)
 			)
@@ -109,6 +150,7 @@
 	/** what the server shows now, for a Live server name rule's preview */
 	let liveStatus = $state<Status | null>(null);
 	async function refreshDeliveries() {
+		if (untrack(() => ruleIds.length)) void refreshRuleRows();
 		try {
 			deliveries = (
 				await api<{ items: OutboxView[] }>('GET', `/api/servers/${encodeURIComponent(id)}/outbox`)
@@ -209,6 +251,12 @@
 					? 'Needs the kill feed, which is off on this server. Turn it on under Config.'
 					: !canChat
 						? 'Saving needs the Chat capability as well as Automation: the bounty is announced to the server.'
+						: '';
+			case 'death_whisper':
+				return !data.feed
+					? 'Needs the kill feed, which is off on this server. Turn it on under Config.'
+					: !canChat
+						? 'Saving needs the Chat capability as well as Automation: the rule whispers players.'
 						: '';
 			case 'empty_reset':
 			case 'restart_skip':
@@ -328,9 +376,9 @@
 				  kind === 'kill_rate' ||
 				  kind === 'kill_distance' ||
 				  kind === 'name_change' ||
-				  (kind === 'bounty' && !data.feed)
+				  ((kind === 'bounty' || kind === 'death_whisper') && !data.feed)
 				? 'Needs the kill feed'
-				: kind === 'bounty'
+				: kind === 'bounty' || kind === 'death_whisper'
 					? 'Needs Chat'
 					: kind === 'risk_kick'
 						? 'Needs a Steam key'
@@ -688,7 +736,9 @@
 			afterFaction: b('afterFaction', false),
 			messages: Array.isArray(c.messages)
 				? (c.messages as string[]).join('\n')
-				: 'Join our Discord for events and support.\nNo team-killing. Admins are watching.',
+				: kind === 'death_whisper'
+					? 'While you wait, {name}: join our Discord for events and support.\n{killer} got you with the {weapon}. Tell us how the server plays on our Discord.'
+					: 'Join our Discord for events and support.\nNo team-killing. Admins are watching.',
 			everyMinutes: n(
 				'everyMinutes',
 				kind === 'afk_protection' ? 3 : kind === 'weather_cycle' ? 30 : 15
@@ -707,8 +757,12 @@
 			bannedElsewhere: b('bannedElsewhere', true),
 			watchlist: b('watchlist', false),
 			kickAtScore: kickAtScoreOf(c),
-			// a High ping kick saved before it could spare reserved slots spares nobody
-			spareReserved: b('spareReserved', kind !== 'ping_kick' || !t),
+			// a High ping kick saved before it could spare reserved slots spares nobody, and a new Death
+			// whisper whispers everyone until told otherwise
+			spareReserved: b(
+				'spareReserved',
+				kind === 'death_whisper' ? false : kind !== 'ping_kick' || !t
+			),
 			reason: s(
 				'reason',
 				kind === 'name_filter'
@@ -849,6 +903,14 @@
 				};
 			case 'faction_change':
 				return { message: f.message };
+			case 'death_whisper':
+				return {
+					messages: f.messages.split('\n'),
+					cooldownMinutes: Number(f.cooldownMinutes),
+					minPlayers: Number(f.minPlayers),
+					spareReserved: f.spareReserved,
+					exempt: f.exempt.split(/[\s,]+/).filter(Boolean)
+				};
 			case 'broadcast':
 				return {
 					messages: f.messages.split('\n'),
@@ -1096,6 +1158,15 @@
 				return `"${c.message}"${c.afterFaction ? ' · after faction pick' : ' · on join'}${c.onlyFirstVisit ? ' · first visit only' : ''}`;
 			case 'faction_change':
 				return `"${c.message}"`;
+			case 'death_whisper': {
+				const count = Array.isArray(c.messages) ? c.messages.length : 0;
+				const exempt = Array.isArray(c.exempt) ? c.exempt.length : 0;
+				const spares = [
+					c.spareReserved && 'reserved slots',
+					exempt && `${exempt} player${exempt === 1 ? '' : 's'}`
+				].filter(Boolean);
+				return `${count} message${count === 1 ? '' : 's'} · each player at most every ${c.cooldownMinutes} min · at least ${c.minPlayers} on${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
+			}
 			case 'broadcast':
 				return `${(c.messages as string[]).length} message${(c.messages as string[]).length === 1 ? '' : 's'} every ${c.everyMinutes} min · ${typeof c.maxPlayers === 'number' ? `${c.minPlayers} to ${c.maxPlayers}` : `at least ${c.minPlayers}`} on`;
 			case 'empty_reset':
@@ -1290,7 +1361,7 @@
 <p class="mb-4 text-[13px] text-mist-400">
 	Rules act on {data.server.demo ? 'the demo server' : 'this server'} as things happen: a join, a kill,
 	a quiet hour. Every action is recorded below and in the audit trail as
-	<span class="chip">trigger</span>.
+	<span class="chip">trigger</span>, but for a Death whisper that went, which is only below.
 </p>
 
 <div class="mb-3 flex flex-wrap items-start gap-3">
@@ -1598,6 +1669,13 @@
 			>
 		{:else if r.kind === 'afk_watch'}
 			<span>Nothing to replay</span>
+		{:else if r.kind === 'death_whisper'}
+			<span
+				>Replayed the last 24 h on this server: would have whispered <b
+					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
+				>
+				time{r.fires === 1 ? '' : 's'}</span
+			>
 		{:else if r.kind === 'weather_cycle'}
 			<span
 				>Replayed the last 24 h on this server: would have changed the weather <b
@@ -1724,6 +1802,66 @@
 					<p class="note">
 						Fires when a player moves from one faction to another, not on their first pick after
 						joining.
+					</p>
+				{:else if f.kind === 'death_whisper'}
+					<fieldset class="space-y-2">
+						<legend class="field-label">Whispers, one per line, one picked at random</legend>
+						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
+						{@render placeholders('death_whisper', [f.messages])}
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">When</legend>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+							At most once every
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="1"
+								max="1440"
+								bind:value={f.cooldownMinutes}
+								aria-label="At most once every, minutes"
+								required
+							/>
+							min to each player
+						</div>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+							while at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="0"
+								max="1000"
+								bind:value={f.minPlayers}
+								aria-label="While at least, players"
+							/>
+							players are on
+						</div>
+					</fieldset>
+					<fieldset class="space-y-2 text-[13px]">
+						<legend class="field-label">Never whisper</legend>
+						<label class="flex items-center gap-2"
+							><input type="checkbox" bind:checked={f.spareReserved} /> players with a reserved slot</label
+						>
+						<label class="block space-y-1.5 border-t border-black pt-2"
+							><span class="block">these players <span class="text-mist-600">(optional)</span></span
+							>
+							<textarea
+								class="input font-mono text-[12.5px]"
+								rows="3"
+								data-plain
+								bind:value={f.exempt}
+								placeholder="SteamID64, one per line"></textarea></label
+						>
+						<p class="text-[12px] text-mist-600">Your staff, say. Up to 100.</p>
+					</fieldset>
+					<p class="note">
+						The kill feed says who died about two seconds after it happens, and a whisper that
+						cannot go within 30 seconds is dropped, so it reaches players while they wait to
+						respawn. A message naming {'{killer}'}, {'{weapon}'} or {'{distance}'} goes only to deaths
+						that have them (a fall has no killer) while another message fits. A name is the player's to
+						choose: a link in a killer's name reaches the whisper through {'{killer}'}, and the Name
+						filter keeps such names off. Whispers that go are under Recent actions; the audit trail
+						keeps those that fail.
 					</p>
 				{:else if f.kind === 'broadcast'}
 					<fieldset class="space-y-2">
@@ -3373,7 +3511,11 @@
 	<div class="mt-4 scroll-mt-4 panel" bind:this={actionsPanel}>
 		<div class="mb-3 flex flex-wrap items-center gap-2">
 			<span class="label-sm mb-0">Recent actions</span>
-			<span class="text-[12.5px] text-mist-600">what the rules did, newest first</span>
+			<span class="text-[12.5px] text-mist-600"
+				>{ruleRows
+					? 'what this rule did in the last 7 days, newest first'
+					: 'what the rules did, newest first'}</span
+			>
 			<div class="flex w-full flex-wrap gap-2 sm:ml-auto sm:w-auto">
 				<select
 					class="input w-auto pr-[30px] {ruleFilter ? 'border-accent' : ''}"
@@ -3438,7 +3580,13 @@
 					{:else}
 						<tr
 							><td colspan="6" class="py-6 text-center text-mist-600"
-								>{deliveries.length ? 'Nothing matches.' : 'No actions yet.'}</td
+								>{ruleRows
+									? ruleRows.length
+										? 'Nothing matches.'
+										: 'Nothing from this rule in the last 7 days.'
+									: deliveries.length
+										? 'Nothing matches.'
+										: 'No actions yet.'}</td
 							></tr
 						>
 					{/each}

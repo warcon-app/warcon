@@ -11,13 +11,17 @@ import {
 	matches,
 	matchPlayers,
 	orgBanReasons,
+	outbox,
 	playerSessions,
-	serverBans
+	serverBans,
+	triggers
 } from '$lib/server/db/schema';
 import { stringify, uneval } from 'devalue';
 import { writeAudit } from '$lib/server/audit';
 import { noteLocalEdit, writeSnapshot } from '$lib/server/lists-sync';
 import { writeMatchPlayers } from '$lib/server/match-players';
+import { applyTriggerUpdates, enqueueIntents } from '$lib/server/outbox';
+import { newId } from '$lib/server/http';
 import { newPresence, persistPresence, type PresenceDiff } from '$lib/server/sessions';
 import { storable, storableText } from '$lib/server/db/storable';
 import type { Player } from '$lib/types';
@@ -220,6 +224,51 @@ describe.skipIf(!hasTestDb)('text Postgres refuses, from a caller or the game', 
 			.from(matchPlayers)
 			.where(eq(matchPlayers.matchId, match.id));
 		expect(rows.map((r) => r.name).sort()).toEqual([`Half${R}`, `N${R}l`]);
+	});
+
+	test("a rule's actions are queued when a name the game sent holds them", async () => {
+		const [rule] = await env.db
+			.insert(triggers)
+			.values({
+				id: newId(),
+				serverId: w.server.id,
+				orgId: w.org.id,
+				kind: 'team_kill',
+				name: 'Team kill limit',
+				enabled: true,
+				config: { warnAt: 1 }
+			})
+			.returning();
+		const name = `Half${HIGH}`;
+		const queued = await env.db.transaction(async (tx) => {
+			const n = await enqueueIntents(tx, w.server.id, [
+				{
+					trigger: rule,
+					action: 'whisper',
+					params: { steamId: PLAYER, message: `Careful, ${name}${NUL}` },
+					target: `${PLAYER}${NUL}`,
+					okMessage: `Whispered ${name}.`,
+					detail: { name, victim: `N${NUL}l` },
+					steamId: PLAYER,
+					dedupeKey: `unstorable:${rule.id}`
+				}
+			]);
+			await applyTriggerUpdates(tx, [
+				{ id: rule.id, lastResult: `Whispering ${name}${NUL}`, state: { last: name } }
+			]);
+			return n;
+		});
+		expect(queued).toBe(1);
+		const [row] = await env.db.select().from(outbox).where(eq(outbox.triggerId, rule.id));
+		expect(row).toMatchObject({
+			params: { steamId: PLAYER, message: `Careful, Half${R}${R}` },
+			target: `${PLAYER}${R}`,
+			okMessage: `Whispered Half${R}.`,
+			detail: { name: `Half${R}`, victim: `N${R}l` }
+		});
+		const [after] = await env.db.select().from(triggers).where(eq(triggers.id, rule.id));
+		expect(after.lastResult).toBe(`Whispering Half${R}${R}`);
+		expect(after.state).toEqual({ last: `Half${R}` });
 	});
 
 	// What the walk must not open: a key named __proto__, text shaped like SQL or JSON, depth.

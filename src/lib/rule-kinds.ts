@@ -26,6 +26,13 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 		blurb: 'Whisper players who switch sides.'
 	},
 	{
+		kind: 'death_whisper',
+		group: 'Messages',
+		label: 'Death whisper',
+		blurb:
+			'Whisper players one of your messages while they wait to respawn, at most once every few minutes each.'
+	},
+	{
 		kind: 'broadcast',
 		group: 'Messages',
 		label: 'Scheduled broadcast',
@@ -175,15 +182,30 @@ export const ONE_PER_SERVER: TriggerKind[] = [
 /**
  * Rules whose actions come by the hundred as a matter of course (a Team balance sort at every match
  * start, an AFK protection round every few minutes while a server seeds, a Weather cycle change
- * every few minutes all day): Discord hears only of those that fail (webhook-delivery.ts).
+ * every few minutes all day, a Death whisper at nearly every death): Discord hears only of those
+ * that fail (webhook-delivery.ts).
  */
-export const FAILURES_ONLY: TriggerKind[] = ['two_teams', 'afk_protection', 'weather_cycle'];
+export const FAILURES_ONLY: TriggerKind[] = [
+	'two_teams',
+	'afk_protection',
+	'weather_cycle',
+	'death_whisper'
+];
+
+/**
+ * Rules whose delivered actions the audit trail leaves out, keeping only those that fail
+ * (outbox.ts): a Death whisper goes to a player at nearly every death, and a row for each would push
+ * their kicks and bans off their page (its last 50 actions) and fill the trail. The outbox keeps
+ * every one, its text included, for good, and Recent actions shows them.
+ */
+export const TRAIL_FAILURES_ONLY: TriggerKind[] = ['death_whisper'];
 
 /**
  * Rules that act on the kill feed and nothing else: without batches arriving they never fire, so
  * the Automation tab says so on each of them when the feed is silent.
  */
 export const FEED_KINDS: TriggerKind[] = [
+	'death_whisper',
 	'name_change',
 	'team_kill',
 	'kill_rate',

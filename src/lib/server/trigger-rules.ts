@@ -15,6 +15,7 @@ import { validateRotationShuffle, type RotationShuffleConfig } from './rotation-
 import { validateLiveName } from './live-name';
 import { validateRestartSkip, type RestartSkipConfig } from './restart-skip';
 import { validateWeatherCycle, type WeatherCycleConfig } from './weather-cycle';
+import { validateDeathWhisper, type DeathWhisperConfig } from './death-whisper';
 import { steamIdList } from './steam';
 import type { LiveNameConfig } from '$lib/live-name';
 import { causeTags } from './cause-tags';
@@ -48,7 +49,8 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'live_name',
 	'restart_skip',
 	'afk_watch',
-	'weather_cycle'
+	'weather_cycle',
+	'death_whisper'
 ];
 export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	welcome: 'Welcome whisper',
@@ -72,7 +74,8 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	live_name: 'Live server name',
 	restart_skip: 'Skip map after restart',
 	afk_watch: 'AFK watch',
-	weather_cycle: 'Weather cycle'
+	weather_cycle: 'Weather cycle',
+	death_whisper: 'Death whisper'
 };
 
 export interface WelcomeConfig {
@@ -241,7 +244,8 @@ export type TriggerConfig =
 	| LiveNameConfig
 	| RestartSkipConfig
 	| AfkWatchConfig
-	| WeatherCycleConfig;
+	| WeatherCycleConfig
+	| DeathWhisperConfig;
 
 /** A kick reason: not chat, so not held to the game's chat cap. */
 export const MAX_REASON = 200;
@@ -450,6 +454,8 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateAfkWatch(c);
 		case 'weather_cycle':
 			return validateWeatherCycle(c);
+		case 'death_whisper':
+			return validateDeathWhisper(c);
 	}
 }
 
