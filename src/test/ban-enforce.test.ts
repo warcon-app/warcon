@@ -87,7 +87,7 @@ describe.skipIf(!hasTestDb)('bans enforced by the panel', () => {
 			waitMs: 0,
 			lane: 'held',
 			client: t.client,
-			observed: { bans: [], reserved: [] }
+			observed: { bans: [], reserved: [], configured: [] }
 		});
 		expect(t.sent).toEqual([]);
 		expect(result.bans?.map((b) => b.steamId)).toEqual([STEAM]);

@@ -23,7 +23,8 @@ export type Policy =
 	| 'listsOwner' // an org owner, among those who can open the lists
 	| 'listsHere' // either org list's capability on this server
 	| 'manager' // an owner of the server's org (or the site owner); never a key
-	| `cap:${Capability}`; // the capability on this server
+	| `cap:${Capability}` // the capability on this server
+	| `anyCap:${Capability}`; // the capability on any server of the org
 
 const ALL: readonly Capability[] = CAPABILITIES;
 
@@ -39,6 +40,17 @@ const CAPS: Partial<Record<PrincipalName, readonly Capability[]>> = {
 	orgBans: ['server.view', 'lists.ban'],
 	orgSlots: ['server.view', 'lists.reserve'],
 	keyBans: ['server.view', 'lists.ban']
+};
+
+/**
+ * What each holds on whichever server of the org gives them the most: the server under test, or
+ * for `elsewhere` and `keyElsewhere` the other one (a key held to some servers carries no org list
+ * capability on them).
+ */
+const ANY_CAPS: Partial<Record<PrincipalName, readonly Capability[]>> = {
+	...CAPS,
+	elsewhere: ALL,
+	keyElsewhere: ALL.filter((c) => c !== 'lists.ban' && c !== 'lists.reserve')
 };
 
 const KEYS: PrincipalName[] = ['keyView', 'keyAll', 'keyElsewhere', 'keyBans'];
@@ -102,8 +114,9 @@ export function expected(policy: Policy, who: PrincipalName): Expect {
 			if (KEYS.includes(who)) return 403;
 			return CAPS[who] ? 403 : 404;
 		default: {
-			const cap = policy.slice('cap:'.length) as Capability;
-			const held = CAPS[who];
+			const any = policy.startsWith('anyCap:');
+			const cap = policy.slice(policy.indexOf(':') + 1) as Capability;
+			const held = (any ? ANY_CAPS : CAPS)[who];
 			if (!held) return 404;
 			return held.includes(cap) ? 'ok' : 403;
 		}

@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { isTeamKill, parseBatch, parseFeedBearer, parseKill, shortTags } from './feed-core';
+import {
+	isTeamKill,
+	parseBatch,
+	parseEnd,
+	parseFeedBearer,
+	parseKill,
+	parseState,
+	shortTags
+} from './feed-core';
 
 // As captured from build CL-501228 on 2026-09-16 (names and ids changed).
 const killed = {
@@ -22,6 +30,43 @@ const killed = {
 		'Meta.PlayerKillFlag.Player.Local.Death'
 	]
 };
+// What Season 2 (CL-516586) sends beside kills, as a host posted them on Discord on 2026-10-15
+// (ids blanked by them).
+const joined = {
+	eventId: '<EVENT_UUID>',
+	type: 'player_joined',
+	eventTime: 3157.0576,
+	matchId: '<MATCH_UUID>',
+	mapName: 'Kavkazi',
+	playerName: 'ExamplePlayer',
+	playerId: '-0000-000000000000',
+	playerSteamId: '76561190000000000',
+	players: 42
+};
+const left = { ...joined, type: 'player_left', eventTime: 3164.3425, players: 50 };
+const state = {
+	eventId: '<EVENT_UUID>',
+	type: 'match_state',
+	eventTime: 3185.7238,
+	matchId: '<MATCH_UUID>',
+	mapName: 'Kavkazi',
+	state: 'MatchState.Playing.KOTH'
+};
+const ended = {
+	eventId: '<EVENT_UUID>',
+	type: 'match_ended',
+	eventTime: 7658.5545631460845,
+	matchId: '<MATCH_UUID>',
+	mapName: 'Kavkazi',
+	players: 98,
+	winningFaction: 'Lonestar',
+	factionScores: [
+		{ faction: 'Lonestar', score: 100 },
+		{ faction: 'Valkyra', score: 0 },
+		{ faction: 'Manticore', score: 59 }
+	]
+};
+
 const batch = (events: unknown[]) => ({
 	serverId: 'e9cf2544-b21e-4b80-9f12-8ec95ff58964',
 	serverName: '[TLR][UK] The Last Rifles',
@@ -137,10 +182,127 @@ describe('parseBatch', () => {
 		expect(b.skipped).toBe(1);
 	});
 
+	test("Season 2's joins, leaves, match states and ends are known, and none is a kill", () => {
+		const b = parseBatch(batch([joined, killed, left, state, ended]));
+		expect(b.kills.map((k) => k.eventId)).toEqual([killed.eventId]);
+		// each keeps its place in the batch
+		expect(b.states).toEqual([parseState(state, 3)!]);
+		expect(b.ends).toEqual([parseEnd(ended, 4)!]);
+		expect(b.other).toBe(4);
+		expect(b.skipped).toBe(0);
+		for (const e of [joined, left, state, ended]) expect(parseKill(e)).toBeNull();
+	});
+
+	test('a state or result missing what Warcon reads from it is skipped, not counted', () => {
+		const b = parseBatch(
+			batch([{ ...state, state: 'Playing' }, { ...ended, factionScores: [] }, joined])
+		);
+		expect(b).toMatchObject({ states: [], ends: [], other: 1, skipped: 2 });
+	});
+
+	test('a kill missing what a row needs, or an event of a type not known, is skipped', () => {
+		const b = parseBatch(
+			batch([{ ...killed, victimSteamId: '' }, { ...state, type: 'match_paused' }, 'joined', null])
+		);
+		expect(b).toMatchObject({ kills: [], other: 0, skipped: 4 });
+	});
+
 	test('refuses what is not a batch, and batches too big to be the game', () => {
 		expect(() => parseBatch({ serverId: 'a' })).toThrow();
 		expect(() => parseBatch([])).toThrow();
 		expect(() => parseBatch(batch(Array.from({ length: 201 }, () => killed)))).toThrow(/Too many/);
+	});
+
+	test('only kills count towards the limit: a burst of joins does not cost a batch its kills', () => {
+		const joins = Array.from({ length: 300 }, (_, i) => ({ ...joined, eventTime: i }));
+		const b = parseBatch(batch([...joins, killed]));
+		expect(b.kills).toHaveLength(1);
+		expect(b.other).toBe(300);
+	});
+});
+
+describe('parseState', () => {
+	test('every state posted so far, the map as its catalog id', () => {
+		for (const name of [
+			'MatchState.PreMatch',
+			'MatchState.PreMatch.WaitingForWorldLoad',
+			'MatchState.PreMatch.WaitingForPlayers',
+			'MatchState.PreMatch.WaitingForPlayers.PlayerCount',
+			'MatchState.Playing',
+			'MatchState.Playing.KOTH',
+			'MatchState.PostMatch'
+		])
+			expect(parseState({ ...state, state: name })).toEqual({
+				eventId: '<EVENT_UUID>',
+				seq: 0,
+				eventTime: 3185.7238,
+				matchId: '<MATCH_UUID>',
+				map: 'Kavkazi',
+				state: name
+			});
+		expect(parseState({ ...state, mapName: 'Zestafona' })?.map).toBe('NorthAmerica');
+	});
+
+	test('pre-match has no match id yet', () => {
+		const { matchId: _, ...pre } = { ...state, state: 'MatchState.PreMatch' };
+		void _;
+		expect(parseState(pre)).toMatchObject({ matchId: '', state: 'MatchState.PreMatch' });
+	});
+
+	test("a state that is not one of the game's names is refused", () => {
+		for (const bad of ['', 'Playing', 'MatchState.', 'MatchState.Pla ying', 'X'.repeat(300), 42])
+			expect(parseState({ ...state, state: bad })).toBeNull();
+		expect(parseState({ ...state, eventId: '' })).toBeNull();
+		expect(parseState(killed)).toBeNull();
+	});
+});
+
+describe('parseEnd', () => {
+	test('the result as posted: scores highest first, the winner named', () => {
+		expect(parseEnd(ended)).toEqual({
+			eventId: '<EVENT_UUID>',
+			seq: 0,
+			eventTime: 7658.5545631460845,
+			matchId: '<MATCH_UUID>',
+			map: 'Kavkazi',
+			players: 98,
+			winningFaction: 'Lonestar',
+			winner: 'Lonestar',
+			scores: [
+				{ name: 'Lonestar', score: 100 },
+				{ name: 'Manticore', score: 59 },
+				{ name: 'Valkyra', score: 0 }
+			]
+		});
+	});
+
+	test('a winner who is not on the scoreboard is no winner, and what was sent is kept', () => {
+		expect(parseEnd({ ...ended, winningFaction: '' })?.winner).toBeNull();
+		expect(parseEnd({ ...ended, winningFaction: 'None' })).toMatchObject({
+			winner: null,
+			winningFaction: 'None'
+		});
+		expect(parseEnd({ ...ended, winningFaction: undefined })?.winner).toBeNull();
+	});
+
+	test('without a player count it is still a result', () => {
+		expect(parseEnd({ ...ended, players: undefined })?.players).toBeNull();
+	});
+
+	test('scores that are not a scoreboard are refused whole', () => {
+		const bad = (factionScores: unknown) => parseEnd({ ...ended, factionScores });
+		expect(bad(undefined)).toBeNull();
+		expect(bad([])).toBeNull();
+		expect(bad([{ faction: 'Lonestar', score: 'lots' }])).toBeNull();
+		expect(bad([{ faction: '', score: 1 }])).toBeNull();
+		expect(
+			bad([
+				{ faction: 'Lonestar', score: 1 },
+				{ faction: 'Lonestar', score: 2 }
+			])
+		).toBeNull();
+		expect(bad([{ faction: 'Lonestar', score: 1 }, null])).toBeNull();
+		expect(bad(Array.from({ length: 9 }, (_, i) => ({ faction: `F${i}`, score: i })))).toBeNull();
 	});
 });
 

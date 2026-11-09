@@ -20,6 +20,8 @@
 		name = '',
 		server = null,
 		canOrg,
+		scope: startScope,
+		reason: startReason = '',
 		banMessage = null,
 		reasons,
 		onclose,
@@ -34,6 +36,10 @@
 		server?: { id: string; name: string } | null;
 		/** may the user write to the org list? */
 		canOrg: boolean;
+		/** where the dialog starts when both are offered; every server, unless said otherwise */
+		scope?: 'org' | 'server';
+		/** a reason typed before the dialog opened */
+		reason?: string;
 		/** the org's ban message, where the page has it: the dialog then shows the text it makes */
 		banMessage?: string | null;
 		/** the org's quick reasons, the buttons under Reason */
@@ -44,10 +50,12 @@
 
 	// Initial values only: the dialog is created fresh each time it opens.
 	let id = $state(untrack(() => steamId));
-	let reason = $state('');
+	let reason = $state(untrack(() => startReason));
 	let expiry = $state('0');
 	let custom = $state('');
-	let scope = $state<'org' | 'server'>(untrack(() => (canOrg ? 'org' : 'server')));
+	let scope = $state<'org' | 'server'>(
+		untrack(() => (canOrg && (startScope !== 'server' || !server) ? 'org' : 'server'))
+	);
 	let busy = $state(false);
 
 	// What the player will be shown, once the org wraps the reason in more than the reason. The

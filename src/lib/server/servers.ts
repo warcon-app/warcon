@@ -1,5 +1,5 @@
 // Server records: validation, CRUD helpers and the reachability test.
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import { forgetCatalog } from './catalog-cache';
 import type { Features } from '$lib/types';
 import type { Env } from './env';
@@ -11,11 +11,13 @@ import { assertReachableTarget, normaliseHost } from './hostpolicy';
 import { getOrg, type OrgRow, type ServerRow, type SessionUser } from './access';
 import { gateway } from './gateway';
 import { GameError, WardogsClient } from './rcon';
+import type { Tx } from './db';
 import { orgMembers, orgRoles, serverGrants, servers, user } from './db/schema';
 import { rolesOf } from './roles';
 import { assertCanAddServer } from './orgs';
-import { ensureServerLists } from './lists';
+import { ensureServerLists, lockOrg } from './lists';
 import { allowed, FEATURE_LABELS, NOT_ALLOWED, type PublicFeature } from '$lib/features';
+import { readManualRestart } from '$lib/uptime';
 
 export interface TargetFields {
 	name?: string;
@@ -124,7 +126,10 @@ async function auditRefusedTarget(
 	target: string,
 	err: unknown
 ): Promise<never> {
-	if (err instanceof ApiError && (err.code === 'blocked_host' || err.code === 'unresolvable'))
+	if (
+		err instanceof ApiError &&
+		(err.code === 'blocked_host' || err.code === 'unresolvable' || err.code === 'duplicate_target')
+	)
 		await writeAudit(env, req, {
 			actor,
 			server,
@@ -139,6 +144,47 @@ async function auditRefusedTarget(
 	throw err;
 }
 
+/**
+ * One server row per RCON address in the whole panel, whatever the scheme (the demo target aside):
+ * two rows for one game double its pollers and its rules, and each row's list sync overwrites what
+ * the other wrote to its config document. Runs in the writer's transaction, under a lock on the
+ * address, so two adds of one address take turns. The refusal names a server only when it is in
+ * the caller's own org; otherwise it says only that the address is taken.
+ */
+async function assertFreeTarget(
+	env: Env,
+	tx: Tx,
+	orgId: string,
+	host: string,
+	port: number,
+	exceptId: string | null
+): Promise<void> {
+	if (isDemoServer(env, { host })) return;
+	const lower = host.toLowerCase();
+	await tx.execute(
+		sql`SELECT pg_advisory_xact_lock(hashtextextended(${`server-target:${lower}:${port}`}, 0))`
+	);
+	const [other] = await tx
+		.select({ name: servers.name, orgId: servers.orgId })
+		.from(servers)
+		.where(
+			and(
+				sql`lower(${servers.host}) = ${lower}`,
+				eq(servers.port, port),
+				exceptId ? ne(servers.id, exceptId) : undefined
+			)
+		)
+		.limit(1);
+	if (!other) return;
+	throw new ApiError(
+		409,
+		other.orgId === orgId
+			? `${other.name} already uses this address.`
+			: 'This RCON address is already on this panel. If the server is yours, ask the site owner.',
+		'duplicate_target'
+	);
+}
+
 export async function createServer(
 	env: Env,
 	req: Request,
@@ -148,9 +194,8 @@ export async function createServer(
 ): Promise<string> {
 	const password = typeof body.password === 'string' ? body.password : '';
 	if (!password) throw new ApiError(400, "password (the server's RCON password) is required.");
-	await assertCanAddServer(env, org, actor);
 	const orgId = org.id;
-	const t = await validateTarget(env, actor, body).catch((err) =>
+	const refused = (err: unknown) =>
 		auditRefusedTarget(
 			env,
 			req,
@@ -160,12 +205,17 @@ export async function createServer(
 			orgId,
 			`${str(body.host, 253)}:${str(body.port, 5)}`,
 			err
-		)
-	);
+		);
+	const t = await validateTarget(env, actor, body).catch(refused);
 	const pub = publicSwitches(org, body);
 	const id = newId();
-	// One transaction: a server must never exist without its subscription to the org's lists.
+	// One transaction: a server must never exist without its subscription to the org's lists. The
+	// org row's lock makes adds to one org take turns, so two at once cannot both pass its limit,
+	// and a list given to chosen servers meanwhile is not handed out without the new one in view.
 	await env.db.transaction(async (tx) => {
+		await lockOrg(tx, orgId);
+		await assertCanAddServer(env, org, actor, tx);
+		await assertFreeTarget(env, tx, orgId, t.host!, t.port!, null).catch(refused);
 		await tx.insert(servers).values({
 			id,
 			orgId,
@@ -220,7 +270,7 @@ export async function updateServer(
 			'Changing the host, port or scheme needs the RCON password again.',
 			'password_required'
 		);
-	const t = await validateTarget(env, actor, body, server).catch((err) =>
+	const refused = (err: unknown) =>
 		auditRefusedTarget(
 			env,
 			req,
@@ -230,19 +280,37 @@ export async function updateServer(
 			server.orgId,
 			`${str(body.host, 253) || server.host}:${str(body.port, 5) || server.port}`,
 			err
-		)
-	);
+		);
+	const t = await validateTarget(env, actor, body, server).catch(refused);
 	const set: Partial<typeof servers.$inferInsert> = { ...t };
 	if (PUBLIC_SWITCH_KEYS.some((k) => body[k] !== undefined)) {
 		const org = await getOrg(env, server.orgId);
 		if (!org) throw new ApiError(404, 'Organisation not found.', 'not_found');
 		Object.assign(set, publicSwitches(org, body));
 	}
+	// An owner's own restart time, { time: 'HH:MM' } UTC; null hands the restart back to the game
+	if (body.restartSchedule !== undefined) {
+		const own = body.restartSchedule === null ? null : readManualRestart(body.restartSchedule);
+		if (body.restartSchedule !== null && !own)
+			throw new ApiError(400, 'The restart time is not valid: a UTC time from 00:00 to 23:59.');
+		set.restartSchedule = own;
+	}
 	if (typeof body.password === 'string' && body.password)
 		set.passwordEnc = encryptSecret(env, body.password);
 	if (!Object.keys(set).length) throw new ApiError(400, 'Nothing to update.');
 	set.updatedAt = new Date();
-	await env.db.update(servers).set(set).where(eq(servers.id, server.id));
+	await env.db.transaction(async (tx) => {
+		if (moved)
+			await assertFreeTarget(
+				env,
+				tx,
+				server.orgId,
+				t.host ?? server.host,
+				t.port ?? server.port,
+				server.id
+			).catch(refused);
+		await tx.update(servers).set(set).where(eq(servers.id, server.id));
+	});
 	await writeAudit(env, req, {
 		actor,
 		server: { id: server.id, name: t.name || server.name },
@@ -255,6 +323,7 @@ export async function updateServer(
 			publicStatus: set.publicStatus,
 			publicLeaderboards: set.publicLeaderboards,
 			publicKills: set.publicKills,
+			restartSchedule: set.restartSchedule,
 			credentialRotated: !!body.password
 		}
 	});

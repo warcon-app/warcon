@@ -16,12 +16,12 @@
 		if (!named || busy) return;
 		busy = true;
 		try {
-			const r = await api<{ counts: { kills: number; matches: number; matchPlayers: number } }>(
-				'POST',
-				`/api/servers/${encodeURIComponent(data.server.id)}/stats/purge`,
-				{ name: typed.trim() }
-			);
-			done = `${r.counts.kills} kills, ${r.counts.matches} matches and ${r.counts.matchPlayers} match rows deleted.`;
+			const r = await api<{
+				counts: { kills: number; matches: number; matchPlayers: number; matchEvents: number };
+			}>('POST', `/api/servers/${encodeURIComponent(data.server.id)}/stats/purge`, {
+				name: typed.trim()
+			});
+			done = `${r.counts.kills} kills, ${r.counts.matches} matches, ${r.counts.matchPlayers} match rows and ${r.counts.matchEvents} match events deleted.`;
 			toast('Stats purged.', 'ok');
 			open = false;
 			typed = '';
@@ -36,10 +36,10 @@
 <div class="panel">
 	<span class="label-sm">Stats</span>
 	<p class="mb-3 text-[13px] text-mist-400">
-		Purge this server's stats: every recorded kill, match and match row is deleted, for good. Player
-		sessions (who was on, playtime, seed time, first visits) stay. Careers and boards for this
-		server start again from the next match; the match in progress is recorded from the purge on. The
-		purge is audited.
+		Purge this server's stats: every recorded kill, match, match row and match event is deleted, for
+		good. Player sessions (who was on, playtime, seed time, first visits) stay. Careers and boards
+		for this server start again from the next match; the match in progress is recorded from the
+		purge on. The purge is audited.
 	</p>
 	{#if done}<p class="mb-3 text-[13px] text-ok">{done}</p>{/if}
 	{#if !open}

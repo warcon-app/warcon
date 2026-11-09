@@ -490,7 +490,12 @@
 											? ''
 											: ` · ${s.src.state}`}</Badge
 									>
-								{:else}
+									<!-- the group it comes from, for staff (null for everyone else) -->
+									{#if s.src.group}<span class="ml-1 text-[12.5px] text-mist-400"
+											>{s.src.group}</span
+										>{/if}
+								{:else if s.pending !== 'leaves'}
+									<!-- a slot on its way out reads as just that, not as someone else's -->
 									<Badge>local</Badge>
 								{/if}
 								{#if s.pending === 'leaves'}

@@ -238,6 +238,8 @@
 
 		<nav class="ml-2 hidden items-center gap-1 md:flex" aria-label="Main">
 			<a href="/" class="nav-pill {isActive('/') ? 'nav-pill-active' : ''}">Dashboard</a>
+			<a href="/players" class="nav-pill {isActive('/players') ? 'nav-pill-active' : ''}">Players</a
+			>
 			<a href="/audit" class="nav-pill {isActive('/audit') ? 'nav-pill-active' : ''}">Audit</a>
 			{#if data.canManage}
 				<a href="/servers" class="nav-pill {isActive('/servers') ? 'nav-pill-active' : ''}"
@@ -291,6 +293,7 @@
 					<div class="my-1.5 border-t border-white/8"></div>
 					<nav class="md:hidden" aria-label="Main (mobile)">
 						<a href="/" class="menu-item" role="menuitem">Dashboard</a>
+						<a href="/players" class="menu-item" role="menuitem">Players</a>
 						<a href="/audit" class="menu-item" role="menuitem">Audit</a>
 						{#if data.canManage}
 							<a href="/servers" class="menu-item" role="menuitem">Servers</a>

@@ -3,9 +3,9 @@
 // does not start it over. A batch counts up to itself, even when it is acted on after its match
 // closed or after later batches came in; one that came in with no match open counts that server's
 // such kills of the hour before. Team kills by a cause the rule leaves out (barbed wire, unless its
-// list says otherwise) stay team kills but add to no count and are never acted on. The dry run
-// replays the same count, and rules saved with the old default texts are moved to the new ones by
-// migration 0035.
+// list says otherwise), and crashes when its list holds them, stay team kills but add to no count
+// and are never acted on. The dry run replays the same count, and rules saved with the old default
+// texts are moved to the new ones by migration 0035.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, sql } from 'drizzle-orm';
@@ -27,7 +27,14 @@ const BUILDER = { id: '76561198000000505', name: 'Builder' };
 const FENCER = { id: '76561198000000506', name: 'Fencer' };
 const SAPPER = { id: '76561198000000507', name: 'Sapper' };
 const MIXER = { id: '76561198000000508', name: 'Mixer' };
+const PILOT = { id: '76561198000000509', name: 'Pilot' };
+const BLASTER = { id: '76561198000000510', name: 'Blaster' };
+const DRIVER = { id: '76561198000000511', name: 'Driver' };
+const GUNNER = { id: '76561198000000512', name: 'Gunner' };
 const WIRE = 'Id.Buildable.BarbedWire';
+const HELI = 'Vehicle.Variant.Air.Rotary.Littlebird.Default';
+/** the feed's tag on a death in a vehicle's blast, and the list's entry for crashes */
+const EXPLOSION = 'VehicleExplosion';
 const MIN = 60_000;
 const ago = (ms: number) => new Date(Date.now() - ms);
 
@@ -35,7 +42,8 @@ const ago = (ms: number) => new Date(Date.now() - ms);
 const eventOf = (
 	killer: typeof STAYER,
 	victim: typeof STAYER,
-	cause: string | null = 'Id.Item.AK74M'
+	cause: string | null = 'Id.Item.AK74M',
+	tags: string[] = []
 ) => ({
 	eventId: randomUUID(),
 	type: 'killed',
@@ -48,13 +56,18 @@ const eventOf = (
 	victimSteamId: victim.id,
 	cause,
 	distance: 3000,
-	contextTags: []
+	contextTags: tags.map((t) => `Meta.Progression.Context.Player.KillContext.${t}`)
 });
 /** One feed batch with one kill, as the game posts it. */
-const batchOf = (killer: typeof STAYER, victim: typeof STAYER, cause?: string | null) => ({
+const batchOf = (
+	killer: typeof STAYER,
+	victim: typeof STAYER,
+	cause?: string | null,
+	tags?: string[]
+) => ({
 	serverId: randomUUID(),
 	serverName: 'Test',
-	events: [eventOf(killer, victim, cause)]
+	events: [eventOf(killer, victim, cause, tags)]
 });
 
 describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
@@ -107,15 +120,20 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 		serverId: string,
 		killer: typeof STAYER,
 		now = new Date(),
-		cause?: string | null
+		cause?: string | null,
+		tags?: string[]
 	) => {
-		const r = await ingestBatch(env, serverId, batchOf(killer, MATE, cause), now);
+		const r = await ingestBatch(env, serverId, batchOf(killer, MATE, cause, tags), now);
 		expect(r.kills.map((k) => k.teamKill)).toEqual([true]);
 		return r.kills;
 	};
 	/** ...and handed to the rules at once, as the worker does. */
-	const arrives = async (serverId: string, killer: typeof STAYER, cause?: string | null) =>
-		onKillsIngested(env, serverId, await receive(serverId, killer, new Date(), cause));
+	const arrives = async (
+		serverId: string,
+		killer: typeof STAYER,
+		cause?: string | null,
+		tags?: string[]
+	) => onKillsIngested(env, serverId, await receive(serverId, killer, new Date(), cause, tags));
 
 	/** A rule as saved; without `extra` it is one saved before the list of causes not counted existed. */
 	const ruleOn = async (serverId: string, extra: Record<string, unknown> = {}) => {
@@ -179,6 +197,10 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 			session(w.server.id, FENCER, 5 * MIN),
 			session(w.server.id, SAPPER, 5 * MIN),
 			session(w.server.id, MIXER, 5 * MIN),
+			session(w.server.id, PILOT, 5 * MIN),
+			session(w.server.id, BLASTER, 5 * MIN),
+			session(w.server.id, DRIVER, 5 * MIN),
+			session(w.server.id, GUNNER, 5 * MIN),
 			session(w.otherServer.id, STAYER, 125 * MIN),
 			session(w.otherServer.id, MATE, 125 * MIN)
 		]);
@@ -360,6 +382,55 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 			.where(and(eq(outbox.triggerId, here), eq(outbox.steamId, MIXER.id)));
 		expect(rows.map((row) => row.detail)).toEqual([
 			{ name: 'Mixer', victim: 'Mate', count: 1, eventId: r.kills[0].eventId }
+		]);
+	});
+
+	test('a rule that leaves out crashes: a pilot who crashes with a teammate aboard is not counted, a teammate who blows a vehicle up or runs one over is', async () => {
+		const crashes = await ruleOn(w.server.id, { notCounted: [WIRE, EXPLOSION] });
+		invalidateTriggers(w.server.id);
+		await arrives(w.server.id, PILOT, HELI, [EXPLOSION]);
+		expect(await actionsOn(crashes, PILOT.id)).toEqual([]);
+		// a rule without it whispers the pilot, as before
+		expect(await actionsOn(here, PILOT.id)).toEqual([['whisper', 1]]);
+		// and the crash adds nothing to the pilot's next team kill
+		await arrives(w.server.id, PILOT);
+		expect(await actionsOn(crashes, PILOT.id)).toEqual([['whisper', 1]]);
+		await arrives(w.server.id, BLASTER, 'Id.Item.C4Explosive', [EXPLOSION]);
+		await arrives(w.server.id, DRIVER, HELI, ['RoadKill']);
+		// a kill in a blast with no cause is no vehicle's own
+		await arrives(w.server.id, GUNNER, null, [EXPLOSION]);
+		expect(await actionsOn(crashes, BLASTER.id)).toEqual([['whisper', 1]]);
+		expect(await actionsOn(crashes, DRIVER.id)).toEqual([['whisper', 1]]);
+		expect(await actionsOn(crashes, GUNNER.id)).toEqual([['whisper', 1]]);
+		await env.db.update(triggers).set({ enabled: false }).where(eq(triggers.id, crashes));
+		invalidateTriggers(w.server.id);
+	});
+
+	test('the dry run leaves out crashes the same way, and says how many', async () => {
+		const server = { ...w.server, name: 'one' } as Parameters<typeof dryRun>[1];
+		const of = (r: Awaited<ReturnType<typeof dryRun>>) =>
+			r.items
+				.map((i) => i.text)
+				.filter((t) => /^(whisper|kick) (Pilot|Blaster|Driver|Gunner)\b/.test(t));
+		const r = await dryRun(env, server, 'team_kill', {
+			warnAt: 1,
+			kickAt: 3,
+			notCounted: [EXPLOSION]
+		});
+		expect(of(r)).toEqual([
+			'whisper Pilot: Careful, Pilot: that was a team kill (1 this match).',
+			'whisper Blaster: Careful, Blaster: that was a team kill (1 this match).',
+			'whisper Driver: Careful, Driver: that was a team kill (1 this match).',
+			'whisper Gunner: Careful, Gunner: that was a team kill (1 this match).'
+		]);
+		expect(r.notes).toContain('Not counted: 1 by Vehicle crash.');
+		const all = await dryRun(env, server, 'team_kill', { warnAt: 1, kickAt: 3, notCounted: [] });
+		expect(of(all)).toEqual([
+			'whisper Pilot: Careful, Pilot: that was a team kill (1 this match).',
+			'whisper Pilot: Careful, Pilot: that was a team kill (2 this match).',
+			'whisper Blaster: Careful, Blaster: that was a team kill (1 this match).',
+			'whisper Driver: Careful, Driver: that was a team kill (1 this match).',
+			'whisper Gunner: Careful, Gunner: that was a team kill (1 this match).'
 		]);
 	});
 

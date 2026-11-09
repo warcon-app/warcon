@@ -1,7 +1,7 @@
 // The /api/servers/:id/rcon/:action handler: capability check, action dispatch, audit row.
 import type { RequestEvent } from '@sveltejs/kit';
 import { flag, getEnv } from './env';
-import { ApiError, apiJson, readJson } from './http';
+import { ApiError, apiJson, forLog, readJson } from './http';
 import { writeAudit } from './audit';
 import { getServer, requireUser, serverAccessFor } from './access';
 import { CAPABILITY_INFO } from '../capabilities';
@@ -28,7 +28,14 @@ const LIST_EDITS: Record<string, { kind: Kind; op: 'add' | 'remove' }> = {
 	reservedRemove: { kind: 'reserve', op: 'remove' }
 };
 
-function messageOf(result: unknown): string {
+/**
+ * Game actions one person or key may send in a minute, counted together however they are sent:
+ * one at a time here, or several at once by an announcement (announce.ts).
+ */
+export const ACTIONS_PER_MINUTE = 120;
+export const actionBudget = (userId: string) => `rcon:${userId}`;
+
+export function messageOf(result: unknown): string {
 	if (
 		result &&
 		typeof result === 'object' &&
@@ -99,7 +106,7 @@ export async function runAction(
 
 	if (name === 'raw') assertRate(`raw:${user.id}`, 30, 60_000);
 	// Pages read the live view; direct game reads are for tools and the odd refresh, not a poll loop.
-	assertRate(`rcon:${user.id}`, 120, 60_000);
+	assertRate(actionBudget(user.id), ACTIONS_PER_MINUTE, 60_000);
 
 	// The game's answers as it sent them are what a connection test shows, and that needs Config
 	// & settings; a viewer gets the shaped status and the feature list.
@@ -119,14 +126,10 @@ export async function runAction(
 		// edit also rewrites the mirror here, so the change shows before the worker's re-read lands.
 		const listEdit = LIST_EDITS[name];
 		if (listEdit && /^\d{17}$/.test(target)) {
-			await noteLocalEdit(
-				env,
-				server.id,
-				listEdit.kind,
-				listEdit.op,
-				target,
-				typeof params?.reason === 'string' ? params.reason.slice(0, 200) : ''
-			).catch((err) => console.error('[warcon] list mirror', err));
+			await noteLocalEdit(env, server.id, listEdit.kind, listEdit.op, target, {
+				reason: typeof params?.reason === 'string' ? params.reason.slice(0, 200) : '',
+				pendingRestart: !!(result as { pendingRestart?: unknown } | null)?.pendingRestart
+			}).catch((err) => console.error('[warcon] list mirror', forLog(err)));
 		}
 		if (def.mutating) gateway().observeSoon(server.id, { lists: !!listEdit });
 		// A new document may change MaxReservedSlots, which the worker otherwise re-reads hourly.
@@ -204,12 +207,13 @@ export async function runAction(
 				});
 			throw err;
 		}
-		const message = err instanceof Error ? err.message : String(err);
+		// The panel's own failure: the trail keeps a fixed phrase (a failed query's message lists its
+		// parameters); the error goes on to the route, which logs it without them.
 		await writeAudit(env, req, {
 			...base,
 			outcome: 'error',
 			status: 500,
-			message,
+			message: 'Internal error.',
 			detail: def.mutating ? detail : undefined,
 			durationMs
 		});

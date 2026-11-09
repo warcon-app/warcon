@@ -16,13 +16,14 @@ import {
 	type PostResult,
 	type WebhookEvent
 } from './webhook-delivery';
-import type { WebhookView } from '$lib/types';
+import type { TriggerKind, WebhookView } from '$lib/types';
 import { isStatusStyle, type StatusStyle } from '$lib/status-styles';
 import { gateway } from './gateway';
 import { parseServerScope } from './server-scope';
 import { servers } from './db/schema';
 import { cardLinks, clampInterval, statusMessage } from './webhook-status-core';
 import { effectiveFeatures } from '$lib/features';
+import { isTriggerKind, TRIGGER_KINDS } from './trigger-rules';
 
 export { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS } from './webhook-delivery';
 
@@ -67,6 +68,19 @@ function parseEvents(raw: unknown, statusEnabled: boolean): WebhookEvent[] {
 	return events;
 }
 
+/**
+ * The kinds of rule an Automation webhook carries. null is every kind, a kind added later too, and
+ * has to be said; a list has to name at least one kind. An empty or malformed list is refused
+ * rather than read as every kind, the opposite of what whoever sent it meant.
+ */
+function parseTriggerKinds(raw: unknown): TriggerKind[] | null {
+	if (raw === null || raw === undefined) return null;
+	if (!Array.isArray(raw) || !raw.length)
+		throw new ApiError(400, 'Pick at least one kind of rule, or every kind.', 'bad_kinds');
+	if (!raw.every(isTriggerKind)) throw new ApiError(400, 'Unknown kind of rule.', 'bad_kinds');
+	return TRIGGER_KINDS.filter((k) => raw.includes(k));
+}
+
 function parseStyle(raw: unknown): StatusStyle {
 	if (!isStatusStyle(raw))
 		throw new ApiError(400, 'Pick a card style: banner, compact or scoreboard.');
@@ -87,6 +101,7 @@ const shape = (w: WebhookRow): WebhookView => ({
 	label: w.label,
 	urlHint: w.urlHint,
 	events: (w.events as string[]) || [],
+	triggerKinds: (w.triggerKinds as TriggerKind[] | null) ?? null,
 	serverIds: (w.serverIds as string[] | null) ?? null,
 	enabled: w.enabled,
 	statusEnabled: w.statusEnabled,
@@ -132,6 +147,7 @@ export async function createWebhook(
 	const statusEnabled = !!body.statusEnabled;
 	const statusStyle = body.statusStyle === undefined ? 'banner' : parseStyle(body.statusStyle);
 	const events = parseEvents(body.events, statusEnabled);
+	const triggerKinds = parseTriggerKinds(body.triggerKinds);
 	const serverIds = await parseServerScope(env, org.id, body.serverIds);
 	const label = str(body.label, 60) || 'Discord';
 	const card = {
@@ -149,6 +165,7 @@ export async function createWebhook(
 			urlEnc: encryptSecret(env, url),
 			urlHint: hint,
 			events,
+			triggerKinds,
 			serverIds,
 			enabled: body.enabled === undefined ? true : !!body.enabled,
 			statusEnabled,
@@ -171,6 +188,7 @@ export async function createWebhook(
 			webhookId: row.id,
 			hint,
 			events,
+			triggerKinds,
 			serverIds,
 			statusEnabled,
 			statusStyle,
@@ -222,6 +240,8 @@ export async function updateWebhook(
 			400,
 			'Pick at least one kind of event to mirror, or keep the live status message on.'
 		);
+	if (body.triggerKinds !== undefined)
+		changes.triggerKinds = set.triggerKinds = parseTriggerKinds(body.triggerKinds);
 	if (body.serverIds !== undefined)
 		changes.serverIds = set.serverIds = await parseServerScope(env, org.id, body.serverIds);
 	if (body.enabled !== undefined) {

@@ -3,7 +3,7 @@
 import { fail, redirect, type RequestEvent } from '@sveltejs/kit';
 import { count, eq } from 'drizzle-orm';
 import { flag, maxOrgsPerUser, turnstileSiteKey, type Env } from './env';
-import { addressKey, ApiError, clientIp, normalizeError, str } from './http';
+import { addressKey, ApiError, clientIp, forLog, normalizeError, str } from './http';
 import { writeAudit } from './audit';
 import { keyForbidden, loginLockSeconds, noteLoginFailure, type SessionUser } from './access';
 import { createUser, userCount, validatePassword, validateUsername } from './users';
@@ -60,7 +60,7 @@ export async function verifyTurnstile(env: Env, token: string, ip: string): Prom
 		console.warn('turnstile rejected', data['error-codes']);
 		return 'Verification failed. Reload the page and try again.';
 	} catch (err) {
-		console.error('turnstile siteverify', err instanceof Error ? err.message : err);
+		console.error('turnstile siteverify', forLog(err));
 		return 'Could not verify the challenge right now. Try again in a moment.';
 	}
 }

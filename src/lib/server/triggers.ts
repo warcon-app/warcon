@@ -4,6 +4,8 @@
 //   faction_change  whisper a message to players who switch from one faction to another
 //   broadcast    rotate through messages every N minutes while the player count is in its band
 //   empty_reset  send an empty server back to a chosen map after N minutes
+//   restart_skip  end the match a restart brings the server up on when its rotation does not have
+//                that map (restart-skip.ts)
 //   risk_kick    kick joiners who match Steam / ban-list rules (see risk.ts)
 //   ping_kick    kick players whose ping stays above a limit
 //   team_kill    whisper or kick a player over team kills the kill feed reports (feed-events.ts)
@@ -21,8 +23,15 @@
 //                acted on in feed-events.ts)
 //   afk_protection  kill everyone every few minutes while the server seeds, so the game's idle kick
 //                spares the seeders (afk-protection.ts)
+//   afk_watch    warn, then kick or flag, a player with no kill, death or cash earned for too long
+//                in a live match (afk-watch.ts)
+//   weather_cycle  change the time of day and weather every few minutes, in the match being played
+//                (weather-cycle.ts)
+//   death_whisper  whisper a player killed one of the rule's messages while they wait to respawn,
+//                at most once in a cooldown (death-whisper.ts, acted on in feed-events.ts)
 // The worker evaluates them on every observation and writes the actions they want to the outbox
-// (outbox.ts delivers, and every delivery lands in the audit trail as category "trigger"). A dry
+// (outbox.ts delivers, and every delivery lands in the audit trail as category "trigger", but for a
+// Death whisper that went: $lib/rule-kinds TRAIL_FAILURES_ONLY). A dry
 // run replays the last 24 hours from the samples and sessions tables so a rule can be checked
 // before it touches anyone.
 import { randomUUID } from 'node:crypto';
@@ -61,6 +70,7 @@ import { gateway } from './gateway';
 import type { SessionUser } from './access';
 import type { ServerAccess } from './access-resolve';
 import { CAPABILITY_INFO, type Capability } from '$lib/capabilities';
+import { ONE_PER_SERVER } from '$lib/rule-kinds';
 import type { DryRunResult, Player, Status, TriggerKind, TriggerView } from '$lib/types';
 import {
 	broadcastWanted,
@@ -102,6 +112,7 @@ import {
 	type WelcomeConfig
 } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
+import { notifyBounty, type BountyCard } from './webhook-delivery';
 import { NAME_FLAG, nameFilterTargets, nameVerdict, type NameFilterConfig } from './name-filter';
 import {
 	nameChangeSettingsKey,
@@ -134,7 +145,7 @@ import {
 } from './kill-distance';
 import { banNeeds, PANEL_BAN, type PanelBanParams } from './rule-ban';
 import { RULE_KILL, RULE_KILL_NEEDS, type RuleKillParams } from './rule-kill';
-import { causeLabel } from '$lib/causes';
+import { causeLabel, isVehicleCrash, notCountedLabel, VEHICLE_CRASH } from '$lib/causes';
 import {
 	emptyTwoTeamsState,
 	teamName,
@@ -158,8 +169,76 @@ import {
 	afkStep,
 	type AfkProtectionConfig
 } from './afk-protection';
-import { fmtUptime, RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
+import {
+	AFK_WATCH_FLAG,
+	afkWatchAction,
+	afkWatchGapMs,
+	afkWatchSettingsKey,
+	afkWatchStep,
+	afkWatchWarns,
+	idleMinutes,
+	type AfkWatchConfig,
+	type AfkWatchState
+} from './afk-watch';
+import {
+	BOUNTY_LAPSE,
+	bountyReplay,
+	bountyReward,
+	bountyScope,
+	bountyState,
+	bountyTrack,
+	forgetBounties,
+	lapseWords,
+	rewardWords,
+	savedBounty,
+	bountyVersion,
+	type BountyConfig,
+	type BountyKill,
+	type BountyLapse,
+	type BountyReplayEvent,
+	type OpenBounty
+} from './bounty';
+import {
+	describeRestartSchedule,
+	fmtUptime,
+	restartScheduleOf,
+	restartWindow,
+	type RestartSchedule
+} from '$lib/uptime';
+import {
+	ROTATION_SHUFFLE,
+	rotationShuffleState,
+	shuffleStep,
+	type RotationShuffleConfig,
+	type ShuffleWhen
+} from './rotation-shuffle';
 import { DEFAULT_SCORE_CAP } from '$lib/match';
+import { liveName, type LiveNameConfig } from '$lib/live-name';
+import { liveNameState } from './live-name';
+import {
+	onNow,
+	RESTART_SKIP,
+	RESTART_SKIP_KEY,
+	restartSkipState,
+	restartSkipStep,
+	selectionName,
+	underWay
+} from './restart-skip';
+import {
+	lightingName,
+	nextLighting,
+	WEATHER_CYCLE,
+	weatherCycleIndex,
+	weatherCycleSettingsKey,
+	type WeatherCycleConfig
+} from './weather-cycle';
+import {
+	deathBlanks,
+	deathVars,
+	deathWhisperStep,
+	type DeathWhisperConfig,
+	type WhisperedTracks
+} from './death-whisper';
 import { mapName } from '$lib/format';
 import { statsIn, usesStats } from '$lib/placeholders';
 import { settings } from './settings';
@@ -199,8 +278,27 @@ const shape = (t: TriggerRow): TriggerView => ({
 	lastResult: t.lastResult,
 	fireCount: t.fireCount,
 	createdAt: t.createdAt ? t.createdAt.toISOString() : null,
-	...(t.kind === 'afk_protection' ? { phase: afkPhase(t.state) } : {})
+	...(t.kind === 'afk_protection' ? { phase: afkPhase(t.state) } : {}),
+	...(t.kind === 'bounty' ? { bounty: openBounty(t) } : {}),
+	...(t.kind === 'live_name' ? { liveName: lastName(t.state) } : {})
 });
+
+/** A Live server name rule's last write and latest refusal, as its row shows them. */
+function lastName(state: unknown): TriggerView['liveName'] {
+	const s = liveNameState(state);
+	const iso = (ms: number) => (ms ? new Date(ms).toISOString() : null);
+	return s
+		? { name: s.name, at: iso(s.at), refused: s.refused, since: iso(s.since), restored: s.restored }
+		: null;
+}
+
+/** A Bounty rule's open bounty, as its row shows it: the one its last save holds, if any. */
+function openBounty(t: TriggerRow): TriggerView['bounty'] {
+	const b = savedBounty(t.state, bountyVersion(t));
+	return b
+		? { steamId: b.steamId, name: b.name, streak: b.streak, setAt: new Date(b.setAt).toISOString() }
+		: null;
+}
 
 /** Where an AFK protection rule stands, as its row shows it; null until the worker has looked. */
 function afkPhase(state: unknown): TriggerView['phase'] {
@@ -233,15 +331,18 @@ async function triggerOf(env: Env, serverId: string, id: string): Promise<Trigge
  * need to do the same by hand: a rule that kicks needs Kick, not only Automation.
  */
 const RULE_NEEDS: Record<
-	Exclude<TriggerKind, 'seed_reward' | 'kill_distance'>,
+	Exclude<TriggerKind, 'seed_reward' | 'kill_distance' | 'bounty' | 'afk_watch'>,
 	[Capability, string]
 > = {
 	welcome: ['chat.send', 'messages players'],
 	faction_change: ['chat.send', 'messages players'],
+	death_whisper: ['chat.send', 'whispers players'],
 	broadcast: ['chat.send', 'messages players'],
 	restart_notice: ['chat.send', 'messages players'],
 	match_broadcast: ['chat.send', 'messages players'],
 	empty_reset: ['match.control', 'changes the map'],
+	restart_skip: ['match.control', 'ends the match'],
+	weather_cycle: ['match.control', 'changes the weather'],
 	risk_kick: ['players.kick', 'kicks players'],
 	name_filter: ['players.kick', 'kicks players'],
 	ping_kick: ['players.kick', 'kicks players'],
@@ -249,19 +350,32 @@ const RULE_NEEDS: Record<
 	kill_rate: ['players.kick', 'flags players'],
 	two_teams: ['players.move', 'moves players between teams'],
 	afk_protection: ['players.kill', 'kills players'],
-	name_change: ['players.kick', 'flags or kicks players']
+	name_change: ['players.kick', 'flags or kicks players'],
+	rotation_shuffle: ['config.apply', 'rewrites the rotation in the config document'],
+	live_name: ['config.apply', 'writes the server name in the config document']
+};
+
+/** What a reserved slot a rule hands out needs: one here, or on the organisation's list. */
+const SLOT_NEEDS: Record<'server' | 'org', [Capability, string]> = {
+	org: ['lists.reserve', "edits the organisation's reserved-slot list"],
+	server: ['slots.manage', 'reserves slots on this server']
 };
 
 /**
  * What one rule needs of whoever saves it. The Seeding reward reserves slots: here, or on the
  * organisation's list. A Kill distance rule flags, warns, kills (and whispers), kicks, or bans:
- * here, or on the organisation's ban list.
+ * here, or on the organisation's ban list. A Bounty broadcasts, and reserves the claimer a slot when
+ * it has a reward. An AFK watch kicks, or flags, which takes Kick as a Name filter's alert does.
  */
 export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, string] {
 	if (kind === 'seed_reward')
-		return (config as Partial<SeedRewardConfig> | null)?.scope !== 'server'
-			? ['lists.reserve', "edits the organisation's reserved-slot list"]
-			: ['slots.manage', 'reserves slots on this server'];
+		return SLOT_NEEDS[
+			(config as Partial<SeedRewardConfig> | null)?.scope !== 'server' ? 'org' : 'server'
+		];
+	if (kind === 'bounty')
+		return bountyReward(config) === 'slot'
+			? SLOT_NEEDS[bountyScope(config)]
+			: ['chat.send', 'messages players'];
 	if (kind === 'kill_distance') {
 		const action = killDistanceAction(config);
 		if (action === 'ban') return banNeeds(killDistanceBanScope(config));
@@ -269,15 +383,21 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
 		if (action === 'kill') return RULE_KILL_NEEDS[0];
 		return ['players.kick', action === 'kick' ? 'kicks players' : 'flags players'];
 	}
+	if (kind === 'afk_watch')
+		return ['players.kick', afkWatchAction(config) === 'kick' ? 'kicks players' : 'flags players'];
 	return RULE_NEEDS[kind];
 }
 
 /**
  * What else a rule needs when it also messages players: a Team balance rule with a whisper, an AFK
- * protection rule with a broadcast, a Kill distance rule's kill with its whisper.
+ * protection rule with a broadcast, a Kill distance rule's kill with its whisper, an AFK watch with
+ * its warning.
  */
 function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
 	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
+	if (kind === 'afk_watch' && afkWatchWarns(config)) return ['chat.send', 'whispers players'];
+	if (kind === 'bounty' && bountyReward(config) === 'slot')
+		return ['chat.send', 'messages players'];
 	if (kind === 'two_teams' && str((config as Partial<TwoTeamsConfig> | null)?.message))
 		return ['chat.send', 'whispers players'];
 	const afk = config as Partial<AfkProtectionConfig> | null;
@@ -317,11 +437,9 @@ export async function createTrigger(
 	requireRuleCaps(kind, config, server, access);
 	const name = str(body.name, 60) || TRIGGER_LABELS[kind];
 	const row = await env.db.transaction(async (tx) => {
-		// Seed time is one count per server, taken against one threshold, so one rule holds it. Two
-		// Team balance rules would move a player back and forth, killing them at every move; two AFK
-		// protection rules would kill everyone twice a round. Saves to one server take turns, so two at
-		// once cannot both find none.
-		if (kind === 'seed_reward' || kind === 'two_teams' || kind === 'afk_protection') {
+		// One rule of these kinds per server ($lib/rule-kinds says why). Saves to one server take turns,
+		// so two at once cannot both find none.
+		if (ONE_PER_SERVER.includes(kind)) {
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`triggers:${server.id}`}))`);
 			const [other] = await tx
 				.select({ name: triggers.name })
@@ -380,6 +498,11 @@ export async function updateTrigger(
 	if (body.config !== undefined) set.config = validateConfig(row.kind, body.config);
 	if (row.kind === 'ping_kick' && (body.config !== undefined || body.enabled !== undefined))
 		set.state = null;
+	// Any save of a Bounty rule calls off its open bounty: the worker starts it over (bounty.ts).
+	if (row.kind === 'bounty') set.state = null;
+	// A Rotation shuffle rule's settings saved (its order may have changed): it shuffles once more,
+	// as it does when switched on again (below).
+	if (row.kind === 'rotation_shuffle' && body.config !== undefined) set.state = null;
 	// Switched on again, a Team balance rule starts over in the worker (its memory is keyed on this):
 	// who switched sides while it was off is unknown, so whoever is on then counts as placed. Whether
 	// it was off is the row's at the write, not the read above, so a switch-off landing between them
@@ -387,10 +510,15 @@ export async function updateTrigger(
 	// Switched on again, an AFK protection rule starts from what the server shows then: whether it
 	// emptied or restarted while the rule was off is unknown. An edit keeps where it stands, so
 	// changing a message while a match is on cannot turn it on.
+	// Switched on again, a Skip map after restart rule acts from the next restart, taking the time
+	// of this save as its start (restart-skip.ts).
 	const switchOn =
 		row.kind === 'two_teams' && set.enabled === true
 			? sql`CASE WHEN ${triggers.enabled} THEN ${triggers.state} ELSE (${JSON.stringify({ enabledAt: Date.now() })}::text)::jsonb END`
-			: row.kind === 'afk_protection' && set.enabled === true
+			: (row.kind === 'afk_protection' ||
+						row.kind === 'restart_skip' ||
+						(row.kind === 'rotation_shuffle' && set.state === undefined)) &&
+				  set.enabled === true
 				? sql`CASE WHEN ${triggers.enabled} THEN ${triggers.state} ELSE NULL END`
 				: undefined;
 	requireRuleCaps(row.kind, set.config ?? row.config, server, access);
@@ -423,14 +551,22 @@ export async function updateTrigger(
 	return shape(updated);
 }
 
+/**
+ * Kinds whose deletion acts on the server: a Live server name rule's own name is written back to the
+ * config document, so deleting one needs what switching it off does.
+ */
+const ACTS_WHEN_DELETED: TriggerKind[] = ['live_name'];
+
 export async function deleteTrigger(
 	env: Env,
 	req: Request,
 	user: SessionUser,
 	server: ServerRow,
+	access: ServerAccess,
 	id: string
 ): Promise<void> {
 	const row = await triggerOf(env, server.id, id);
+	if (ACTS_WHEN_DELETED.includes(row.kind)) requireRuleCaps(row.kind, row.config, server, access);
 	await env.db.delete(triggers).where(eq(triggers.id, row.id));
 	if (SETTINGS_KEYS[row.kind])
 		await dropQueued(env, row.id, 'The rule was deleted before this was sent.');
@@ -453,13 +589,18 @@ export async function deleteTrigger(
  * delivery): a Team balance move decided under the old closed faction or gap could take a player
  * to the wrong side, and a Kill distance kick or ban decided under settings an admin has just corrected, or by
  * a rule just switched off, is not to be sent; nor is an AFK protection round once the rule is off,
- * which is how it is stopped in a hurry, nor a Name change flag or kick.
+ * which is how it is stopped in a hurry, nor a Name change flag or kick, nor an AFK watch warning,
+ * kick or flag, nor a skip of the map a server came up on (it has no settings: only being switched
+ * off or deleted stops it), nor a change of the weather.
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
 	afk_protection: (c) => afkSettingsKey(c as AfkProtectionConfig),
-	name_change: (c) => nameChangeSettingsKey(c as NameChangeConfig)
+	afk_watch: (c) => afkWatchSettingsKey(c as AfkWatchConfig),
+	name_change: (c) => nameChangeSettingsKey(c as NameChangeConfig),
+	restart_skip: () => RESTART_SKIP_KEY,
+	weather_cycle: (c) => weatherCycleSettingsKey(c as WeatherCycleConfig)
 };
 
 /**
@@ -504,7 +645,8 @@ export interface TickContext {
 	factioned: FactionPick<Player>[];
 	/** joiners and factioned players never seen on this server before */
 	firstVisit: Set<string>;
-	/** SteamIDs with a reserved slot */
+	/** SteamIDs with a reserved slot: on the server's list as the panel keeps it (its config
+	 *  document), whether or not a live build has taken the change up yet */
 	reserved: Set<string>;
 	/** false until the worker has read the server's reserved list since it started */
 	reservedLoaded: boolean;
@@ -516,6 +658,8 @@ export interface TickContext {
 	performance: Map<string, RiskPerformance>;
 	/** when the game process started (ms), from GET /v1/health; 0 while unknown */
 	startedAt: number;
+	/** RestartTimeUtc the process started with ("HH:MM", UTC); null or absent when unset */
+	restartTimeUtc?: string | null;
 	/** the match that ended between the previous look and this one, or null */
 	matchEnd: MatchEnd | null;
 	/** the first look after the server was out of reach: what happened meanwhile is unknown (a match
@@ -523,6 +667,9 @@ export interface TickContext {
 	recovered?: boolean;
 	/** at a boundary, every player's line of the match that ended, from the worker's tallies */
 	matchLines: MatchLineVars[];
+	/** the players with an open session: on, or gone for less than the leave grace; absent, nobody
+	 *  is known to have left */
+	present?: { has(steamId: string): boolean };
 	ts: Date;
 }
 
@@ -728,6 +875,9 @@ export async function evaluateTriggers(
 				case 'empty_reset':
 					await evalEmptyReset(env, ctx, row, row.config as EmptyResetConfig, out);
 					break;
+				case 'restart_skip':
+					evalRestartSkip(ctx, row, out);
+					break;
 				case 'risk_kick':
 					await evalRiskKick(env, ctx, row, row.config as RiskKickConfig, out, read);
 					break;
@@ -741,6 +891,7 @@ export async function evaluateTriggers(
 				case 'kill_rate':
 				case 'kill_distance':
 				case 'name_change':
+				case 'death_whisper':
 					// Acted on as kills arrive (feed-events.ts), not per observation.
 					break;
 				case 'seed_reward':
@@ -758,11 +909,29 @@ export async function evaluateTriggers(
 				case 'afk_protection':
 					evalAfkProtection(ctx, row, row.config as AfkProtectionConfig, out);
 					break;
+				case 'afk_watch':
+					await evalAfkWatch(ctx, row, row.config as AfkWatchConfig, out, read);
+					break;
+				case 'bounty':
+					// Kills move it on as they arrive (feed-events.ts); a look ends it.
+					evalBounty(env, ctx, row, row.config as BountyConfig, out);
+					break;
+				case 'rotation_shuffle':
+					evalRotationShuffle(ctx, row, row.config as RotationShuffleConfig, out);
+					break;
+				case 'weather_cycle':
+					evalWeatherCycle(ctx, row, row.config as WeatherCycleConfig, out);
+					break;
+				case 'live_name':
+					// Written at the look itself, after the rules (live-name-write.ts): no action is queued.
+					break;
 			}
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			console.error(`[warcon] trigger ${row.name}`, message);
-			out.updates.push({ id: row.id, lastResult: `Error: ${message}`.slice(0, 300) });
+			// The rule shows a fixed phrase unless the panel refused in its own words; the error goes
+			// to the log (a failed query's message lists its parameters).
+			console.error(`[warcon] trigger ${row.name}`, forLog(err));
+			const why = err instanceof ApiError ? err.message : 'the rule could not be checked.';
+			out.updates.push({ id: row.id, lastResult: `Error: ${why}`.slice(0, 300) });
 		}
 	}
 	return out;
@@ -933,6 +1102,55 @@ async function evalEmptyReset(
 	out.updates.push({ id: row.id, lastFiredAt: ctx.ts, lastResult: `Resetting to ${cfg.map}` });
 }
 
+/**
+ * At the first look of a run that started while the rule was on, one skip of the map the server
+ * came up on, which delivery sends only if the rotation does not have that map (restart-skip.ts).
+ * A first match already under way when the worker first sees the run is left to play: the row is
+ * kept, skipped, saying so.
+ */
+function evalRestartSkip(ctx: TickContext, row: TriggerRow, out: Evaluation) {
+	if (!ctx.status.map) return;
+	const step = restartSkipStep(restartSkipState(row.state), {
+		startedAt: ctx.startedAt,
+		armedAt: row.updatedAt.getTime()
+	});
+	if (!step) return;
+	row.state = step.state;
+	if (!step.act) {
+		out.updates.push({ id: row.id, state: step.state });
+		return;
+	}
+	const on = onNow(ctx.status);
+	const name = selectionName(on);
+	const late = underWay(ctx.status.scores, ctx.startedAt, ctx.ts.getTime());
+	out.intents.push({
+		trigger: row,
+		action: RESTART_SKIP,
+		params: { rule: RESTART_SKIP_KEY, startedAt: ctx.startedAt, ...on },
+		target: name,
+		okMessage: `Skipped ${name}.`,
+		detail: { startedAt: new Date(ctx.startedAt).toISOString(), ...on },
+		steamId: null,
+		dedupeKey: key(row, 'boot', ctx.startedAt),
+		...(late
+			? {
+					watchOnly: `Came up on ${name} with the match under way when first seen, so it plays on.`
+				}
+			: {})
+	});
+	if (late) {
+		out.updates.push({ id: row.id, lastResult: `Left ${name} to play.`, state: step.state });
+		return;
+	}
+	row.lastFiredAt = ctx.ts;
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `Checking ${name}, the map the server came up on.`,
+		state: step.state
+	});
+}
+
 async function evalRiskKick(
 	env: Env,
 	ctx: TickContext,
@@ -945,7 +1163,10 @@ async function evalRiskKick(
 	let n = 0;
 	let last = '';
 	const kicks: { p: Player; verdict: string }[] = [];
+	// A player on the rule's own list is never kicked by it, whatever it finds on them.
+	const exempt = new Set(cfg.exempt ?? []);
 	for (const p of ctx.riskCheck) {
+		if (exempt.has(p.steamId)) continue;
 		const l = ctx.signals.get(p.steamId);
 		const verdict = riskKickVerdict(cfg, {
 			profile: ctx.profiles.get(p.steamId) ?? null,
@@ -1001,6 +1222,13 @@ async function evalNameFilter(
 	// A flag rule does not (the whole server is back after every map change: no new alerts).
 	const back = cfg.action === 'kick' ? ctx.returned : [];
 	if (!ctx.joined.length && !ctx.renamed.length && !back.length) return;
+	// A rule that spares reserved slots acts on nobody until the worker has read who holds one (the
+	// first look after a start reads the list only after the rules): a wrong kick is worse than a
+	// name let by. Said on the rule, so a server whose list cannot be read is not silently idle.
+	if (cfg.spareReserved && !ctx.reservedLoaded) {
+		out.updates.push({ id: row.id, lastResult: 'Waiting for the reserved slots to be read' });
+		return;
+	}
 	const named = [
 		...new Map([...ctx.joined, ...ctx.renamed, ...back].map((p) => [p.steamId, p])).values()
 	];
@@ -1054,13 +1282,19 @@ async function evalPingKick(
 ) {
 	if (!ctx.playersObserved) return;
 	const previous = row.state as PingKickState | null;
-	const { state, kicks } = pingKickStep(
+	// A rule that spares reserved slots leaves their holders out, as if they were not on, so a
+	// streak they had ends. Until the worker has read the reserved list it cannot tell who they
+	// are and kicks nobody: a kick that falls due meanwhile waits for the read, its streak going on.
+	const waits = !!cfg.spareReserved && !ctx.reservedLoaded;
+	const { state, kicks: due } = pingKickStep(
 		cfg,
 		previous,
-		ctx.players,
+		cfg.spareReserved ? ctx.players.filter((p) => !ctx.reserved.has(p.steamId)) : ctx.players,
 		ctx.ts.getTime(),
 		2 * Math.max(ctx.playersIntervalMs, 1000) + 1000
 	);
+	if (waits) for (const steamId of due) state.players[steamId].fired = false;
+	const kicks = waits ? [] : due;
 	// The state is written with any intents, and kept in the cached row for the next poll.
 	row.state = state;
 	if (
@@ -1099,6 +1333,14 @@ async function evalPingKick(
 				kicks.length === 1
 					? `Kicking ${ctx.players.find((p) => p.steamId === kicks[0])?.name}: high ping`
 					: `Kicking ${kicks.length} players: high ping`
+		};
+	// Said on the rule while a kick waits, so a server whose reserved slots cannot be read is not
+	// silently idle; it rides on the state write the streak makes anyway.
+	else if (waits && due.length)
+		out.updates[out.updates.length - 1] = {
+			id: row.id,
+			state,
+			lastResult: 'Waiting for the reserved slots to be read'
 		};
 }
 
@@ -1334,7 +1576,8 @@ function evalRestartNotice(
 	const hit = restartNoticeStage(cfg, row.state as RestartNoticeState | null, {
 		startedAt: ctx.startedAt,
 		playerCount: ctx.status.playerCount,
-		now: ctx.ts.getTime()
+		now: ctx.ts.getTime(),
+		schedule: restartScheduleOf(ctx.server.restartSchedule, ctx.restartTimeUtc)
 	});
 	if (!hit) return;
 	const message = renderTemplate(
@@ -1361,6 +1604,95 @@ function evalRestartNotice(
 		lastResult: `Sending: ${message}`,
 		state: hit.state
 	});
+}
+
+const SHUFFLE_WHEN: Record<ShuffleWhen, string> = {
+	now: 'now',
+	'before-restart': 'for after the restart',
+	'after-restart': 'after the restart'
+};
+
+/** Once a run, and once when saved: see shuffleStep. The shuffle itself is the delivery's. */
+function evalRotationShuffle(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: RotationShuffleConfig,
+	out: Evaluation
+) {
+	const now = ctx.ts.getTime();
+	const w = ctx.startedAt
+		? restartWindow(
+				new Date(ctx.startedAt).toISOString(),
+				restartScheduleOf(ctx.server.restartSchedule, ctx.restartTimeUtc),
+				now
+			)
+		: null;
+	const prev = rotationShuffleState(row.state);
+	const step = shuffleStep(prev, { startedAt: ctx.startedAt, restartDue: !!w?.due });
+	if (!step) return;
+	row.state = step.state;
+	if (!step.when) {
+		out.updates.push({ id: row.id, state: step.state });
+		return;
+	}
+	out.intents.push({
+		trigger: row,
+		action: ROTATION_SHUFFLE,
+		params: {
+			maps: cfg.maps,
+			when: step.when,
+			playing: ctx.status.map,
+			now: ctx.status.rotationNow
+		},
+		target: 'rotation',
+		okMessage: 'Rotation shuffled.',
+		detail: { when: step.when, startedAt: new Date(ctx.startedAt).toISOString() },
+		steamId: null,
+		// once a run before or after a restart; one on saving (no state yet, whenever in the run it
+		// comes), every time it is saved
+		dedupeKey: key(row, step.when, step.state.boot, prev ? 0 : ctx.ts.getTime())
+	});
+	// Marked now, with the state, so a slow delivery cannot shuffle twice.
+	row.lastFiredAt = ctx.ts;
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `Shuffling ${SHUFFLE_WHEN[step.when]}.`,
+		state: step.state
+	});
+}
+
+/**
+ * Every `everyMinutes` while the rule's players are on, one change of the weather (weather-cycle.ts).
+ * The row moves on at the decision, as a broadcast's does, so the cadence holds whatever delivery
+ * makes of it.
+ */
+function evalWeatherCycle(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: WeatherCycleConfig,
+	out: Evaluation
+) {
+	if (ctx.status.playerCount < cfg.minPlayers) return;
+	if (row.lastFiredAt && ctx.ts.getTime() - row.lastFiredAt.getTime() < cfg.everyMinutes * 60_000)
+		return;
+	const next = nextLighting(cfg, weatherCycleIndex(row.state), ctx.status.lighting);
+	if (!next) return;
+	const name = lightingName(next.lighting);
+	out.intents.push({
+		trigger: row,
+		action: WEATHER_CYCLE,
+		params: { rule: weatherCycleSettingsKey(cfg), lighting: next.lighting },
+		target: name,
+		okMessage: `Changed the weather to ${name}.`,
+		detail: { lighting: next.lighting, from: ctx.status.lighting },
+		steamId: null,
+		dedupeKey: key(row, ctx.ts.getTime())
+	});
+	const state = { index: next.index };
+	row.lastFiredAt = ctx.ts;
+	row.state = state;
+	out.updates.push({ id: row.id, lastFiredAt: ctx.ts, lastResult: `Changing to ${name}`, state });
 }
 
 /**
@@ -1451,6 +1783,237 @@ function evalAfkProtection(
 	out.updates.push(update);
 }
 
+/**
+ * Each AFK watch rule's clocks, in this worker's memory (afk-watch.ts says why not on the rule's
+ * row): a restart, or another worker taking over, starts them over. They start over as well when the
+ * rule's settings change, at the first look after the server was out of reach, and after a gap in
+ * the looks at the player list, a rule switched off and on again included: who played meanwhile is
+ * unknown. `note`: why the rule last said it holds what fell due, '' once it has acted since. A rule
+ * not looked at for AFK_WATCH_FORGET_MS (deleted, switched off, its server gone) is let go by the
+ * sweep.
+ */
+const afkWatchMemory = new Map<string, { key: string; state: AfkWatchState; note: string }>();
+const AFK_WATCH_FORGET_MS = 3600_000;
+let afkWatchSweptAt = 0;
+
+async function evalAfkWatch(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: AfkWatchConfig,
+	out: Evaluation,
+	read: StatsReader
+) {
+	if (!ctx.playersObserved) return;
+	const now = ctx.ts.getTime();
+	if (now - afkWatchSweptAt >= 60_000) {
+		afkWatchSweptAt = now;
+		for (const [id, m] of afkWatchMemory)
+			if (now - m.state.at > AFK_WATCH_FORGET_MS) afkWatchMemory.delete(id);
+	}
+	// The same fingerprint rides on every warning, kick and flag, for delivery to check against.
+	const rule = afkWatchSettingsKey(cfg);
+	const memory = afkWatchMemory.get(row.id);
+	const prev =
+		memory &&
+		memory.key === rule &&
+		!ctx.recovered &&
+		now >= memory.state.at &&
+		now - memory.state.at <= afkWatchGapMs(ctx.playersIntervalMs)
+			? memory.state
+			: null;
+	// The most anyone says is on: a status a few seconds old must not hide a full list.
+	const count = Math.max(ctx.status.playerCount || 0, ctx.players.length);
+	const exempt = new Set(cfg.exempt);
+	const step = afkWatchStep(cfg, prev, {
+		now,
+		live:
+			!ctx.matchEnd &&
+			count >= cfg.minPlayers &&
+			(ctx.status.scores ?? []).some((s) => s.score > 0),
+		// A rule that spares reserved slots acts on nobody until the worker has read who holds one
+		// (the first look after a start reads the list only after the rules): what falls due waits.
+		waiting: cfg.spareReserved && !ctx.reservedLoaded,
+		players: ctx.players
+			.filter((p) => /^\d{17}$/.test(p.steamId))
+			.map((p) => ({
+				steamId: p.steamId,
+				kills: p.kills,
+				deaths: p.deaths,
+				cash: p.cash,
+				spared: exempt.has(p.steamId) || (cfg.spareReserved && ctx.reserved.has(p.steamId))
+			}))
+	});
+	const { warn, act } = step;
+	// Why it holds is said on the rule once, so a server whose reserved slots cannot be read, or
+	// that reports no cash, is not silently idle.
+	const held =
+		step.held === 'reserved'
+			? 'Waiting for the reserved slots to be read'
+			: step.held === 'cash'
+				? `Holding: nobody here has earned cash in ${cfg.minutes} min, so the server may not report it`
+				: '';
+	const note = warn.length || act.length ? '' : held || (memory?.note ?? '');
+	const byId = new Map(ctx.players.map((p) => [p.steamId, p]));
+	const kick = cfg.action === 'kick';
+	const stats = await statsFor(read, [
+		...warn.map((d) => ({ steamId: d.steamId, text: cfg.warnMessage })),
+		...(kick ? act.map((d) => ({ steamId: d.steamId, text: cfg.reason })) : [])
+	]);
+	const say = (text: string, p: Player, idleMs: number, max: number) =>
+		renderTemplate(
+			text,
+			vars(ctx, p, statsOf(stats, p.steamId), { idle: idleMinutes(idleMs), limit: cfg.minutes }),
+			max
+		);
+	// What the player's counters were when it was decided: delivery drops it if they have moved.
+	const seen = (p: Player) => ({ kills: p.kills, deaths: p.deaths, cash: p.cash });
+	for (const d of warn) {
+		const p = byId.get(d.steamId)!;
+		out.intents.push({
+			trigger: row,
+			action: 'whisper',
+			params: {
+				steamId: p.steamId,
+				message: say(cfg.warnMessage, p, d.idleMs, MAX_CHAT),
+				rule,
+				seen: seen(p)
+			},
+			target: p.steamId,
+			okMessage: `Warned ${p.name}: idle ${idleMinutes(d.idleMs)} min.`,
+			detail: { name: p.name, stage: 'warn', idleMinutes: idleMinutes(d.idleMs) },
+			steamId: p.steamId,
+			dedupeKey: key(row, p.steamId, 'warn', d.since)
+		});
+	}
+	for (const d of act) {
+		const p = byId.get(d.steamId)!;
+		const verdict = `no kill, death or cash earned for ${idleMinutes(d.idleMs)} min of a live match`;
+		out.intents.push({
+			trigger: row,
+			action: kick ? 'kick' : AFK_WATCH_FLAG,
+			params: kick
+				? {
+						steamId: p.steamId,
+						reason: say(cfg.reason, p, d.idleMs, MAX_REASON),
+						rule,
+						seen: seen(p)
+					}
+				: { rule, seen: seen(p) },
+			target: p.steamId,
+			okMessage: `${kick ? 'Kicked' : 'Flagged'} ${p.name}: ${verdict}.`,
+			detail: { name: p.name, verdict, idleMinutes: idleMinutes(d.idleMs) },
+			steamId: p.steamId,
+			dedupeKey: key(row, p.steamId, d.since)
+		});
+	}
+	// The clocks move on only once this look's warnings, kicks and flags are queued: a look whose
+	// write fails is decided again at the next one, rather than remembered as done.
+	(out.afterCommit ??= []).push(() =>
+		afkWatchMemory.set(row.id, { key: rule, state: step.state, note })
+	);
+	const named = (list: { steamId: string; idleMs: number }[], verb: string) =>
+		list.length === 1
+			? `${verb} ${byId.get(list[0].steamId)!.name}: idle ${idleMinutes(list[0].idleMs)} min`
+			: list.length
+				? `${verb} ${list.length} players: idle`
+				: '';
+	const result = [
+		named(act, kick ? 'Kicking' : 'Flagging'),
+		named(warn, act.length ? 'warning' : 'Warning')
+	]
+		.filter(Boolean)
+		.join('; ');
+	if (result) out.updates.push({ id: row.id, lastFiredAt: ctx.ts, lastResult: result });
+	else if (held && held !== memory?.note) out.updates.push({ id: row.id, lastResult: held });
+}
+
+/**
+ * A Bounty rule at each look: a match end starts the runs over, and an open bounty lapses when the
+ * match ends, when its player's session closes (gone past the leave grace, so a map change's empty
+ * list is no leave), or at the first look after the server was out of reach (whatever happened
+ * meanwhile, its restart among it, is unknown). Kills set and claim bounties as they arrive
+ * (feed-events.ts). The bounty is let go here, before the look is written, so no kill claims it
+ * meanwhile; a look whose write fails leaves it open on the rule's row only, where a restart reads
+ * it back and the next look or claim lapses it (a claim checks the bounty's match).
+ */
+function evalBounty(
+	env: Env,
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: BountyConfig,
+	out: Evaluation
+) {
+	const { version, track } = bountyTrack(row);
+	if (ctx.matchEnd || ctx.recovered) track.runs.clear();
+	const open = track.open;
+	if (!open) return;
+	const why: BountyLapse | null = ctx.matchEnd
+		? 'match'
+		: ctx.recovered
+			? 'lost'
+			: ctx.playersObserved && ctx.present && !ctx.present.has(open.steamId)
+				? 'left'
+				: null;
+	if (!why) return;
+	track.open = null;
+	const lapse = bountyLapse(
+		row,
+		cfg,
+		version,
+		open,
+		why,
+		ctx.ts,
+		ctx.matchEnd?.map ?? ctx.status.map
+	);
+	out.intents.push(lapse.intent);
+	out.updates.push(lapse.update);
+	const serverName = ctx.status.serverName || ctx.server.name;
+	(out.afterCommit ??= []).push(
+		() => void notifyBounty(env, ctx.server.id, serverName, [lapse.card])
+	);
+}
+
+/**
+ * What a bounty lapsing writes: the note in the trail (Recent actions, the Automation mirror), the
+ * rule's row with no bounty open, and the card for a Bounties channel, posted once it is written.
+ */
+export function bountyLapse(
+	row: TriggerRow,
+	cfg: BountyConfig,
+	version: string,
+	open: OpenBounty,
+	why: BountyLapse,
+	at: Date,
+	map: string | null
+): { intent: Intent; update: TriggerUpdate; card: BountyCard } {
+	const state = bountyState(version, null);
+	row.state = state;
+	const message = lapseWords(open, why);
+	return {
+		intent: {
+			trigger: row,
+			action: BOUNTY_LAPSE,
+			params: {},
+			target: open.steamId,
+			okMessage: message,
+			detail: { name: open.name, streak: open.streak, run: open.best, why },
+			steamId: null,
+			dedupeKey: key(row, 'lapse', open.steamId, open.setAt)
+		},
+		update: { id: row.id, lastFiredAt: at, lastResult: message, state },
+		card: {
+			kind: 'lapse',
+			at: at.toISOString(),
+			map: map || null,
+			reward: rewardWords(cfg),
+			orgWide: cfg.reward === 'slot' && cfg.scope === 'org',
+			name: open.name,
+			run: open.best,
+			why
+		}
+	};
+}
+
 // A match boundary is one tick, so the rule keeps no state: the end message then the start
 // message, each an outbox row keyed on the tick.
 // A match end the rule is holding until the server has its players on again, per rule (in memory
@@ -1464,6 +2027,8 @@ export function forgetRuleMemory(): void {
 	twoTeamsMemory.clear();
 	staffMoves.clear();
 	afkEmpty.clear();
+	afkWatchMemory.clear();
+	forgetBounties();
 }
 
 function evalMatchBroadcast(
@@ -1793,20 +2358,23 @@ export async function recordDelivery(
 	target: string,
 	outcome: 'ok' | 'error',
 	message: string,
-	detail: Record<string, unknown>
+	detail: Record<string, unknown>,
+	/** false: the rule's row only, no audit row (a delivered Death whisper: TRAIL_FAILURES_ONLY) */
+	audit = true
 ): Promise<void> {
-	await writeAudit(env, null, {
-		actorName: `trigger: ${row.triggerName}`,
-		server: { id: server.id, name: server.name },
-		orgId: server.orgId,
-		category: 'trigger',
-		action: `trigger.${row.triggerKind}`,
-		target,
-		outcome,
-		status: outcome === 'ok' ? 200 : 502,
-		message,
-		detail: { triggerId: row.triggerId, ...detail }
-	});
+	if (audit)
+		await writeAudit(env, null, {
+			actorName: `trigger: ${row.triggerName}`,
+			server: { id: server.id, name: server.name },
+			orgId: server.orgId,
+			category: 'trigger',
+			action: `trigger.${row.triggerKind}`,
+			target,
+			outcome,
+			status: outcome === 'ok' ? 200 : 502,
+			message,
+			detail: { triggerId: row.triggerId, ...detail }
+		});
 	if (row.triggerId)
 		await env.db
 			.update(triggers)
@@ -1824,6 +2392,30 @@ const NAME_REPLAY_MAX = 5000;
 const REPLAY_ROWS_MAX = 5000;
 /** The risk dry run judges at most this many players (the latest on), for its Steam lookups. */
 const RISK_REPLAY_MAX = 2000;
+
+/**
+ * Where a replay of a per-match rule starts: the start of the match already running at `from` (two
+ * minutes before it, as killsOfMatch reads a match), at most six hours back, else `from`.
+ */
+async function matchStartBefore(env: Env, serverId: string, from: Date): Promise<Date> {
+	const [open] = await env.db.execute<{ startedAt: Date | null }>(sql`
+		SELECT MIN(started_at) AS "startedAt" FROM matches
+		 WHERE server_id = ${serverId} AND started_at < ${from}
+		   AND (ended_at IS NULL OR ended_at >= ${from})`);
+	return new Date(
+		Math.max(
+			Math.min(
+				from.getTime(),
+				open?.startedAt ? new Date(open.startedAt).getTime() - 120_000 : Infinity
+			),
+			from.getTime() - 6 * 3600_000
+		)
+	);
+}
+
+/** A dry run's word on a daily restart time ("Restarts daily at 08:00 UTC, …. "); none for 24 hours up. */
+const restartsNote = (s: RestartSchedule): string =>
+	s.kind === 'daily' ? `Restarts ${describeRestartSchedule(s)}. ` : '';
 
 /** Replays the last 24 hours of this server's history against a rule. Touches nobody. */
 export async function dryRun(
@@ -1846,6 +2438,10 @@ export async function dryRun(
 	};
 	const push = (at: Date, text: string) => {
 		result.fires++;
+		note(at, text);
+	};
+	/** a line of the replay that is not a firing of its own (a bounty claimed or lapsed) */
+	const note = (at: Date, text: string) => {
 		if (result.items.length < 50) result.items.push({ at: at.toISOString(), text });
 	};
 	const joins = (withFaction = false) =>
@@ -1903,6 +2499,12 @@ export async function dryRun(
 		);
 		return result;
 	}
+	if (kind === 'afk_watch') {
+		result.notes.push(
+			"Players' kills, deaths and cash are not kept look by look, so idle stretches cannot be replayed. Set the rule to alert only to see live whom it would kick, under Actions and on Discord, without kicking anyone."
+		);
+		return result;
+	}
 	if (kind === 'risk_kick') {
 		const c = cfg as RiskKickConfig;
 		// Everyone on the server at any time in the window, not only the joins: the live rule
@@ -1951,6 +2553,8 @@ export async function dryRun(
 					)
 				: new Map<string, RiskPerformance>()
 		]);
+		const exempt = new Set(c.exempt ?? []);
+		let listed = 0;
 		for (const p of players) {
 			const l = signals.get(p.steamId);
 			const verdict = riskKickVerdict(c, {
@@ -1963,7 +2567,9 @@ export async function dryRun(
 				performance: performance.get(p.steamId),
 				now: to
 			});
-			if (verdict) push(seen.get(p.steamId)!.joinedAt, `kick ${p.name} (${p.steamId}): ${verdict}`);
+			if (!verdict) continue;
+			if (exempt.has(p.steamId)) listed++;
+			else push(seen.get(p.steamId)!.joinedAt, `kick ${p.name} (${p.steamId}): ${verdict}`);
 		}
 		if (!steamEnabled(env))
 			result.notes.push(
@@ -1972,17 +2578,28 @@ export async function dryRun(
 		result.notes.push(
 			`${players.length} distinct player${players.length === 1 ? '' : 's'} on the server in the window${players.length === RISK_REPLAY_MAX ? `, the latest ${RISK_REPLAY_MAX}` : ''}, each judged once.`
 		);
+		if (listed)
+			result.notes.push(
+				`${listed} more would be kicked but ${listed === 1 ? 'is a player' : 'are players'} it never kicks.`
+			);
 		return result;
 	}
 	if (kind === 'team_kill') {
 		const c = cfg as TeamKillConfig;
 		// Each team kill in the window, with the killer's running count in the match it arrived in:
 		// the rows carrying that match from two minutes before it opened (killsOfMatch), else, for
-		// a kill that came in with no match open, the other such kills of the hour before. A kill by
-		// a cause the rule does not count adds to no count and comes back with none.
-		const notCounted = JSON.stringify(teamKillNotCounted(c).map((x) => x.toLowerCase()));
-		const counts = (cause: SQL) =>
-			sql`(${cause} IS NULL OR lower(${cause}) NOT IN (SELECT jsonb_array_elements_text(${notCounted}::text::jsonb)))`;
+		// a kill that came in with no match open, the other such kills of the hour before. A kill the
+		// rule does not count (by its cause, or a crash) adds to no count and comes back with none.
+		const listed = teamKillNotCounted(c).map((x) => x.toLowerCase());
+		const notCounted = JSON.stringify(listed);
+		const crashes = listed.includes(VEHICLE_CRASH.toLowerCase());
+		// countsForTeamKill over the kill row `k`, with isVehicleCrash in SQL: no cause is no crash
+		const counts = (k: SQL) =>
+			sql`(${k}.cause IS NULL OR lower(${k}.cause) NOT IN (SELECT jsonb_array_elements_text(${notCounted}::text::jsonb)))${
+				crashes
+					? sql` AND NOT COALESCE(${k}.cause ILIKE 'Vehicle.%' AND ${k}.tags ? ${VEHICLE_CRASH}::text, false)`
+					: sql``
+			}`;
 		const rows = await env.db.execute<{
 			ts: Date;
 			killerName: string;
@@ -1990,14 +2607,15 @@ export async function dryRun(
 			victimName: string;
 			map: string | null;
 			cause: string | null;
+			tags: string[];
 			n: string | null;
 		}>(sql`
 			SELECT k.ts, k.killer_name AS "killerName", k.killer_steam_id AS "killerSteamId",
-			       k.victim_name AS "victimName", k.map, k.cause,
-			       CASE WHEN ${counts(sql`k.cause`)} THEN
+			       k.victim_name AS "victimName", k.map, k.cause, k.tags,
+			       CASE WHEN ${counts(sql`k`)} THEN
 			       (SELECT COUNT(*) FROM kills k2
 			         WHERE k2.server_id = k.server_id AND k2.killer_steam_id = k.killer_steam_id
-			           AND k2.team_kill AND ${counts(sql`k2.cause`)} AND k2.ts <= k.ts
+			           AND k2.team_kill AND ${counts(sql`k2`)} AND k2.ts <= k.ts
 			           AND k2.match_row IS NOT DISTINCT FROM k.match_row
 			           AND k2.ts >= COALESCE((SELECT m.started_at - interval '2 minutes' FROM matches m
 			                                    WHERE m.id = k.match_row AND m.server_id = k.server_id),
@@ -2010,7 +2628,10 @@ export async function dryRun(
 		const left = new Map<string, number>();
 		for (const r of rows) {
 			if (r.n === null) {
-				const label = causeLabel(r.cause);
+				const label =
+					crashes && isVehicleCrash({ cause: r.cause, tags: r.tags })
+						? notCountedLabel(VEHICLE_CRASH)
+						: causeLabel(r.cause);
 				left.set(label, (left.get(label) ?? 0) + 1);
 				continue;
 			}
@@ -2105,24 +2726,243 @@ export async function dryRun(
 			);
 		return result;
 	}
+	if (kind === 'death_whisper') {
+		const c = cfg as DeathWhisperConfig;
+		// Every death of the window through the live rule's own step, batch by batch as they came in,
+		// each batch judged against the player count of the server's last sample before it; the
+		// reserved slots are the list as it stands now. A message is picked at random, as live.
+		type DeathRow = {
+			ts: Date;
+			eventId: string;
+			map: string;
+			killer: string | null;
+			killerName: string | null;
+			victim: string;
+			victimName: string;
+			cause: string | null;
+			distanceM: number | null;
+			suicide: boolean;
+		};
+		const rows = await env.db.execute<DeathRow>(sql`
+			SELECT ts, event_id AS "eventId", map, killer_steam_id AS killer, killer_name AS "killerName",
+			       victim_steam_id AS victim, victim_name AS "victimName", cause,
+			       distance_m AS "distanceM", suicide
+			  FROM kills
+			 WHERE server_id = ${server.id} AND ts >= ${from}
+			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
+		const counts = await env.db.execute<{ ts: Date; n: number | null }>(sql`
+			SELECT ts, player_count AS n FROM samples
+			 WHERE server_id = ${server.id} AND ok AND ts >= ${new Date(from.getTime() - 10 * 60_000)}
+			 ORDER BY ts ASC`);
+		let reserved = new Set<string>();
+		if (c.spareReserved && readReserved) {
+			try {
+				reserved = new Set(await readReserved());
+			} catch {
+				result.notes.push('Could not read the reserved slots; nobody was spared for one.');
+			}
+		}
+		const sampled = counts.map((r) => ({ at: new Date(r.ts).getTime(), n: Number(r.n ?? 0) }));
+		const tracks: WhisperedTracks = new Map();
+		const passed = { few: 0, listed: 0, reserved: 0, cooling: 0 };
+		const players = new Set<string>();
+		let next = 0;
+		let on = 0;
+		for (let i = 0; i < rows.length;) {
+			const at = new Date(rows[i].ts).getTime();
+			let j = i;
+			while (j < rows.length && new Date(rows[j].ts).getTime() === at) j++;
+			for (; next < sampled.length && sampled[next].at <= at; next++) on = sampled[next].n;
+			const batch = (rows.slice(i, j) as DeathRow[]).map((r) => ({
+				...r,
+				own: deathVars({
+					killer: r.killer ? { steamId: r.killer, name: r.killerName ?? '' } : null,
+					victim: { steamId: r.victim },
+					cause: r.cause,
+					distanceM: r.distanceM === null ? null : Number(r.distanceM),
+					suicide: !!r.suicide
+				})
+			}));
+			const step = deathWhisperStep(
+				c,
+				tracks,
+				batch.map((r) => ({ steamId: r.victim, eventId: r.eventId, blank: deathBlanks(r.own) })),
+				{ now: at, on, reserved }
+			);
+			for (const k of Object.keys(passed) as (keyof typeof passed)[]) passed[k] += step.passed[k];
+			for (const p of step.picks) {
+				const r = batch.find((b) => b.eventId === p.eventId)!;
+				players.add(p.steamId);
+				const v = dryRunVars(
+					server.name,
+					{ name: r.victimName, steamId: r.victim },
+					{ ...r.own, ...(r.map ? { map: mapName(r.map) } : {}) }
+				);
+				push(
+					new Date(at),
+					`whisper ${r.victimName || r.victim} (${r.victim}): ${renderTemplate(c.messages[p.index], v, MAX_CHAT)}`
+				);
+			}
+			i = j;
+		}
+		const [feed] = await env.db
+			.select({ configured: sql<boolean>`feed_token_hash IS NOT NULL` })
+			.from(servers)
+			.where(eq(servers.id, server.id));
+		if (!feed?.configured)
+			result.notes.push(
+				'This server has no kill feed set up (Config tab), so the rule cannot see any deaths.'
+			);
+		const n = (x: number, one: string, many = `${one}s`) => `${x} ${x === 1 ? one : many}`;
+		result.notes.push(
+			`${n(rows.length, 'death')} in the window: ${n(result.fires, 'whisper')} to ${n(players.size, 'player')}.`
+		);
+		const why = [
+			passed.cooling && `${passed.cooling} inside a player's ${c.cooldownMinutes}-minute cooldown`,
+			passed.listed && `${passed.listed} of players on the rule's list`,
+			passed.reserved && `${passed.reserved} of players with a reserved slot`,
+			passed.few && `${passed.few} while fewer than ${c.minPlayers} were on`
+		].filter(Boolean);
+		if (why.length) result.notes.push(`Passed over: ${why.join(', ')}.`);
+		if (c.messages.length > 1)
+			result.notes.push('Each message is picked at random, so another run may show others.');
+		if (rows.length >= KILL_RATE_REPLAY_MAX)
+			result.notes.push(
+				`Replayed the first ${KILL_RATE_REPLAY_MAX.toLocaleString('en')} deaths of the window only.`
+			);
+		return result;
+	}
+	if (kind === 'bounty') {
+		const c = cfg as BountyConfig;
+		// Every kill of the window through the live rule's own step, batch by batch as they came in,
+		// from the start of a match already running when the window opens (at most six hours back), so
+		// a run at the window's edge is the live one. Each batch is judged against the player count of
+		// the server's last sample before it, and a marked player's bounty lapses when their session
+		// closed. Only what happened in the window is listed.
+		const since = await matchStartBefore(env, server.id, from);
+		const rows = await env.db.execute<{
+			ts: Date;
+			eventId: string;
+			matchRow: number | null;
+			killer: string | null;
+			killerName: string | null;
+			killerFaction: string | null;
+			victim: string;
+			victimName: string;
+			victimFaction: string | null;
+			suicide: boolean;
+			teamKill: boolean;
+		}>(sql`
+			SELECT ts, event_id AS "eventId", match_row AS "matchRow", killer_steam_id AS killer,
+			       killer_name AS "killerName", killer_faction AS "killerFaction",
+			       victim_steam_id AS victim, victim_name AS "victimName",
+			       victim_faction AS "victimFaction", suicide, team_kill AS "teamKill"
+			  FROM kills
+			 WHERE server_id = ${server.id} AND ts >= ${since}
+			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
+		const counts = await env.db.execute<{ ts: Date; n: number | null }>(sql`
+			SELECT ts, player_count AS n FROM samples
+			 WHERE server_id = ${server.id} AND ok AND ts >= ${new Date(since.getTime() - 10 * 60_000)}
+			 ORDER BY ts ASC`);
+		const leaves = await env.db.execute<{ steamId: string; leftAt: Date }>(sql`
+			SELECT steam_id AS "steamId", left_at AS "leftAt" FROM player_sessions
+			 WHERE server_id = ${server.id} AND left_at >= ${since}
+			 ORDER BY left_at ASC LIMIT ${NAME_SESSIONS_MAX}`);
+		const sampled = counts.map((r) => ({ at: new Date(r.ts).getTime(), n: Number(r.n ?? 0) }));
+		let next = 0;
+		let on = 0;
+		const events: BountyReplayEvent[] = [];
+		for (let i = 0; i < rows.length;) {
+			const at = new Date(rows[i].ts).getTime();
+			let j = i;
+			while (j < rows.length && new Date(rows[j].ts).getTime() === at) j++;
+			for (; next < sampled.length && sampled[next].at <= at; next++) on = sampled[next].n;
+			const batch = rows.slice(i, j);
+			events.push({
+				kind: 'kills',
+				at,
+				match: matchKey(batch[0].matchRow === null ? null : Number(batch[0].matchRow), at),
+				players: on,
+				kills: batch.map((r): BountyKill => ({
+					eventId: r.eventId,
+					killer: r.killer
+						? { steamId: r.killer, name: r.killerName || r.killer, faction: r.killerFaction }
+						: null,
+					victim: { steamId: r.victim, name: r.victimName, faction: r.victimFaction },
+					suicide: !!r.suicide,
+					teamKill: !!r.teamKill
+				}))
+			});
+			i = j;
+		}
+		for (const l of leaves)
+			events.push({ kind: 'left', at: new Date(l.leftAt).getTime(), steamId: l.steamId });
+		// a leave dated to the same moment as a batch comes after it: a player is seen, then gone
+		events.sort((a, b) => a.at - b.at || (a.kind === b.kind ? 0 : a.kind === 'kills' ? -1 : 1));
+		const { outcomes, open } = bountyReplay(c, events);
+		const reward = rewardWords(c);
+		const slot = c.reward === 'slot';
+		const counted = { set: 0, claim: 0, lapse: 0 };
+		for (const o of outcomes) {
+			if (o.at < from.getTime()) continue;
+			counted[o.kind]++;
+			const at = new Date(o.at);
+			const b = o.bounty;
+			if (o.kind === 'set') {
+				const v = keptVars(
+					dryRunVars(
+						server.name,
+						{ name: b.name, steamId: b.steamId },
+						{
+							target: b.name,
+							streak: b.streak,
+							reward,
+							days: slot ? c.slotDays : '',
+							until: slot ? dateOf(new Date(o.at + c.slotDays * 86400_000)) : ''
+						}
+					)
+				);
+				push(
+					at,
+					`bounty on ${b.name} (${b.streak} kills, ${o.players} on): ${renderTemplate(c.setMessage, v, MAX_CHAT)}`
+				);
+			} else if (o.kind === 'claim')
+				note(
+					at,
+					`claimed by ${o.claimer.name || o.claimer.steamId}: ${b.name} after a run of ${b.best}${slot ? `, ${reward}` : ''}`
+				);
+			else
+				note(
+					at,
+					o.why === 'left'
+						? `lapsed: ${b.name} left (a run of ${b.best})`
+						: `lapsed: the match ended, ${b.name} on a run of ${b.best}`
+				);
+		}
+		const [feed] = await env.db
+			.select({ configured: sql<boolean>`feed_token_hash IS NOT NULL` })
+			.from(servers)
+			.where(eq(servers.id, server.id));
+		if (!feed?.configured)
+			result.notes.push(
+				'This server has no kill feed set up (Config tab), so the rule cannot see any kills.'
+			);
+		const n = (x: number, one: string, many = `${one}s`) => `${x} ${x === 1 ? one : many}`;
+		result.notes.push(
+			`${n(counted.set, 'bounty', 'bounties')} set, ${counted.claim} claimed, ${counted.lapse} lapsed${open ? ', one still open' : ''}. Runs start over at each match, and nobody is marked while the server's samples show fewer than ${c.minPlayers} on.`
+		);
+		if (rows.length >= KILL_RATE_REPLAY_MAX)
+			result.notes.push(
+				`Replayed the first ${KILL_RATE_REPLAY_MAX.toLocaleString('en')} kills only.`
+			);
+		return result;
+	}
 	if (kind === 'kill_distance') {
 		const c = cfg as KillDistanceConfig;
 		// The kills of the window the rule counts, per match as the live rule counts them, from the
 		// start of a match already running when the window opens (at most six hours back), so a count
 		// at the window's edge is the live one. Only what happened in the window is listed.
-		const [open] = await env.db.execute<{ startedAt: Date | null }>(sql`
-			SELECT MIN(started_at) AS "startedAt" FROM matches
-			 WHERE server_id = ${server.id} AND started_at < ${from}
-			   AND (ended_at IS NULL OR ended_at >= ${from})`);
-		const since = new Date(
-			Math.max(
-				Math.min(
-					from.getTime(),
-					open?.startedAt ? new Date(open.startedAt).getTime() - 120_000 : Infinity
-				),
-				from.getTime() - 6 * 3600_000
-			)
-		);
+		const since = await matchStartBefore(env, server.id, from);
 		// from 0 m a kill without a distance counts too
 		const far = c.minDistanceM > 0 ? sql`AND distance_m >= ${c.minDistanceM}` : sql``;
 		const rows = await env.db.execute<{
@@ -2306,15 +3146,101 @@ export async function dryRun(
 			);
 		return result;
 	}
-	if (kind === 'restart_notice') {
-		const c = cfg as RestartNoticeConfig;
+	if (kind === 'live_name') {
 		const [live] = await env.db
-			.select({ startedAt: serverLive.startedAt, players: serverLive.playerCount })
+			.select({ status: serverLive.status })
 			.from(serverLive)
 			.where(eq(serverLive.serverId, server.id))
 			.limit(1);
+		const status = live?.status as Status | null | undefined;
+		if (status) push(to, `name: ${liveName(cfg as LiveNameConfig, status)}`);
+		else
+			result.notes.push('The worker has not seen this server yet, so there is no score to show.');
+		result.notes.push(
+			'Nothing to replay: the rule writes the name from what the server shows at each look, whenever it changes and at most once a minute. Switched off, it puts the name back without the appended part.'
+		);
+		return result;
+	}
+	if (kind === 'restart_skip') {
+		const [live] = await env.db
+			.select({ startedAt: serverLive.startedAt, restartTimeUtc: serverLive.restartTimeUtc })
+			.from(serverLive)
+			.where(eq(serverLive.serverId, server.id))
+			.limit(1);
+		if (!live?.startedAt) {
+			result.notes.push(
+				'The worker has not read this server’s uptime yet (GET /v1/health), so it cannot see a restart.'
+			);
+			return result;
+		}
+		const schedule = restartScheduleOf(server.restartSchedule, live.restartTimeUtc);
+		const w = restartWindow(live.startedAt.toISOString(), schedule, to.getTime());
+		if (w) push(w.due ? to : new Date(w.dueAt), 'after the restart: skip the map it comes up on');
+		// What the server came up on this time: the first look of the run.
+		const [first] = await env.db
+			.select({ map: samples.map, experiences: samples.experiences, lighting: samples.lighting })
+			.from(samples)
+			.where(
+				and(eq(samples.serverId, server.id), eq(samples.ok, true), gte(samples.ts, live.startedAt))
+			)
+			.orderBy(asc(samples.ts))
+			.limit(1);
+		const cameUp = first?.map
+			? `; it came up on ${selectionName({
+					map: first.map,
+					experiences: first.experiences ? first.experiences.split('+') : [],
+					lighting: first.lighting ?? ''
+				})}`
+			: '';
+		result.notes.push(
+			`${restartsNote(schedule)}Up ${fmtUptime(w?.upMs ?? 0)}${cameUp}. Times shown are the coming restart, not a replay.`
+		);
+		result.notes.push(
+			'At the first look after each restart the rule reads the rotation from the server and ends the match only if the map and modes it came up on are not in it. It acts from the next restart after it is switched on.'
+		);
+		return result;
+	}
+	if (kind === 'rotation_shuffle') {
+		const c = cfg as RotationShuffleConfig;
+		const [live] = await env.db
+			.select({ startedAt: serverLive.startedAt, restartTimeUtc: serverLive.restartTimeUtc })
+			.from(serverLive)
+			.where(eq(serverLive.serverId, server.id))
+			.limit(1);
+		const schedule = restartScheduleOf(server.restartSchedule, live?.restartTimeUtc);
 		const w = live?.startedAt
-			? restartWindow(live.startedAt.toISOString(), RESTART_AFTER_HOURS, to.getTime())
+			? restartWindow(live.startedAt.toISOString(), schedule, to.getTime())
+			: null;
+		if (!w || !live?.startedAt)
+			result.notes.push(
+				'The worker has not read this server’s uptime yet (GET /v1/health), so there is nothing to project.'
+			);
+		else {
+			push(w.due ? to : new Date(w.dueAt), 'shuffle in the last round, for after the restart');
+			const restart = schedule.kind === 'daily' ? 'the daily restart' : 'the 24-hour restart';
+			result.notes.push(
+				`${restartsNote(schedule)}Up ${fmtUptime(w.upMs)}; ${w.due ? `${restart} comes when this round ends` : `${restart} is due in ${fmtUptime(w.untilDueMs ?? 0)}`}. A restart that comes first (a set restart time, a crash, one from the host's panel) is followed by a shuffle once the server is back.`
+			);
+		}
+		result.notes.push(
+			`Maps in turn: ${c.maps.length ? `${c.maps.map(mapName).join(', ')}, then any other in the order the rotation has it` : 'in the order the rotation has them'}; each map's control zones in turn as well. Saving the rule shuffles once straight away.`
+		);
+		return result;
+	}
+	if (kind === 'restart_notice') {
+		const c = cfg as RestartNoticeConfig;
+		const [live] = await env.db
+			.select({
+				startedAt: serverLive.startedAt,
+				players: serverLive.playerCount,
+				restartTimeUtc: serverLive.restartTimeUtc
+			})
+			.from(serverLive)
+			.where(eq(serverLive.serverId, server.id))
+			.limit(1);
+		const schedule = restartScheduleOf(server.restartSchedule, live?.restartTimeUtc);
+		const w = live?.startedAt
+			? restartWindow(live.startedAt.toISOString(), schedule, to.getTime())
 			: null;
 		if (!w || !live?.startedAt) {
 			result.notes.push(
@@ -2322,7 +3248,7 @@ export async function dryRun(
 			);
 			return result;
 		}
-		const dueAt = new Date(live.startedAt.getTime() + RESTART_AFTER_HOURS * 3600_000);
+		const dueAt = new Date(w.dueAt);
 		const v = dryRunVars(server.name, null, {
 			players: live.players,
 			uptime: fmtUptime(w.upMs)
@@ -2339,7 +3265,7 @@ export async function dryRun(
 			`${w.due ? 'already ' : ''}broadcast: ${renderTemplate(c.message, { ...v, minutes: 0 }, MAX_CHAT)}`
 		);
 		result.notes.push(
-			`Up ${fmtUptime(w.upMs)}; the restart window ${w.due ? 'is open: the game restarts when this round ends' : `opens in ${fmtUptime(w.untilDueMs ?? 0)}`}. Times shown are the coming cycle, not a replay; each stage goes once per game start${c.repeatMinutes ? `, the main message again every ${c.repeatMinutes} min while the window stays open` : ''}, and only with at least ${c.minPlayers} on.`
+			`${restartsNote(schedule)}Up ${fmtUptime(w.upMs)}; the restart window ${w.due ? 'is open: the game restarts when this round ends' : `opens in ${fmtUptime(w.untilDueMs ?? 0)}`}. Times shown are the coming cycle, not a replay; each stage goes once per game start${c.repeatMinutes ? `, the main message again every ${c.repeatMinutes} min while the window stays open` : ''}, and only with at least ${c.minPlayers} on.`
 		);
 		return result;
 	}
@@ -2351,6 +3277,7 @@ export async function dryRun(
 			max: samples.maxPlayers,
 			map: samples.map,
 			experiences: samples.experiences,
+			lighting: samples.lighting,
 			scores: samples.scores
 		})
 		.from(samples)
@@ -2488,17 +3415,24 @@ export async function dryRun(
 				result.notes.push('Could not read the reserved slots; nobody was spared for one.');
 			}
 		}
+		const exempt = new Set(c.exempt ?? []);
 		let spared = 0;
+		let listed = 0;
 		for (const r of rows) {
 			const v = nameVerdict(c, r.name);
 			if (!v) continue;
-			if (reserved.has(r.steamId)) spared++;
+			if (exempt.has(r.steamId)) listed++;
+			else if (reserved.has(r.steamId)) spared++;
 			else push(new Date(r.joinedAt), `${c.action} ${r.name} (${r.steamId}): ${v.verdict}`);
 		}
 		if (rows.length) result.from = new Date(rows[rows.length - 1].joinedAt).toISOString();
 		result.notes.push(
 			`${rows.length} name${rows.length === 1 ? '' : 's'} checked: everyone who has played here${rows.length === NAME_REPLAY_MAX ? `, the latest ${NAME_REPLAY_MAX}` : ''}, under each name they used.`
 		);
+		if (listed)
+			result.notes.push(
+				`${listed} more would match but ${listed === 1 ? 'is a player' : 'are players'} it never acts on.`
+			);
 		if (spared)
 			result.notes.push(
 				`${spared} more would match but hold${spared === 1 ? 's' : ''} a reserved slot.`
@@ -2542,6 +3476,40 @@ export async function dryRun(
 			ends.length
 				? `${ends.length} match${ends.length === 1 ? '' : 'es'} ended in the window. Times shown are the sample that first saw the reset; live, the rule fires one poll after the round ends.`
 				: 'No match ended in the window: the map never changed and the scores never fell back.'
+		);
+		return result;
+	}
+	if (kind === 'weather_cycle') {
+		const c = cfg as WeatherCycleConfig;
+		let last: Date | null = null;
+		let index = -1;
+		/** what the server would show: the last change, until the samples show another map or lighting */
+		let showing = '';
+		let seen = '';
+		for (const r of rows) {
+			if (!r.ok) continue;
+			const lighting = r.lighting ?? '';
+			if (`${r.map}|${lighting}` !== seen) {
+				seen = `${r.map}|${lighting}`;
+				showing = lighting;
+			}
+			if ((r.count ?? 0) < c.minPlayers) continue;
+			if (last && r.ts.getTime() - last.getTime() < c.everyMinutes * 60_000) continue;
+			const from = showing ? lightingName(showing) : 'the lighting on';
+			if (c.random) {
+				last = r.ts;
+				push(r.ts, `weather (${r.count} on): ${from} → another at random`);
+				continue;
+			}
+			const next = nextLighting(c, index, showing);
+			if (!next) continue;
+			last = r.ts;
+			index = next.index;
+			showing = next.lighting;
+			push(r.ts, `weather (${r.count} on): ${from} → ${lightingName(next.lighting)}`);
+		}
+		result.notes.push(
+			`Times shown are the samples a change fell due at, with at least ${c.minPlayers} on. A new map comes up on its rotation entry's own lighting, which the rule changes at its next turn; a lighting the server does not list is not sent.`
 		);
 		return result;
 	}

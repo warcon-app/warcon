@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { watchLive } from '$lib/live';
 	import { fmtNum, mapName } from '$lib/format';
+	import { can } from '$lib/capabilities';
 	import { setHealth } from '$lib/health.svelte';
+	import AnnounceDialog from '$lib/components/AnnounceDialog.svelte';
 	import MapArt from '$lib/components/MapArt.svelte';
 	import Pulse from '$lib/components/Pulse.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
@@ -124,11 +126,20 @@
 		orgFilter = '';
 		show = 'all';
 	};
+
+	/** one message to several servers at once, for whoever may chat on one of them */
+	let canAnnounce = $derived(data.servers.some((s) => can(s.caps, 'chat.send')));
+	let announcing = $state(false);
 </script>
 
 <svelte:head><title>Dashboard · {data.appName}</title></svelte:head>
 
-<h1 class="mb-5 text-xl font-semibold tracking-tight">Dashboard</h1>
+<div class="mb-5 flex flex-wrap items-center gap-3">
+	<h1 class="text-xl font-semibold tracking-tight">Dashboard</h1>
+	{#if canAnnounce}
+		<button class="ml-auto btn" onclick={() => (announcing = true)}>Announce</button>
+	{/if}
+</div>
 
 {#if !data.servers.length}
 	<div class="callout">
@@ -250,4 +261,12 @@
 			{/each}
 		</div>
 	{/if}
+{/if}
+
+{#if announcing}
+	<AnnounceDialog
+		servers={data.servers}
+		orgId={orgFilter || data.scope?.id || null}
+		onclose={() => (announcing = false)}
+	/>
 {/if}

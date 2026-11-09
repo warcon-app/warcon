@@ -57,12 +57,33 @@ export interface DesiredEntry {
 	listId: string;
 	/** the list's server, when the list belongs to one server; null for an org list */
 	serverId: string | null;
+	/** the org's default list of the kind; an org list that is not is a reserved-slot group */
+	isDefault: boolean;
+	/** the list's name, which orders groups */
+	listName: string;
 }
 
 /**
+ * Whether a list is on at `now`. The default lists and the servers' own are always on; a group is
+ * on inside its window and never once archived. This and listOnAt (lists-sync.ts) are the only
+ * judges of it.
+ */
+export const isListOn = (
+	l: { archivedAt: Date | null; onFrom: Date | null; onUntil: Date | null },
+	now: Date
+): boolean =>
+	!l.archivedAt &&
+	(!l.onFrom || l.onFrom.getTime() <= now.getTime()) &&
+	(!l.onUntil || now.getTime() < l.onUntil.getTime());
+
+/** The default list first, then the groups by name, then the server's own. */
+const attribution = (r: DesiredEntry): number => (r.serverId !== null ? 2 : r.isDefault ? 0 : 1);
+
+/**
  * The bans and reserved slots a server's lists want on it, one per player and kind: a player on
- * both the org list and the server's own list is wanted once, from the org list, so removing the
- * org entry leaves the server's entry in force (the next sync re-attributes the slot to it).
+ * several lists is wanted once, from the org's default list, else the first group by name, else
+ * the server's own, so taking them off one list leaves the others in force (the next sync
+ * re-attributes the slot, which is no game call).
  */
 export function desiredOf(rows: DesiredEntry[]): {
 	bans: DesiredBan[];
@@ -71,23 +92,41 @@ export function desiredOf(rows: DesiredEntry[]): {
 	const bans = new Map<string, DesiredBan>();
 	const reserved = new Map<string, DesiredReserve>();
 	const ordered = [...rows].sort(
-		(a, b) => Number(a.serverId !== null) - Number(b.serverId !== null)
+		(a, b) =>
+			attribution(a) - attribution(b) ||
+			a.listName.localeCompare(b.listName) ||
+			a.listId.localeCompare(b.listId)
 	);
 	for (const r of ordered) {
 		if (r.kind === 'ban') {
 			if (!bans.has(r.steamId))
 				bans.set(r.steamId, { steamId: r.steamId, reason: r.reason, listId: r.listId });
-		} else if (!reserved.has(r.steamId))
-			reserved.set(r.steamId, { steamId: r.steamId, listId: r.listId, member: false });
+			continue;
+		}
+		// a slot goes in as early as the most pressing list that wants it
+		const priority =
+			r.serverId !== null ? PRIORITY.server : r.isDefault ? PRIORITY.org : PRIORITY.group;
+		const held = reserved.get(r.steamId);
+		if (held) held.priority = Math.min(held.priority, priority);
+		else reserved.set(r.steamId, { steamId: r.steamId, listId: r.listId, member: false, priority });
 	}
 	return { bans: [...bans.values()], reserved: [...reserved.values()] };
 }
+
+/**
+ * Which adds go in first when a server's config document has no room for them all (the listener
+ * takes a body of 64 KB at most): a server's own slots, then the org's default list, then its
+ * groups, then members' slots. Lower goes first.
+ */
+export const PRIORITY = { server: 0, org: 1, group: 2, member: 3 } as const;
 
 export interface DesiredReserve {
 	steamId: string;
 	listId: string;
 	/** a slot the org hands its members, not an entry someone added */
 	member: boolean;
+	/** see PRIORITY */
+	priority: number;
 }
 
 export interface StateLike {
@@ -104,6 +143,7 @@ export interface PlanInput {
 	/** how long a failed add or remove waits before it is tried again */
 	retryAfterMs: number;
 	desired: { bans: DesiredBan[]; reserved: DesiredReserve[] };
+	/** the reserved list the server will start with: its config document, where the build has one */
 	observed: { reserved: string[] };
 	state: StateLike[];
 }
@@ -113,6 +153,8 @@ export interface PlanAdd {
 	steamId: string;
 	listId: string;
 	reason: string;
+	/** see PRIORITY */
+	priority: number;
 }
 
 export interface PlanRef {
@@ -189,7 +231,8 @@ export function planSync(i: PlanInput): SyncPlan {
 				kind: 'reserve' as const,
 				steamId: d.steamId,
 				listId: d.listId,
-				reason: ''
+				reason: '',
+				priority: d.priority
 			})),
 			new Set(i.observed.reserved),
 			byKind(i.state, 'reserve')

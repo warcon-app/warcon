@@ -80,11 +80,16 @@ export const suspendedProblem = (org: Pick<OrgRow, 'suspendedAt'>): string | nul
 	org.suspendedAt ? 'This organisation is suspended. Contact the site owner.' : null;
 
 /** Org owners may add a server while the org is active and under its limit; the site owner always may. */
-export async function assertCanAddServer(env: Env, org: OrgRow, actor: SessionUser): Promise<void> {
+export async function assertCanAddServer(
+	env: Env,
+	org: OrgRow,
+	actor: SessionUser,
+	db: DbOrTx = env.db
+): Promise<void> {
 	if (actor.role === 'owner') return;
 	const suspended = suspendedProblem(org);
 	if (suspended) throw new ApiError(403, suspended, 'suspended');
-	const [row] = await env.db.select({ n: count() }).from(servers).where(eq(servers.orgId, org.id));
+	const [row] = await db.select({ n: count() }).from(servers).where(eq(servers.orgId, org.id));
 	const limit = serverLimitFor(env, org);
 	if ((row?.n ?? 0) >= limit)
 		throw new ApiError(

@@ -1,7 +1,8 @@
 <script lang="ts">
 	// The organisation's reserved-slot list, laid out like a server's Reserved slots tab: how many
 	// hold a slot and who is playing right now, where the list stands on each server, the form to
-	// hand out a slot everywhere, and the roster itself.
+	// hand out a slot everywhere, and the roster itself. With `group`, the same for one of its
+	// reserved-slot groups, on the servers the group is for, under the group's own controls.
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api, errorMessage } from '$lib/api';
@@ -14,24 +15,42 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import SteamName from '$lib/components/SteamName.svelte';
 	import ImportCandidates from './ImportCandidates.svelte';
+	import ReserveTabs from './ReserveTabs.svelte';
+	import GroupBar from './GroupBar.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
-	import type { ListEntryView, ListSyncSummary, OrgListsView } from '$lib/types';
+	import type { ListEntryView, ListSyncSummary, OrgListsView, SlotGroupView } from '$lib/types';
 
 	let {
 		entries,
 		lists,
 		org,
-		servers
+		servers,
+		group = null
 	}: {
 		entries: ListEntryView[];
 		lists: OrgListsView;
 		org: { id: string; name: string };
 		/** the org's servers this user may open: who is playing is watched on these */
 		servers: { id: string; name: string }[];
+		/** one of the org's reserved-slot groups, shown in place of its own list */
+		group?: SlotGroupView | null;
 	} = $props();
 
-	let path = $derived(`/api/orgs/${encodeURIComponent(org.id)}/lists/reserve/entries`);
+	let path = $derived(
+		group
+			? `/api/orgs/${encodeURIComponent(org.id)}/slot-groups/${encodeURIComponent(group.id)}/entries`
+			: `/api/orgs/${encodeURIComponent(org.id)}/lists/reserve/entries`
+	);
+	/** a group switched off (or set for later) has no slots anywhere: its servers say so */
+	let groupOff = $derived(!!group && !group.on);
+	let where = $derived(
+		group
+			? group.everyServer
+				? `every server in ${org.name}`
+				: group.servers.map((s) => s.name).join(', ') || 'no server'
+			: ''
+	);
 	let owner = $derived(lists.role === 'owner');
 	let search = $state('');
 	let busy = $state(false);
@@ -60,17 +79,19 @@
 	let playing = $derived(entries.filter((e) => e.steamId in online).length);
 	/** where the list stands on each server: how many entries the panel has applied there */
 	let standing = $derived(
-		lists.servers.map((s) => {
-			const states = entries.map((e) => e.servers.find((x) => x.serverId === s.id)?.state);
-			return {
-				...s,
-				applied: states.filter((st) => st === 'applied' || st === 'local').length,
-				pending: states.filter((st) => st === 'pending' || st === 'failed').length,
-				href: servers.some((x) => x.id === s.id)
-					? `/server/${encodeURIComponent(s.id)}/slots`
-					: null
-			};
-		})
+		lists.servers
+			.filter((s) => !group || group.servers.some((g) => g.id === s.id))
+			.map((s) => {
+				const states = entries.map((e) => e.servers.find((x) => x.serverId === s.id)?.state);
+				return {
+					...s,
+					applied: states.filter((st) => st === 'applied' || st === 'local').length,
+					pending: states.filter((st) => st === 'pending' || st === 'failed').length,
+					href: servers.some((x) => x.id === s.id)
+						? `/server/${encodeURIComponent(s.id)}/slots`
+						: null
+				};
+			})
 	);
 	let dossierBase = $derived(
 		servers.length ? `/server/${encodeURIComponent(servers[0].id)}/players` : null
@@ -166,7 +187,15 @@
 				reason: newReason.trim(),
 				expiresAt: expiryIso(newExpiry, newCustom)
 			});
-			toast(describeSync(res.sync, `Reserved a slot for ${steamId}.`), 'ok', 8000);
+			toast(
+				group
+					? groupOff
+						? `Added ${steamId} to ${group.name}. They get the slot when it is switched on.`
+						: describeSync(res.sync, `Added ${steamId} to ${group.name}.`)
+					: describeSync(res.sync, `Reserved a slot for ${steamId}.`),
+				'ok',
+				8000
+			);
 			newId = '';
 			newReason = '';
 			newExpiry = '0';
@@ -219,10 +248,12 @@
 	async function remove(e: ListEntryView, name: string | null) {
 		const label = name ? `${name} (${e.steamId})` : e.steamId;
 		if (
-			!(await confirmDialog(`Withdraw the reserved slot for ${label} across ${org.name}?`, {
-				okLabel: 'Withdraw',
-				danger: true
-			}))
+			!(await confirmDialog(
+				group
+					? `Take ${label} out of ${group.name}?`
+					: `Withdraw the reserved slot for ${label} across ${org.name}?`,
+				{ okLabel: group ? 'Remove' : 'Withdraw', danger: true }
+			))
 		)
 			return;
 		busy = true;
@@ -231,7 +262,15 @@
 				'DELETE',
 				`${path}/${encodeURIComponent(e.steamId)}`
 			);
-			toast(describeSync(res.sync, `Withdrew the slot for ${e.steamId}.`), 'ok', 8000);
+			toast(
+				group
+					? groupOff
+						? `Took ${e.steamId} out of ${group.name}.`
+						: describeSync(res.sync, `Took ${e.steamId} out of ${group.name}.`)
+					: describeSync(res.sync, `Withdrew the slot for ${e.steamId}.`),
+				'ok',
+				8000
+			);
 			await invalidateAll();
 		} catch (err) {
 			toast(errorMessage(err), 'err');
@@ -241,9 +280,12 @@
 	}
 </script>
 
+<ReserveTabs {org} {lists} current={group?.id ?? null} />
+{#if group}<GroupBar {org} {group} servers={lists.servers} />{/if}
+
 <div class="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
 	<div class="panel">
-		<span class="label-sm">On the list</span>
+		<span class="label-sm">{group ? `In ${group.name}` : 'On the list'}</span>
 		<div class="flex items-baseline gap-2">
 			<span class="font-display text-[34px] leading-none font-semibold tabular"
 				>{entries.length}</span
@@ -254,19 +296,26 @@
 				>
 			{/if}
 		</div>
-		<div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[13px]">
-			<span><b>{picked}</b> reserved by hand</span>
-			{#if lists.membersReserved || members}<span><b>{members}</b> members</span>{/if}
-		</div>
-		<p class="note">
-			Anyone on the list skips the join queue on every server in {org.name}. The list has no length
-			limit; each server's MaxReservedSlots only sets how many player slots it holds back.
-		</p>
+		{#if group}
+			<p class="note">
+				While {group.name} is on, everyone here skips the join queue on {where}. Off, the group has
+				no effect on any server.
+			</p>
+		{:else}
+			<div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[13px]">
+				<span><b>{picked}</b> reserved by hand</span>
+				{#if lists.membersReserved || members}<span><b>{members}</b> members</span>{/if}
+			</div>
+			<p class="note">
+				Anyone on the list skips the join queue on every server in {org.name}. The list has no
+				length limit; each server's MaxReservedSlots only sets how many player slots it holds back.
+			</p>
+		{/if}
 	</div>
 
 	<div class="panel">
 		<div class="mb-3 flex flex-wrap items-center gap-2">
-			<span class="label-sm mb-0!">On the servers</span>
+			<span class="label-sm mb-0!">{group ? 'On its servers' : 'On the servers'}</span>
 			<button class="ml-auto btn btn-sm" disabled={busy || !lists.servers.length} onclick={syncNow}
 				>Sync now</button
 			>
@@ -285,20 +334,28 @@
 					</div>
 				</div>
 				<span class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-					<span><b>{s.applied}</b> <span class="text-mist-400">of {entries.length}</span></span>
-					{#if s.pending}<Badge tone="warn">{s.pending} pending</Badge>{/if}
+					{#if groupOff}
+						<span class="text-mist-400">group off</span>
+					{:else}
+						<span><b>{s.applied}</b> <span class="text-mist-400">of {entries.length}</span></span>
+						{#if s.pending}<Badge tone="warn">{s.pending} pending</Badge>{/if}
+					{/if}
 				</span>
 			</div>
 		{:else}
 			<p class="text-[13px] text-mist-400">
-				{org.name} has no servers yet, so there is nothing to push the list to. Entries are kept and applied
-				when a server is added.
+				{#if group}
+					{group.name} is for no server. Choose its servers with Servers… above.
+				{:else}
+					{org.name} has no servers yet, so there is nothing to push the list to. Entries are kept and
+					applied when a server is added.
+				{/if}
 			</p>
 		{/each}
 	</div>
 
 	<div class="flex flex-col panel">
-		<span class="label-sm">Reserve a slot everywhere</span>
+		<span class="label-sm">{group ? 'Add a player' : 'Reserve a slot everywhere'}</span>
 		<form
 			class="space-y-2"
 			onsubmit={(e) => {
@@ -317,7 +374,7 @@
 					bind:value={newId}
 				/>
 				<button type="submit" class="btn btn-primary" disabled={busy || !newId.trim()}
-					>Reserve</button
+					>{group ? 'Add' : 'Reserve'}</button
 				>
 			</div>
 			{#if previewId && preview}
@@ -329,7 +386,7 @@
 				class="input"
 				type="text"
 				maxlength="200"
-				placeholder="Note, e.g. donor, clan member (optional)"
+				placeholder={group ? 'Note (optional)' : 'Note, e.g. donor, clan member (optional)'}
 				bind:value={newReason}
 			/>
 			<div class="flex flex-wrap gap-2">
@@ -353,11 +410,16 @@
 			</div>
 		</form>
 		<p class="note">
-			Handed out on every server in {org.name}, now and when one is added later. A slot with an
-			expiry is withdrawn by the panel when the time comes. To reserve a slot on one server only,
-			use that server's Reserved slots tab.
+			{#if group}
+				While the group is on, a player added here gets the slot at once; while it is off, when it
+				is next switched on. A player with an expiry leaves the group when the time comes.
+			{:else}
+				Handed out on every server in {org.name}, now and when one is added later. A slot with an
+				expiry is withdrawn by the panel when the time comes. To reserve a slot on one server only,
+				use that server's Reserved slots tab.
+			{/if}
 		</p>
-		{#if owner}
+		{#if owner && !group}
 			<label class="mt-3 flex items-start gap-2 border-t border-white/8 pt-3 text-[13px]">
 				<input
 					type="checkbox"
@@ -378,11 +440,11 @@
 	</div>
 </div>
 
-{#if owner}<ImportCandidates kind="reserve" {org} {owner} />{/if}
+{#if owner && !group}<ImportCandidates kind="reserve" {org} {owner} />{/if}
 
 <div class="panel">
 	<div class="mb-3 flex flex-wrap items-center gap-2">
-		<span class="label-sm mb-0!">Who holds a slot</span>
+		<span class="label-sm mb-0!">{group ? `Who is in ${group.name}` : 'Who holds a slot'}</span>
 		<div class="flex w-full items-center gap-2 sm:ml-auto sm:w-auto sm:min-w-[320px]">
 			<input
 				class="input"
@@ -391,7 +453,8 @@
 				bind:value={search}
 			/>
 			<span class="shrink-0 text-[12.5px] whitespace-nowrap text-mist-600"
-				>{entries.length} slot{entries.length === 1 ? '' : 's'}</span
+				>{entries.length}
+				{group ? 'player' : 'slot'}{entries.length === 1 ? '' : 's'}</span
 			>
 		</div>
 	</div>
@@ -402,7 +465,7 @@
 					<tr>
 						<SortHeader {sort} key="player">Player</SortHeader>
 						<SortHeader {sort} key="steamId">SteamID64</SortHeader>
-						<SortHeader {sort} key="source">Source</SortHeader>
+						{#if !group}<SortHeader {sort} key="source">Source</SortHeader>{/if}
 						<SortHeader {sort} key="note">Note</SortHeader>
 						<SortHeader {sort} key="added">Added</SortHeader>
 						<SortHeader {sort} key="expires">Expires</SortHeader>
@@ -451,13 +514,15 @@
 									</div>{/if}
 							</td>
 							<td class="font-mono text-[12.5px] text-mist-400">{e.steamId}</td>
-							<td>
-								{#if e.member}
-									<Badge tone="accent">member</Badge>
-								{:else}
-									<Badge tone="ok">list</Badge>
-								{/if}
-							</td>
+							{#if !group}
+								<td>
+									{#if e.member}
+										<Badge tone="accent">member</Badge>
+									{:else}
+										<Badge tone="ok">list</Badge>
+									{/if}
+								</td>
+							{/if}
 							<td class="max-w-[280px]">
 								{#if e.reason}{e.reason}{:else}<span class="text-mist-600">—</span>{/if}
 							</td>
@@ -479,32 +544,40 @@
 								{/if}
 							</td>
 							<td>
-								<span class="inline-flex flex-wrap gap-1">
-									{#each e.servers as s (s.serverId)}
-										<span
-											class="whitespace-nowrap"
-											title="{s.serverName}: {STATE_TEXT[s.state]}{s.error ? ` — ${s.error}` : ''}"
-										>
-											<Badge tone={STATE_TONE[s.state]}>{s.serverName}</Badge>
-										</span>
-									{/each}
-								</span>
+								{#if groupOff}
+									<span class="text-[12.5px] text-mist-600">group off</span>
+								{:else}
+									<span class="inline-flex flex-wrap gap-1">
+										{#each e.servers as s (s.serverId)}
+											<span
+												class="whitespace-nowrap"
+												title="{s.serverName}: {STATE_TEXT[s.state]}{s.error
+													? ` — ${s.error}`
+													: ''}"
+											>
+												<Badge tone={STATE_TONE[s.state]}>{s.serverName}</Badge>
+											</span>
+										{/each}
+									</span>
+								{/if}
 							</td>
 							<td class="text-right whitespace-nowrap">
 								{#if !e.member}
 									<button
 										type="button"
 										class="btn btn-sm btn-ghost"
-										title="Withdraw this slot on every server"
+										title={group
+											? `Take this player out of ${group.name}`
+											: 'Withdraw this slot on every server'}
 										disabled={busy}
-										onclick={() => remove(e, r.name)}>Withdraw</button
+										onclick={() => remove(e, r.name)}>{group ? 'Remove' : 'Withdraw'}</button
 									>
 								{/if}
 							</td>
 						</tr>
 					{:else}
 						<tr
-							><td colspan="8" class="py-6 text-center text-mist-600"
+							><td colspan={group ? 7 : 8} class="py-6 text-center text-mist-600"
 								>Nobody matches that filter.</td
 							></tr
 						>
@@ -512,14 +585,29 @@
 				</tbody>
 			</table>
 		</div>
-		<p class="note">
-			<Badge tone="ok">list</Badge> slots were reserved here and can be withdrawn; <Badge
-				tone="accent">member</Badge
-			> slots follow membership and go when the member leaves or the switch above is turned off. Server
-			badges: <Badge tone="ok">applied</Badge> by the panel, <Badge tone="warn">pending</Badge> the next
-			sync, <Badge tone="err">failed</Badge> (hover for why), <Badge>local</Badge> already on that server
-			but added outside the panel, so the panel never removes it.
-		</p>
+		{#if group}
+			<p class="note">
+				Server badges as on the organisation's list: <Badge tone="ok">applied</Badge> by the panel,
+				<Badge tone="warn">pending</Badge> the next sync, <Badge tone="err">failed</Badge> (hover for
+				why), <Badge>local</Badge> already on that server but added outside the panel.
+			</p>
+		{:else}
+			<p class="note">
+				<Badge tone="ok">list</Badge> slots were reserved here and can be withdrawn; <Badge
+					tone="accent">member</Badge
+				> slots follow membership and go when the member leaves or the switch above is turned off. Server
+				badges: <Badge tone="ok">applied</Badge> by the panel, <Badge tone="warn">pending</Badge> the
+				next sync, <Badge tone="err">failed</Badge> (hover for why), <Badge>local</Badge> already on that
+				server but added outside the panel, so the panel never removes it.
+			</p>
+		{/if}
+	{:else if group}
+		<div class="callout mb-0">
+			<b>Nobody is in {group.name} yet.</b>
+			<span class="block text-mist-400"
+				>Add players above. They skip the queue on {where} while the group is on.</span
+			>
+		</div>
 	{:else}
 		<div class="callout mb-0">
 			<b>Nobody holds a reserved slot yet.</b>

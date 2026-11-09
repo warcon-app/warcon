@@ -187,12 +187,26 @@ export function setArrayInText(
 
 /**
  * The keys of the document that are credentials: the RCON password and its hash (whoever holds
- * either runs the server without the panel), and the kill feed's token. Matched by name in any
- * section. The join password (ServerPassword) is a setting people hand to players, not one of these.
+ * either runs the server without the panel), the kill feed's token, and since CL-516586 the feed's
+ * endpoints (`.EventFeedEndpoints=(Url="…",Token="…")`, hidden whole, as an address can carry a
+ * secret too). Matched by name in any section. A struct value with one of them among its fields is
+ * a credential whatever its key, so the next list of the kind the game adds is hidden before anyone
+ * has looked at it. The join password (ServerPassword) is a setting people hand to players, not one
+ * of these.
  */
-export const SECRET_KEYS = ['Password', 'PasswordHash', 'Token'] as const;
+export const SECRET_KEYS = ['Password', 'PasswordHash', 'Token', 'EventFeedEndpoints'] as const;
 /** What stands in for a credential's value in any document the panel hands out. */
 export const SECRET_PLACEHOLDER = '(hidden)';
+
+/** The values of the credentials among a struct value's fields: `(Url="…",Token="…")` gives the token. */
+function structSecrets(value: string): string[] {
+	if (!value.startsWith('(')) return [];
+	const field = new RegExp(
+		`[(,]\\s*(?:${SECRET_KEYS.join('|')})\\s*=\\s*(?:"([^"]*)"|([^,)]*))`,
+		'gi'
+	);
+	return [...value.matchAll(field)].map((m) => (m[1] ?? m[2] ?? '').trim());
+}
 
 interface SecretLine {
 	index: number;
@@ -203,7 +217,11 @@ interface SecretLine {
 	value: string;
 }
 
-/** Every line that sets a credential, commented out or not: an old password in a comment is still one. */
+/**
+ * Every line that sets a credential, commented out or not: an old password in a comment is still
+ * one. A line already reading as the placeholder counts too, whatever its key: the panel put it
+ * there, and a struct value it replaced no longer says what it held.
+ */
 function secretLines(lines: string[]): SecretLine[] {
 	const out: SecretLine[] = [];
 	let section = '';
@@ -217,18 +235,26 @@ function secretLines(lines: string[]): SecretLine[] {
 		const eq = raw.indexOf('=');
 		if (eq < 0) return;
 		const commented = isComment(line);
-		const key = raw
-			.slice(0, eq)
-			.replace(/^[\s;#]+/, '')
+		const head = raw.slice(0, eq).replace(/^[\s;#]+/, '');
+		const value = raw.slice(eq + 1).trim();
+		// `!Key=ClearArray` empties a list and holds nothing; as a secret, that word would be hidden
+		// wherever an answer quotes it (`!RotationEntries=ClearArray` included).
+		if (head.startsWith('!') && /^cleararray$/i.test(value)) return;
+		const key = head
 			.replace(/^[+.!-]/, '')
 			.trim()
 			.toLowerCase();
-		if (!SECRET_KEYS.some((k) => k.toLowerCase() === key)) return;
+		if (
+			!SECRET_KEYS.some((k) => k.toLowerCase() === key) &&
+			!structSecrets(value).length &&
+			value !== SECRET_PLACEHOLDER
+		)
+			return;
 		out.push({
 			index,
 			slot: `${section}\n${key}\n${commented}`,
 			head: raw.slice(0, eq + 1),
-			value: raw.slice(eq + 1).trim()
+			value
 		});
 	});
 	return out;
@@ -258,7 +284,9 @@ export function hideSecretValues<T>(answer: T, ...texts: string[]): T {
 	for (const text of texts)
 		for (const s of secretLines(splitLines(text).lines)) {
 			const bare = s.value.replace(/^"(.*)"$/, '$1');
-			for (const v of [s.value, bare]) if (v && v !== SECRET_PLACEHOLDER) values.add(v);
+			// A struct's token alone too: an answer may quote the field rather than the whole line.
+			for (const v of [s.value, bare, ...structSecrets(s.value)])
+				if (v && v !== SECRET_PLACEHOLDER) values.add(v);
 		}
 	if (!values.size) return answer;
 	// Longest first, so a value that contains another is replaced whole.

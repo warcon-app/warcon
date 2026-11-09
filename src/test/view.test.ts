@@ -145,40 +145,53 @@ describe.skipIf(!hasTestDb)('what View shows', () => {
 		const viewer = await dossier('viewer');
 		expect(viewer.notes).toEqual([]);
 		expect(viewer.watch).toMatchObject({ watched: true, reason: '', updatedByName: '' });
-		expect(viewer.orgLists).toEqual({
-			ban: null,
-			reserve: null,
-			canBan: false,
-			canReserve: false,
-			banReasons: null
-		});
+		expect(viewer.orgLists).toEqual({ reserve: null, canBan: false, canReserve: false });
+		expect(viewer.banDialog).toBeNull();
 		expect(JSON.stringify(viewer)).not.toContain('suspected alt');
-		expect(JSON.stringify(viewer)).not.toContain('org-wide ban reason');
+		// Who is banned and why is View, as a server's Bans tab says it; who placed it is not.
+		expect(viewer.bans).toEqual([
+			expect.objectContaining({
+				source: 'org',
+				reason: 'org-wide ban reason',
+				by: '',
+				canUnban: false
+			})
+		]);
 
 		const operator = await dossier('operator');
 		expect(operator.notes.map((n: { body: string }) => n.body)).toEqual([
 			'suspected alt of a banned player'
 		]);
 		expect(operator.watch.reason).toBe('watch for team kills');
-		expect(operator.orgLists.ban).toBeNull();
+		expect(operator.bans.map((b: { by: string }) => b.by)).toEqual(['']);
 
 		const admin = await dossier('admin');
-		expect(admin.orgLists.ban).toMatchObject({ reason: 'org-wide ban reason' });
+		expect(admin.bans).toEqual([
+			expect.objectContaining({ source: 'org', reason: 'org-wide ban reason', by: 'admin' })
+		]);
 		expect(admin.orgLists.reserve).toMatchObject({ reason: 'sponsor, paid until March' });
 		expect(admin.orgLists).toMatchObject({ canBan: true, canReserve: true });
 
 		// one list's editor reads that list's entry and nothing of the other's
 		const bans = await dossier('orgBans');
 		expect(bans.orgLists).toMatchObject({ reserve: null, canBan: true, canReserve: false });
-		expect(bans.orgLists.ban).toMatchObject({
-			reason: 'org-wide ban reason',
-			addedByName: 'admin'
-		});
+		expect(bans.bans).toEqual([
+			expect.objectContaining({
+				source: 'org',
+				reason: 'org-wide ban reason',
+				by: 'admin',
+				canUnban: true
+			})
+		]);
 		expect(JSON.stringify(bans)).not.toContain('sponsor, paid until March');
 		const slots = await dossier('orgSlots');
-		expect(slots.orgLists).toMatchObject({ ban: null, canBan: false, canReserve: true });
+		expect(slots.orgLists).toMatchObject({ canBan: false, canReserve: true });
 		expect(slots.orgLists.reserve).toMatchObject({ reason: 'sponsor, paid until March' });
-		expect(JSON.stringify(slots)).not.toContain('org-wide ban reason');
+		// the ban's reason as the Bans tab gives every reader; its author stays with the ban list's
+		expect(slots.bans).toEqual([
+			expect.objectContaining({ source: 'org', reason: 'org-wide ban reason', by: '' })
+		]);
+		expect(JSON.stringify(slots.bans)).not.toContain('admin');
 	});
 
 	test('the risk score counts bans and recorded games only on servers the reader can open', async () => {
@@ -215,7 +228,9 @@ describe.skipIf(!hasTestDb)('what View shows', () => {
 		};
 		const viewer = await seen('viewer');
 		expect(viewer).not.toContain('cheating on the other server');
-		expect(viewer).not.toContain('Banned on');
+		expect(viewer).not.toContain(`Banned on ${w.otherServer.id.slice(2)}`);
+		// the org's list holds the player on the viewer's server too, so it counts on the page
+		expect(viewer).toContain('Banned on every server of the organisation: org-wide ban reason');
 		expect(viewer).not.toContain('K/D');
 		const owner = await seen('owner');
 		expect(owner).toContain('cheating on the other server');

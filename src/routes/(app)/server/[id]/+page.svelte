@@ -1,17 +1,20 @@
 <script lang="ts">
 	import { scoreCapOf } from '$lib/match';
+	import { currentState, stateLabel } from '$lib/match-state';
+	import { feedHealth } from '$lib/feed-health';
 	import { ApiError, rconGet, rconPost, errorMessage } from '$lib/api';
 	import { MAX_CHAT } from '$lib/chat';
 	import { poll } from '$lib/poll';
 	import { watchLive, type KillsNotice } from '$lib/live';
 	import { causeLabel } from '$lib/causes';
-	import { expSetLabel, fmtNum, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
+	import { expSetLabel, fmtAgo, fmtNum, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
 	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import { setHealth } from '$lib/health.svelte';
 	import MapPicker from '$lib/components/MapPicker.svelte';
 	import MapArt from '$lib/components/MapArt.svelte';
+	import SavedMessages from '$lib/components/SavedMessages.svelte';
 	import { sponsor, loadSponsor } from '$lib/sponsor.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
 	import CashChart from '$lib/components/CashChart.svelte';
@@ -172,7 +175,19 @@
 	let feedAgeS = $derived(
 		feedAt ? Math.max(0, Math.round((now - Date.parse(feedAt)) / 1000)) : null
 	);
-	const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour12: false });
+	// Nothing since the game started, a few minutes on: the feed does not reach the panel. Read from
+	// the live view, without the token's time (that goes with the token, on the Config tab).
+	let feedState = $derived(feedHealth({ configured: !!feedConfigured, feedAt, live }, now));
+	/** changes at midnight only, so the rows' times are not worked out again every second */
+	let today = $derived(new Date(now).toDateString());
+	/** A kill's time, with its day when it is not today's: a silent feed leaves old kills on top. */
+	const clock = (iso: string) => {
+		const d = new Date(iso);
+		const time = d.toLocaleTimeString(undefined, { hour12: false });
+		return d.toDateString() === today
+			? time
+			: `${d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' })} ${time}`;
+	};
 	async function refreshRotation() {
 		try {
 			rotation = await rconGet<Rotation>(id, 'rotation');
@@ -197,6 +212,8 @@
 	});
 
 	let scoreScale = $derived(scoreCapOf(status));
+	// Season 2 builds report the match's state on their feed; the status has none.
+	let phase = $derived(currentState(live));
 	let next = $derived(
 		rotation && rotation.enabled && rotation.nextIndex >= 0
 			? rotation.entries[rotation.nextIndex]
@@ -292,6 +309,15 @@
 					</div>
 				{/each}
 			</div>
+			{#if phase}
+				<div class="kv">
+					<span class="text-mist-400">Match</span><span
+						>{stateLabel(phase.state)}<span class="text-mist-400"
+							>&nbsp;· since {clock(phase.at)}</span
+						></span
+					>
+				</div>
+			{/if}
 			<div class="kv">
 				<span class="text-mist-400">Server</span><span class="truncate"
 					>{status.serverName || '—'}</span
@@ -419,32 +445,42 @@
 				void sendBroadcast();
 			}}
 		>
-			<label class="field-label" for="broadcast-to">Message to</label>
-			<div class="join w-full">
-				<select
-					id="broadcast-to"
-					class="input w-auto flex-none! pr-[30px]"
-					bind:value={to}
-					disabled={!chat}
-				>
-					<option value="">Everyone</option>
-					{#each factions as f (f)}<option value={f}>{f}</option>{/each}
-				</select>
-				<input
-					class="input"
-					type="text"
-					maxlength={MAX_CHAT}
-					aria-label="Message"
-					placeholder={to
-						? `Whispered to everyone on ${to}…`
-						: 'Message shown to everyone on the server…'}
-					bind:value={broadcast}
-					disabled={!chat}
-				/>
-				<button class="btn btn-primary" type="submit" disabled={!chat || sending}
-					>{resend ? `Send to the rest · ${resend.steamIds.length}` : 'Send'}</button
-				>
-			</div>
+			<SavedMessages
+				server={data.server}
+				label="Message to"
+				labelFor="broadcast-to"
+				inputId="broadcast-text"
+				value={broadcast}
+				onpick={(text) => (broadcast = text)}
+				enabled={chat}
+			>
+				<div class="join w-full">
+					<select
+						id="broadcast-to"
+						class="input w-auto flex-none! pr-[30px]"
+						bind:value={to}
+						disabled={!chat}
+					>
+						<option value="">Everyone</option>
+						{#each factions as f (f)}<option value={f}>{f}</option>{/each}
+					</select>
+					<input
+						id="broadcast-text"
+						class="input"
+						type="text"
+						maxlength={MAX_CHAT}
+						aria-label="Message"
+						placeholder={to
+							? `Whispered to everyone on ${to}…`
+							: 'Message shown to everyone on the server…'}
+						bind:value={broadcast}
+						disabled={!chat}
+					/>
+					<button class="btn btn-primary" type="submit" disabled={!chat || sending}
+						>{resend ? `Send to the rest · ${resend.steamIds.length}` : 'Send'}</button
+					>
+				</div>
+			</SavedMessages>
 		</form>
 		{#if banner}
 			<div class="mt-4">
@@ -579,15 +615,28 @@
 				href="/server/{encodeURIComponent(id)}/kills"
 				class="text-[12.5px] text-accent hover:underline">All kills, with filters →</a
 			>
-			<span
-				class="ml-auto text-[12.5px] {feedAgeS !== null && feedAgeS > 900 && players.length
-					? 'text-warn'
-					: 'text-mist-600'}"
-			>
-				{#if feedAgeS === null}no batch received yet{:else if feedAgeS > 900 && players.length}no
-					events for {Math.round(feedAgeS / 60)} min with players on{:else}last event {feedAgeS}s
-					ago{/if}
-			</span>
+			{#if feedState === 'silent' && live?.startedAt}
+				<span class="ml-auto inline-flex flex-wrap items-center gap-2 text-[12.5px]">
+					<span class="badge bg-warn/15 text-warn">silent</span>
+					<span class="text-mist-400"
+						>nothing since the server started {fmtAgo(live.startedAt, now)}</span
+					>
+					{#if can(data.server.caps, 'config.apply')}<a
+							href="/server/{encodeURIComponent(id)}/config"
+							class="text-accent hover:underline">Config →</a
+						>{/if}
+				</span>
+			{:else}
+				<span
+					class="ml-auto text-[12.5px] {feedAgeS !== null && feedAgeS > 900 && players.length
+						? 'text-warn'
+						: 'text-mist-600'}"
+				>
+					{#if feedAgeS === null}no batch received yet{:else if feedAgeS > 900 && players.length}no
+						events for {Math.round(feedAgeS / 60)} min with players on{:else}last event {feedAgeS}s
+						ago{/if}
+				</span>
+			{/if}
 		</div>
 		<div class="max-h-[420px] table-wrap">
 			<table>
@@ -598,6 +647,13 @@
 					>
 				</thead>
 				<tbody>
+					{#if feedState === 'silent' && live?.startedAt && kills.length}
+						<tr
+							><td colspan="6" class="text-center text-[12px] text-mist-400"
+								>The server started at {clock(live.startedAt)} · nothing has come since</td
+							></tr
+						>
+					{/if}
 					{#each kills as k (k.eventId)}
 						<tr class={k.teamKill ? 'text-warn' : ''}>
 							<td class="font-mono text-[12px] whitespace-nowrap text-mist-400">{clock(k.ts)}</td>

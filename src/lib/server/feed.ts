@@ -19,12 +19,13 @@ import {
 } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { createHash, randomBytes } from 'node:crypto';
-import type { Env } from './env';
+import { isDemoServer, type Env } from './env';
 import { decryptSecret, encryptSecret } from './crypto';
 import { ApiError } from './http';
 import { writeAudit } from './audit';
 import {
 	kills,
+	matchEvents,
 	matches,
 	playerSessions,
 	serverLive,
@@ -32,38 +33,89 @@ import {
 	type KillRow,
 	type ServerRow
 } from './db/schema';
-import type { KillView } from '$lib/types';
+import type { KillView, MatchStateView } from '$lib/types';
+import { feedHealth, type FeedState } from '$lib/feed-health';
 import { VEHICLE_TAGS, type KillFilter } from '$lib/kills';
 import type { SessionUser } from './access';
-import { FEED_TOKEN_PREFIX, isTeamKill, parseBatch, type ParsedKill } from './feed-core';
+import {
+	FEED_TOKEN_PREFIX,
+	isTeamKill,
+	parseBatch,
+	type ParsedEnd,
+	type ParsedKill,
+	type ParsedState
+} from './feed-core';
 
 const hashToken = (token: string): string =>
 	createHash('sha256').update(token, 'utf8').digest('hex');
 
 /**
- * What goes in [WDServerFeed] Url: the panel's origin alone. The game appends /api/ingest/events
- * to whatever Url holds (CL-501228), so the route lives at that path.
+ * What goes in [WDServerFeed] Url: the panel's origin alone. Builds up to CL-509546 append
+ * /api/ingest/events to whatever Url holds (CL-501228), so the route lives at that path. Season 2's
+ * EventFeedEndpoints Url is posted to as written and carries the path ($lib/feed-setup).
  */
 export const feedUrl = (env: Pick<Env, 'ORIGIN'>): string => env.ORIGIN;
 
-export interface FeedSetup {
+/** Whether the server's kill feed reaches the panel, with what the verdict was drawn from. */
+export interface FeedStatus {
 	configured: boolean;
+	/** when the last batch arrived */
+	feedAt: string | null;
+	/** when the game process last started, as the worker last read it */
+	startedAt: string | null;
+	/** when the token was made, beside the token itself (org owners); null otherwise */
+	tokenAt: string | null;
+	/** $lib/feed-health; 'waiting' only where the token's time is known */
+	state: FeedState;
+}
+
+export interface FeedSetup extends FeedStatus {
 	url: string;
 	/** the token, for org owners only; '' otherwise */
 	token: string;
-	feedAt: string | null;
+}
+
+const iso = (d: Date | null | undefined): string | null => (d ? d.toISOString() : null);
+
+/**
+ * The feed's verdict from the server's live row. `withTokenTime` is for those who may see the token:
+ * when it was replaced is part of how the server is run, so only they are told it is waiting for
+ * the game's restart (everyone else reads it as silent, which it is).
+ */
+export async function feedStatus(
+	env: Env,
+	server: ServerRow,
+	withTokenTime: boolean
+): Promise<FeedStatus> {
+	const [live] = await env.db
+		.select({
+			feedAt: serverLive.feedAt,
+			ok: serverLive.ok,
+			startedAt: serverLive.startedAt,
+			observedAt: serverLive.observedAt
+		})
+		.from(serverLive)
+		.where(eq(serverLive.serverId, server.id));
+	const configured = !!server.feedTokenHash;
+	const feedAt = iso(live?.feedAt);
+	const startedAt = iso(live?.startedAt);
+	// The demo game takes its token at once (feedDemoKills), with no restart to wait for.
+	const tokenAt =
+		withTokenTime && configured && !isDemoServer(env, server) ? iso(server.feedTokenAt) : null;
+	const state = feedHealth({
+		configured,
+		feedAt,
+		tokenAt,
+		live: live ? { ok: live.ok, startedAt, observedAt: iso(live.observedAt) } : null
+	});
+	return { configured, feedAt, startedAt, tokenAt, state };
 }
 
 export async function feedSetup(env: Env, server: ServerRow, reveal: boolean): Promise<FeedSetup> {
-	const [live] = await env.db
-		.select({ feedAt: serverLive.feedAt })
-		.from(serverLive)
-		.where(eq(serverLive.serverId, server.id));
 	return {
-		configured: !!server.feedTokenHash,
+		...(await feedStatus(env, server, reveal)),
 		url: feedUrl(env),
-		token: reveal && server.feedTokenEnc ? decryptSecret(env, server.feedTokenEnc) : '',
-		feedAt: live?.feedAt ? live.feedAt.toISOString() : null
+		token: reveal && server.feedTokenEnc ? decryptSecret(env, server.feedTokenEnc) : ''
 	};
 }
 
@@ -77,7 +129,11 @@ export async function mintFeedToken(
 	const token = FEED_TOKEN_PREFIX + randomBytes(32).toString('base64url');
 	await env.db
 		.update(servers)
-		.set({ feedTokenEnc: encryptSecret(env, token), feedTokenHash: hashToken(token) })
+		.set({
+			feedTokenEnc: encryptSecret(env, token),
+			feedTokenHash: hashToken(token),
+			feedTokenAt: new Date()
+		})
 		.where(eq(servers.id, server.id));
 	tokenCache.clear();
 	await writeAudit(env, req, {
@@ -100,7 +156,7 @@ export async function removeFeedToken(
 	if (!server.feedTokenHash) throw new ApiError(400, 'This server has no kill feed token.');
 	await env.db
 		.update(servers)
-		.set({ feedTokenEnc: null, feedTokenHash: null })
+		.set({ feedTokenEnc: null, feedTokenHash: null, feedTokenAt: null })
 		.where(eq(servers.id, server.id));
 	tokenCache.clear();
 	await writeAudit(env, req, {
@@ -140,12 +196,39 @@ const feedAtWritten = new Map<string, number>();
 /** Dedupe looks only this far back: retries come seconds later, and chunk exclusion keeps it cheap. */
 const DEDUPE_WINDOW_MS = 24 * 3600_000;
 
+/**
+ * The last match state this process stored for each server, as `instance|state|match`: one the
+ * same is a repeat, counted and not stored (whether the game repeats its state is not known).
+ * Another web process, or this one after a restart, stores it once more.
+ */
+const storedState = new Map<string, string>();
+const stateKey = (instanceId: string, s: ParsedState) => `${instanceId}|${s.state}|${s.matchId}`;
+
+/** The events not stored yet, each once. */
+function unseen<T extends { eventId: string }>(events: T[], seen: Set<string>): T[] {
+	const once = new Set<string>();
+	return events.filter((e) => {
+		if (seen.has(e.eventId) || once.has(e.eventId)) return false;
+		once.add(e.eventId);
+		return true;
+	});
+}
+
 export interface IngestResult {
 	accepted: number;
+	/** joins, leaves, match states and results: known events other than kills */
+	other: number;
 	skipped: number;
+	/** kills, match states and results already stored: the game sent the batch again */
 	duplicates: number;
+	/** match states the same as the last one stored for the server, not stored again */
+	repeats: number;
 	/** what was written, in feed order */
 	kills: KillView[];
+	/** the batch's last match state stored, as written to server_live; null when none was */
+	state: MatchStateView | null;
+	/** the batch's last match result stored; null when none was */
+	end: ParsedEnd | null;
 }
 
 export function killView(r: KillRow): KillView {
@@ -184,38 +267,98 @@ export async function ingestBatch(
 		throw new ApiError(400, err instanceof Error ? err.message : 'Malformed batch.');
 	}
 	let fresh: ParsedKill[] = batch.kills;
+	let states: ParsedState[] = [];
+	let ends: ParsedEnd[] = [];
 	let duplicates = 0;
+	let repeats = 0;
 	let written: KillView[] = [];
-	if (fresh.length)
-		// The table cannot hold a unique event id (a hypertable's unique indexes must include ts),
+	let lastState = storedState.get(serverId);
+	if (batch.kills.length || batch.states.length || batch.ends.length)
+		// The tables cannot hold a unique event id (a hypertable's unique indexes must include ts),
 		// so the look and the insert are one turn per server: the game sends a batch again when it
 		// did not hear back, and a copy that arrived mid-write passed the look and was written too.
 		await env.db.transaction(async (db) => {
 			await db.execute(
 				sql`SELECT pg_advisory_xact_lock(hashtextextended(${'feed:' + serverId}, 0))`
 			);
-			const ids = [...new Set(fresh.map((k) => k.eventId))];
-			const seen = new Set(
-				(
-					await db
-						.select({ eventId: kills.eventId })
-						.from(kills)
-						.where(
-							and(
-								eq(kills.serverId, serverId),
-								inArray(kills.eventId, ids),
-								gt(kills.ts, new Date(now.getTime() - DEDUPE_WINDOW_MS))
+			const since = new Date(now.getTime() - DEDUPE_WINDOW_MS);
+			const killIds = [...new Set(batch.kills.map((k) => k.eventId))];
+			const eventIds = [...new Set([...batch.states, ...batch.ends].map((e) => e.eventId))];
+			const [seenKills, seenEvents] = await Promise.all([
+				killIds.length
+					? db
+							.select({ eventId: kills.eventId })
+							.from(kills)
+							.where(
+								and(
+									eq(kills.serverId, serverId),
+									inArray(kills.eventId, killIds),
+									gt(kills.ts, since)
+								)
 							)
-						)
-				).map((r) => r.eventId)
-			);
-			const once = new Set<string>();
-			fresh = fresh.filter((k) => {
-				if (seen.has(k.eventId) || once.has(k.eventId)) return false;
-				once.add(k.eventId);
+					: [],
+				eventIds.length
+					? db
+							.select({ eventId: matchEvents.eventId })
+							.from(matchEvents)
+							.where(
+								and(
+									eq(matchEvents.serverId, serverId),
+									inArray(matchEvents.eventId, eventIds),
+									gt(matchEvents.ts, since)
+								)
+							)
+					: []
+			]);
+			fresh = unseen(batch.kills, new Set(seenKills.map((r) => r.eventId)));
+			const seen = new Set(seenEvents.map((r) => r.eventId));
+			const newStates = unseen(batch.states, seen);
+			ends = unseen(batch.ends, seen);
+			duplicates =
+				batch.kills.length -
+				fresh.length +
+				batch.states.length -
+				newStates.length +
+				batch.ends.length -
+				ends.length;
+			let key = storedState.get(serverId);
+			states = newStates.filter((st) => {
+				const k = stateKey(batch.instanceId, st);
+				if (k === key) return false;
+				key = k;
 				return true;
 			});
-			duplicates = batch.kills.length - fresh.length;
+			repeats = newStates.length - states.length;
+			lastState = key;
+			if (states.length || ends.length)
+				await db.insert(matchEvents).values([
+					...states.map((st) => ({
+						ts: now,
+						serverId,
+						eventId: st.eventId,
+						seq: st.seq,
+						instanceId: batch.instanceId,
+						type: 'match_state',
+						eventTime: st.eventTime,
+						matchId: st.matchId || null,
+						map: st.map,
+						state: st.state
+					})),
+					...ends.map((e) => ({
+						ts: now,
+						serverId,
+						eventId: e.eventId,
+						seq: e.seq,
+						instanceId: batch.instanceId,
+						type: 'match_ended',
+						eventTime: e.eventTime,
+						matchId: e.matchId || null,
+						map: e.map,
+						players: e.players,
+						winningFaction: e.winningFaction,
+						scores: e.scores
+					}))
+				]);
 			if (!fresh.length) return;
 			const steamIds = [
 				...new Set(
@@ -279,17 +422,33 @@ export async function ingestBatch(
 				.returning();
 			written = rows.map(killView);
 		});
-	// The liveness stamp, at most every ten seconds per server: the worker's upsert of the row
-	// leaves this column alone, so the two never fight.
-	const last = feedAtWritten.get(serverId) ?? 0;
-	if (now.getTime() - last >= FEED_AT_EVERY_MS) {
+	// Only once it is committed: a batch that failed is sent again, and its state is no repeat.
+	if (lastState !== undefined) storedState.set(serverId, lastState);
+	// The liveness stamp, at most every ten seconds per server, and the match state whenever it
+	// moves (a few times a match): the worker's upsert of the row leaves both columns alone, so the
+	// two never fight.
+	const last = states.at(-1);
+	const state: MatchStateView | null = last
+		? { state: last.state, map: last.map, at: now.toISOString() }
+		: null;
+	if (state || now.getTime() - (feedAtWritten.get(serverId) ?? 0) >= FEED_AT_EVERY_MS) {
 		feedAtWritten.set(serverId, now.getTime());
+		const set = state ? { feedAt: now, matchState: state } : { feedAt: now };
 		await env.db
 			.insert(serverLive)
-			.values({ serverId, feedAt: now })
-			.onConflictDoUpdate({ target: serverLive.serverId, set: { feedAt: now } });
+			.values({ serverId, ...set })
+			.onConflictDoUpdate({ target: serverLive.serverId, set });
 	}
-	return { accepted: fresh.length, skipped: batch.skipped, duplicates, kills: written };
+	return {
+		accepted: fresh.length,
+		other: batch.other,
+		skipped: batch.skipped,
+		duplicates,
+		repeats,
+		kills: written,
+		state,
+		end: ends.at(-1) ?? null
+	};
 }
 
 const STEAM_RE = /^\d{17}$/;

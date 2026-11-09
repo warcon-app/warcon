@@ -32,17 +32,29 @@ export function normalizeError(err: unknown): ApiError | null {
 	return null;
 }
 
+/** A failed query's message ends with its parameters: cut from there to the end, whatever they hold. */
+function cutParams(text: string): string {
+	const at = text.indexOf('\nparams: ');
+	return at < 0 ? text : `${text.slice(0, at)}\nparams: (not logged)`;
+}
+
 /**
  * An error as it goes to the process log: its stack, and the cause's message. A failed query's
  * message lists its parameters, and for the servers table those are the stored RCON password (as
  * ciphertext) and the address, so the parameters are left out.
  */
 export function forLog(err: unknown): unknown {
+	// a message passed on by itself (Better Auth logs some that way) is cut the same way
+	if (typeof err === 'string') return cutParams(err);
 	if (!(err instanceof Error)) return err;
-	const text = (err.stack || err.message).replace(
-		/\nparams: [\s\S]*?(?=\n\s+at |$)/,
-		'\nparams: (not logged)'
-	);
+	// A parameter can hold any text, a line like a stack frame among it: the message is cut on its
+	// own and the frames put back after it; a stack that does not start with the message is cut to
+	// its end, frames and all.
+	const head = `${err.name}: ${err.message}`;
+	const stack = err.stack ?? '';
+	const text = stack.startsWith(head)
+		? `${err.name}: ${cutParams(err.message)}${stack.slice(head.length)}`
+		: cutParams(stack || err.message);
 	const cause = (err as { cause?: unknown }).cause;
 	return cause instanceof Error ? `${text}\ncause: ${cause.message}` : text;
 }

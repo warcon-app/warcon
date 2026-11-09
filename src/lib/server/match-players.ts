@@ -12,6 +12,7 @@
 // each run of the counters earned, the cash at the last look less the cash at the first.
 import { sql } from 'drizzle-orm';
 import type { DbOrTx } from './db';
+import { jsonParam as json } from './db/storable';
 import { isTeam } from './sessions';
 import { causeKind } from '$lib/causes';
 import type { Player } from '$lib/types';
@@ -149,8 +150,6 @@ export function closeTallies(
 	}
 	return { rows, carried };
 }
-
-const json = (v: unknown) => sql`(${JSON.stringify(v)}::text)::jsonb`;
 
 /** Writes (or rewrites) these players' rows of the match. Sets, never adds. */
 export async function writeMatchPlayers(

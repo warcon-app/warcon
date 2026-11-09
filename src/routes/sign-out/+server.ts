@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getEnv } from '$lib/server/env';
 import { writeAudit } from '$lib/server/audit';
+import { forLog } from '$lib/server/http';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const env = getEnv();
@@ -9,7 +10,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		try {
 			await locals.auth.api.signOut({ headers: request.headers });
 		} catch (err) {
-			console.warn('sign-out', err);
+			console.warn('sign-out', forLog(err));
 		}
 		await writeAudit(env, request, {
 			actor: locals.user,

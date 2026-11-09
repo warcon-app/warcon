@@ -32,6 +32,24 @@ describe('validateNameFilter', () => {
 			/200 at most/
 		);
 	});
+	test('players it never acts on are SteamID64 strings, each once, 100 at most', () => {
+		expect(rule({ builtinWords: true }).exempt).toEqual([]);
+		expect(
+			rule({ blocked: ['nobs'], exempt: [' 76561198000000001', '76561198000000001', ''] }).exempt
+		).toEqual(['76561198000000001']);
+		expect(() => rule({ blocked: ['nobs'], exempt: ['Ramon'] })).toThrow(
+			'"Ramon" is not a SteamID64'
+		);
+		expect(() => rule({ blocked: ['nobs'], exempt: '76561198000000001' })).toThrow(
+			'exempt must be a list'
+		);
+		// a JSON number that long arrives rounded, and would leave another player alone
+		expect(() => rule({ blocked: ['nobs'], exempt: JSON.parse('[76561198100000101]') })).toThrow(
+			'sent as strings'
+		);
+		const many = Array.from({ length: 101 }, (_, i) => String(76561198000000000n + BigInt(i)));
+		expect(() => rule({ blocked: ['nobs'], exempt: many })).toThrow('At most 100');
+	});
 	test('extra scripts only count with the Latin policy, and only known ones', () => {
 		expect(
 			rule({ characters: 'latin', extraScripts: ['Cyrillic', 'Klingon'] }).extraScripts
@@ -89,6 +107,20 @@ describe('nameFilterTargets', () => {
 		);
 		expect(all.map((t) => t.player.steamId)).toEqual(['1', '3']);
 	});
+	test('a player on its own list is never acted on, and the list needs no reserved slot', () => {
+		const STAFF = '76561198000000001';
+		const tag = rule({ blocked: ['nobs'], spareReserved: false, exempt: [STAFF] });
+		const on = [
+			{ steamId: STAFF, name: '[NoBS] Ramon' },
+			{ steamId: '76561198000000002', name: '[N0B$] Ramon' },
+			{ steamId: '76561198000000003', name: 'Plain' }
+		];
+		const ids = (reserved: string[]) =>
+			nameFilterTargets(tag, on, new Set(reserved)).map((t) => t.player.steamId);
+		expect(ids([])).toEqual(['76561198000000002']);
+		// reserved slots not spared: a slot is no licence to wear the tag
+		expect(ids(['76561198000000002'])).toEqual(['76561198000000002']);
+	});
 });
 
 describe('words', () => {
@@ -114,6 +146,14 @@ describe('words', () => {
 		expect(verdict(p, 'White_Power')).toBe("blocked word 'white power'");
 		expect(verdict(p, 'whitepower88')).toBe("blocked word 'white power'");
 		expect(verdict(p, 'White Tower')).toBeNull();
+	});
+	test('a clan tag is a word: brackets, leetspeak and spacing do not hide it', () => {
+		const t = { blocked: ['nobs'] };
+		for (const n of ['[NoBS] Ramon', '[N0B$]Ramon', '{N o B S} x', 'Ramon NOBS', '(nobs)'])
+			expect(verdict(t, n)).toBe("blocked word 'nobs'");
+		// found inside other words too, which is what the exceptions are for
+		expect(verdict(t, 'Knobs')).toBe("blocked word 'nobs'");
+		expect(verdict({ ...t, allowed: ['knobs'] }, 'Knobs')).toBeNull();
 	});
 	test('the admin exception wins', () => {
 		expect(verdict(c, 'Nazira')).toBeNull();

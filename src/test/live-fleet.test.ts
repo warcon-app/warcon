@@ -22,6 +22,7 @@ const viewOf = (serverId: string): LiveView => ({
 	gameServerId: '',
 	startedAt: null,
 	reservedSlots: null,
+	matchState: { state: 'MatchState.Playing.KOTH', map: 'Kavkazi', at: '2026-10-15T12:00:00Z' },
 	throttledUntil: null,
 	status: null,
 	players: [{ steamId: '76561198000000042', name: 'someone' } as LiveView['players'][number]],
@@ -88,6 +89,20 @@ describe.skipIf(!hasTestDb)('fleet live reads', () => {
 				ids: want
 			});
 		expect((await read('anon', `org=${w.org.id}`)).status).toBe(401);
+	});
+
+	test("the feed's match state goes with the view of a server the caller may see, to nobody else", async () => {
+		const states = async (who: PrincipalName) => {
+			const r = await read(who, `ids=${w.server.id}`);
+			return r.status === 200 ? r.views.map((v) => v.matchState?.state ?? null) : r.status;
+		};
+		const playing = ['MatchState.Playing.KOTH'];
+		for (const who of ['viewer', 'owner', 'site', 'keyView', 'keyAll'] as const)
+			expect({ who, got: await states(who) }).toEqual({ who, got: playing });
+		// another org's owner, someone with no org, a key and a member scoped to the other server
+		for (const who of ['outsider', 'stranger', 'keyElsewhere', 'elsewhere'] as const)
+			expect({ who, got: await states(who) }).toEqual({ who, got: [] });
+		expect(await states('anon')).toBe(401);
 	});
 
 	test('slim leaves the player lists out', async () => {

@@ -12,11 +12,12 @@
 import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { banUid, renderBanMessage } from '$lib/ban-message';
-import { publicMessage } from './http';
+import { ApiError, forLog } from './http';
 import { writeAudit } from './audit';
-import { ACTIONS } from './actions';
+import { ACTIONS, configResult, liveReservedIds, readConfig } from './actions';
 import { withServer, type Priority } from './dispatcher';
-import { GameError, WardogsClient } from './rcon';
+import { classifyGameError, GameError, WardogsClient } from './rcon';
+import { RESERVED_KEY, reservedFromText, reservedIntoText } from '$lib/reserved-doc';
 import {
 	listEntries,
 	lists,
@@ -40,12 +41,15 @@ import {
 	isUnreachable,
 	planHasWork,
 	planSync,
+	PRIORITY,
 	type Kind,
+	type PlanAdd,
 	type PlanInput,
 	type PanelBan,
 	type SyncPlan
 } from './lists-plan';
 import type { DbOrTx } from './db';
+import { storableText } from './db/storable';
 import type { Ban, Features, ListSyncServer, ListSyncSummary } from '$lib/types';
 
 /** A failed add or remove is not retried for this long. */
@@ -55,14 +59,20 @@ const FANOUT_WAIT_MS = 15_000;
 
 export interface Observed {
 	bans: Ban[];
+	/** the running server's reserved list: whom it holds a slot for now */
 	reserved: string[];
+	/**
+	 * The list in the config document, which the server takes up when it next starts (the running
+	 * list, on a build that has no document or edits both at once). The sync plans against this.
+	 */
+	configured: string[];
 }
 
 export interface SyncResult extends ListSyncServer {
 	/** why nothing ran, when nothing ran */
 	skipped?: 'busy' | 'suspended';
 	/** the server's lists after the run; the poller keeps its in-memory copy from this */
-	observed?: { bans: string[]; reserved: string[] };
+	observed?: { bans: string[]; reserved: string[]; configured: string[] };
 	/** the bans the lists put on this server; the worker removes these players on sight */
 	bans?: PanelBan[];
 }
@@ -101,7 +111,22 @@ export async function withServerLock<T>(
 
 // ---- desired and observed ----------------------------------------------------------------------
 
-/** What the lists this server subscribes to want on it right now. */
+/**
+ * isListOn (lists-plan.ts) as a condition on `lists`, with `now` the caller's clock (the worker's,
+ * as for an entry's expiry: the database is on another box).
+ */
+export const listOnAt = (now: Date) =>
+	and(
+		isNull(lists.archivedAt),
+		or(isNull(lists.onFrom), lte(lists.onFrom, now)),
+		or(isNull(lists.onUntil), gt(lists.onUntil, now))
+	);
+
+/**
+ * What the lists this server subscribes to want on it right now: the default lists, its own, and
+ * the groups given to it that are on at `now`. A group's window needs nothing written when it
+ * opens or closes: the per-minute sync reads it here.
+ */
 export async function desiredFor(
 	env: Env,
 	server: Pick<ServerRow, 'id' | 'orgId'>,
@@ -109,25 +134,41 @@ export async function desiredFor(
 	now = new Date()
 ): Promise<PlanInput['desired']> {
 	const rows = await env.db
-		.select({ e: listEntries, kind: lists.kind, listServerId: lists.serverId })
+		.select({
+			e: listEntries,
+			kind: lists.kind,
+			listServerId: lists.serverId,
+			isDefault: lists.isDefault,
+			listName: lists.name
+		})
 		.from(serverLists)
 		.innerJoin(lists, eq(lists.id, serverLists.listId))
 		.innerJoin(listEntries, eq(listEntries.listId, lists.id))
-		.where(and(eq(serverLists.serverId, server.id), isNull(listEntries.removedAt)));
+		.where(and(eq(serverLists.serverId, server.id), isNull(listEntries.removedAt), listOnAt(now)));
 	const active = activeEntries(
-		rows.map((r) => ({ ...r.e, kind: r.kind, serverId: r.listServerId })),
+		rows.map((r) => ({
+			...r.e,
+			kind: r.kind,
+			serverId: r.listServerId,
+			isDefault: r.isDefault,
+			listName: r.listName
+		})),
 		now
 	);
 	const { bans, reserved } = desiredOf(active);
 	if (org.membersReserved) {
-		// Members who set a SteamID get a slot from the org's reserve list, unless the org has
-		// banned them.
+		// Members who set a SteamID get a slot from the org's default reserve list, unless the org
+		// has banned them.
 		const [reserveList] = await env.db
 			.select({ id: lists.id })
 			.from(serverLists)
 			.innerJoin(lists, eq(lists.id, serverLists.listId))
 			.where(
-				and(eq(serverLists.serverId, server.id), eq(lists.kind, 'reserve'), isNull(lists.serverId))
+				and(
+					eq(serverLists.serverId, server.id),
+					eq(lists.kind, 'reserve'),
+					eq(lists.isDefault, true)
+				)
 			)
 			.limit(1);
 		if (reserveList) {
@@ -135,7 +176,12 @@ export async function desiredFor(
 			const have = new Set(reserved.map((r) => r.steamId));
 			for (const m of await memberSlots(env, server.orgId))
 				if (!banned.has(m.steamId) && !have.has(m.steamId))
-					reserved.push({ steamId: m.steamId, listId: reserveList.id, member: true });
+					reserved.push({
+						steamId: m.steamId,
+						listId: reserveList.id,
+						member: true,
+						priority: PRIORITY.member
+					});
 		}
 	}
 	return { bans, reserved };
@@ -208,7 +254,7 @@ export async function expireEntries(env: Env): Promise<{ lifted: number; orgIds:
 			outcome: 'ok',
 			message: `${ids.length} ${o.kind === 'ban' ? 'ban' : 'reserved slot'}${ids.length === 1 ? '' : 's'} expired in ${o.orgName}`,
 			detail: { orgId: o.orgId, org: o.orgName, steamIds: ids }
-		}).catch((err) => console.error('[warcon] list.expire audit', err));
+		}).catch((err) => console.error('[warcon] list.expire audit', forLog(err)));
 	}
 	return { lifted: rows.length, orgIds: [...new Set(owners.map((o) => o.orgId))] };
 }
@@ -217,7 +263,11 @@ async function snapshotObserved(env: Env, serverId: string): Promise<Observed> {
 	const [bans, reserved] = await Promise.all([
 		env.db.select().from(serverBans).where(eq(serverBans.serverId, serverId)),
 		env.db
-			.select({ steamId: serverReserved.steamId })
+			.select({
+				steamId: serverReserved.steamId,
+				configured: serverReserved.configured,
+				live: serverReserved.live
+			})
 			.from(serverReserved)
 			.where(eq(serverReserved.serverId, serverId))
 	]);
@@ -228,18 +278,38 @@ async function snapshotObserved(env: Env, serverId: string): Promise<Observed> {
 			bannedBy: b.bannedBy,
 			bannedAtUtc: b.bannedAtUtc
 		})),
-		reserved: reserved.map((r) => r.steamId)
+		reserved: reserved.filter((r) => r.live).map((r) => r.steamId),
+		configured: reserved.filter((r) => r.configured).map((r) => r.steamId)
 	};
 }
 
-/** Reads the server's ban list and reserved slots, one request at a time (one in flight per server). */
-export async function liveObserved(client: WardogsClient): Promise<Observed> {
+const isSteamId = (id: string) => /^\d{17}$/.test(id);
+
+/**
+ * Reads the server's ban list and reserved slots, one request at a time (one in flight per
+ * server). On a build that takes reserved slots through its config document, the document is read
+ * too: the running list only catches up with it at the next restart, so a slot withdrawn and given
+ * back before then would read as already there. Only the reserved ids leave the document; its text
+ * (which carries the RCON password) is never kept.
+ */
+export async function liveObserved(
+	client: WardogsClient,
+	features: Features | null = null
+): Promise<Observed> {
 	const bans = (await ACTIONS.bans.run(client, {})) as { bans: Ban[] };
-	const reserved = (await ACTIONS.reserved.run(client, {})) as { reserved: string[] };
-	return {
-		bans: bans.bans.filter((b) => /^\d{17}$/.test(b.steamId)),
-		reserved: reserved.reserved.filter((id) => /^\d{17}$/.test(id))
-	};
+	const reserved = (
+		(await ACTIONS.reserved.run(client, {})) as { reserved: string[] }
+	).reserved.filter(isSteamId);
+	let configured = reserved;
+	if (!features?.reservedSlots) {
+		try {
+			configured = reservedFromText((await readConfig(client)).text).filter(isSteamId);
+		} catch (err) {
+			// a build too old to serve the document keeps its list in the running server alone
+			if (!(err instanceof GameError && err.code === 'no_route')) throw err;
+		}
+	}
+	return { bans: bans.bans.filter((b) => isSteamId(b.steamId)), reserved, configured };
 }
 
 /** Rewrites the poller's copies of a server's ban list and reserved slots. */
@@ -250,7 +320,9 @@ export async function writeSnapshot(
 	ts = new Date()
 ): Promise<void> {
 	await env.db.transaction(async (tx) => {
-		const banIds = observed.bans.map((b) => b.steamId);
+		// one row per player: a ban list naming one twice would fail the upsert, and with it every sync
+		const bans = [...new Map(observed.bans.map((b) => [b.steamId, b])).values()];
+		const banIds = bans.map((b) => b.steamId);
 		await tx
 			.delete(serverBans)
 			.where(
@@ -262,12 +334,13 @@ export async function writeSnapshot(
 			await tx
 				.insert(serverBans)
 				.values(
-					observed.bans.map((b) => ({
+					// the game's text can hold what Postgres refuses: a NUL in a reason someone sent it
+					bans.map((b) => ({
 						serverId,
 						steamId: b.steamId,
-						reason: b.reason || '',
-						bannedBy: b.bannedBy || '',
-						bannedAtUtc: b.bannedAtUtc || '',
+						reason: storableText(b.reason || ''),
+						bannedBy: storableText(b.bannedBy || ''),
+						bannedAtUtc: storableText(b.bannedAtUtc || ''),
 						seenAt: ts
 					}))
 				)
@@ -280,23 +353,31 @@ export async function writeSnapshot(
 						seenAt: ts
 					}
 				});
+		const live = new Set(observed.reserved);
+		const configured = new Set(observed.configured);
+		const ids = [...new Set([...live, ...configured])];
 		await tx
 			.delete(serverReserved)
 			.where(
-				observed.reserved.length
-					? and(
-							eq(serverReserved.serverId, serverId),
-							notInArray(serverReserved.steamId, observed.reserved)
-						)
+				ids.length
+					? and(eq(serverReserved.serverId, serverId), notInArray(serverReserved.steamId, ids))
 					: eq(serverReserved.serverId, serverId)
 			);
-		if (observed.reserved.length)
+		if (ids.length)
 			await tx
 				.insert(serverReserved)
-				.values(observed.reserved.map((steamId) => ({ serverId, steamId, seenAt: ts })))
+				.values(
+					ids.map((steamId) => ({
+						serverId,
+						steamId,
+						configured: configured.has(steamId),
+						live: live.has(steamId),
+						seenAt: ts
+					}))
+				)
 				.onConflictDoUpdate({
 					target: [serverReserved.serverId, serverReserved.steamId],
-					set: { seenAt: ts }
+					set: { configured: sql`excluded.configured`, live: sql`excluded.live`, seenAt: ts }
 				});
 	});
 }
@@ -306,7 +387,9 @@ export async function writeSnapshot(
  * copies in server_bans and server_reserved are brought in line at once, rather than at the
  * worker's next re-read (five minutes by default), so no page keeps showing a slot the server no
  * longer has, or misses one it just got. The worker's own re-read still follows and is the
- * authority; this only closes the gap.
+ * authority; this only closes the gap. A slot written to the config document of a build that reads
+ * it at start (`pendingRestart`) is in the document now and in the running list at the restart,
+ * or the other way about for one taken out.
  */
 export async function noteLocalEdit(
 	env: Env,
@@ -314,9 +397,10 @@ export async function noteLocalEdit(
 	kind: Kind,
 	op: 'add' | 'remove',
 	steamId: string,
-	reason = '',
-	ts = new Date()
+	opts: { reason?: string; pendingRestart?: boolean; ts?: Date } = {}
 ): Promise<void> {
+	const { pendingRestart = false, ts = new Date() } = opts;
+	const reason = storableText(opts.reason ?? '');
 	if (kind === 'ban') {
 		if (op === 'remove') {
 			await env.db
@@ -333,7 +417,9 @@ export async function noteLocalEdit(
 			});
 		return;
 	}
-	if (op === 'remove') {
+	const configured = op === 'add';
+	const live = op === 'add' ? !pendingRestart : pendingRestart;
+	if (!configured && !live) {
 		await env.db
 			.delete(serverReserved)
 			.where(and(eq(serverReserved.serverId, serverId), eq(serverReserved.steamId, steamId)));
@@ -341,10 +427,10 @@ export async function noteLocalEdit(
 	}
 	await env.db
 		.insert(serverReserved)
-		.values({ serverId, steamId, seenAt: ts })
+		.values({ serverId, steamId, configured, live, seenAt: ts })
 		.onConflictDoUpdate({
 			target: [serverReserved.serverId, serverReserved.steamId],
-			set: { seenAt: ts }
+			set: { configured, live, seenAt: ts }
 		});
 }
 
@@ -366,9 +452,40 @@ export interface ReconcileOptions {
 	lane: Priority | 'held';
 }
 
+/**
+ * What the sync stores, records and answers for a failure: a fixed phrase chosen by its status and
+ * code. The game's own words, and the panel's (a refused address names the host and what it
+ * resolved to), go to the log only.
+ */
+export function syncPhrase(err: unknown): string {
+	if (!(err instanceof ApiError)) {
+		console.warn('[warcon] list sync:', forLog(err));
+		return 'The sync failed.';
+	}
+	const code = err.code ?? '';
+	if (code === 'unreachable') return 'Could not reach the server.';
+	if (code === 'rate_limited') return 'The server asked the panel to slow down.';
+	if (code === 'blocked_host' || code === 'unresolvable')
+		return "The panel no longer accepts the server's address.";
+	if (code === 'no_route' || err.status === 405) return 'This server build does not serve it.';
+	if (code === 'config_readonly') return "The server's config document is read-only.";
+	if (code === 'revision_conflict')
+		return 'The config document kept changing during the write; it is tried again.';
+	if (code === 'bad_response') return 'The server did not answer as expected.';
+	if (err.status === 401 || err.status === 403) return 'The server refused the RCON password.';
+	if (err.status >= 500) return 'The server failed to answer.';
+	return `Refused by the server (${err.status}${/^[a-z_]{1,40}$/.test(code) ? `, ${code}` : ''}).`;
+}
+
 const failure = (err: unknown) => {
 	const g = err instanceof GameError ? err : null;
-	return { status: g?.status ?? 500, code: g?.code, message: publicMessage(err, 'Failed.') };
+	return {
+		status: g?.status ?? 500,
+		code: g?.code,
+		// read by the checks for "already there" and "already gone" only, never stored
+		message: g?.message ?? '',
+		phrase: syncPhrase(err)
+	};
 };
 
 /** Brings one server in line with its lists. Never throws for game-side trouble; records it instead. */
@@ -421,7 +538,7 @@ async function run(
 			now,
 			retryAfterMs: RETRY_AFTER_MS,
 			desired,
-			observed: { reserved: observed.reserved },
+			observed: { reserved: observed.configured },
 			state
 		});
 
@@ -443,15 +560,15 @@ async function run(
 	try {
 		client ??= await WardogsClient.forServer(env, server);
 		if (!fresh) {
-			observed = await liveObserved(client);
+			observed = await liveObserved(client, opts.features ?? null);
 			fresh = true;
 			await writeSnapshot(env, server.id, observed, now);
 		}
 		plan = planWith(observed);
 		// Live builds since CL-499480 have no reserved-slot routes and answer those calls 404, which
-		// would otherwise read as "already gone"; there the slots go through the config document
-		// (see reservedViaConfig in actions.ts). Ask the build once before touching reserved slots.
-		if ([...plan.adds, ...plan.removes].some((x) => x.kind === 'reserve')) {
+		// would otherwise read as "already gone"; there the slots go through the config document.
+		// Ask the build once before touching reserved slots.
+		if (planHasWork(plan)) {
 			try {
 				const features =
 					opts.features ??
@@ -465,11 +582,12 @@ async function run(
 			}
 		}
 	} catch (err) {
-		const message = publicMessage(err, 'Could not reach the server.');
+		const message = syncPhrase(err);
 		await bookkeep(env, server.id, { syncedAt: syncRow?.syncedAt ?? null, lastError: message });
 		return { ...base, error: message };
 	}
 
+	await claim(env, server.id, plan.adds, now);
 	const outcome = await execute(client, plan, observed, reserve);
 	await record(env, server.id, plan, outcome, now, {
 		syncedAt: now,
@@ -501,7 +619,7 @@ async function run(
 				removed: outcome.removed.map(refOf),
 				failed: failedNow.map((f) => ({ kind: f.kind, steamId: f.steamId, error: f.error }))
 			}
-		}).catch((err) => console.error('[warcon] lists.sync audit', err));
+		}).catch((err) => console.error('[warcon] lists.sync audit', forLog(err)));
 	}
 	return {
 		...base,
@@ -516,7 +634,11 @@ async function run(
 }
 
 const refOf = (r: { kind: Kind; steamId: string }) => `${r.kind}:${r.steamId}`;
-const flat = (o: Observed) => ({ bans: o.bans.map((b) => b.steamId), reserved: o.reserved });
+const flat = (o: Observed) => ({
+	bans: o.bans.map((b) => b.steamId),
+	reserved: o.reserved,
+	configured: o.configured
+});
 
 interface Failed {
 	kind: Kind;
@@ -545,7 +667,7 @@ interface ReserveMode {
 	viaConfig: boolean;
 }
 
-/** Removes, then adds, one call at a time; stops at the first sign the server is gone. */
+/** Every reserved-slot change the plan holds, the way this build takes them. */
 async function execute(
 	client: WardogsClient,
 	plan: SyncPlan,
@@ -558,70 +680,159 @@ async function execute(
 		failedAdds: [],
 		failedRemoves: [],
 		aborted: null,
-		observed: { bans: [...before.bans], reserved: [...before.reserved] }
+		observed: {
+			bans: before.bans,
+			reserved: [...before.reserved],
+			configured: [...before.configured]
+		}
 	};
-	const dropObserved = (kind: Kind, steamId: string) => {
-		if (kind === 'ban') out.observed.bans = out.observed.bans.filter((b) => b.steamId !== steamId);
-		else out.observed.reserved = out.observed.reserved.filter((id) => id !== steamId);
+	if (!planHasWork(plan)) return out;
+	if (!reserve.writable) {
+		for (const r of plan.removes)
+			out.failedRemoves.push({ ...r, error: `Could not remove: ${NO_RESERVED_ROUTES}` });
+		for (const a of plan.adds)
+			out.failedAdds.push({ ...a, error: `Could not add: ${NO_RESERVED_ROUTES}` });
+		return out;
+	}
+	return reserve.viaConfig ? throughDocument(client, plan, out) : oneByOne(client, plan, out);
+}
+
+/**
+ * On a build with the live routes: removes, then adds, one call at a time, each changing the
+ * running list and the document together; stops at the first sign the server is gone.
+ */
+async function oneByOne(client: WardogsClient, plan: SyncPlan, out: Outcome): Promise<Outcome> {
+	const lists = () => [out.observed.reserved, out.observed.configured];
+	const drop = (steamId: string) => {
+		out.observed.reserved = out.observed.reserved.filter((id) => id !== steamId);
+		out.observed.configured = out.observed.configured.filter((id) => id !== steamId);
 	};
-	const addObserved = (kind: Kind, steamId: string, reason: string) => {
-		if (kind === 'ban') {
-			if (!out.observed.bans.some((b) => b.steamId === steamId))
-				out.observed.bans.push({
-					steamId,
-					reason,
-					bannedBy: 'Warcon',
-					bannedAtUtc: new Date().toISOString()
-				});
-		} else if (!out.observed.reserved.includes(steamId)) out.observed.reserved.push(steamId);
+	const put = (steamId: string) => {
+		for (const l of lists()) if (!l.includes(steamId)) l.push(steamId);
 	};
 	for (const r of plan.removes) {
-		if (r.kind === 'reserve' && !reserve.writable) {
-			out.failedRemoves.push({ ...r, error: `Could not remove: ${NO_RESERVED_ROUTES}` });
-			continue;
-		}
 		try {
-			await ACTIONS.reservedRemove.run(client, {
-				steamId: r.steamId,
-				viaConfig: reserve.viaConfig
-			});
+			await ACTIONS.reservedRemove.run(client, { steamId: r.steamId, viaConfig: false });
 			out.removed.push(r);
-			dropObserved(r.kind, r.steamId);
+			drop(r.steamId);
 		} catch (err) {
 			const f = failure(err);
 			if (isGone(f)) {
 				out.removed.push(r);
-				dropObserved(r.kind, r.steamId);
+				drop(r.steamId);
 			} else if (isUnreachable(f)) {
-				out.aborted = f.message;
+				out.aborted = f.phrase;
 				return out;
-			} else out.failedRemoves.push({ ...r, error: `Could not remove: ${f.message}` });
+			} else out.failedRemoves.push({ ...r, error: `Could not remove: ${f.phrase}` });
 		}
 	}
 	for (const a of plan.adds) {
-		if (a.kind === 'reserve' && !reserve.writable) {
-			out.failedAdds.push({ ...a, error: `Could not add: ${NO_RESERVED_ROUTES}` });
-			continue;
-		}
 		try {
-			await ACTIONS.reservedAdd.run(client, {
-				steamId: a.steamId,
-				viaConfig: reserve.viaConfig
-			});
+			await ACTIONS.reservedAdd.run(client, { steamId: a.steamId, viaConfig: false });
 			out.added.push(a);
-			addObserved(a.kind, a.steamId, a.reason);
+			put(a.steamId);
 		} catch (err) {
 			const f = failure(err);
 			if (isAlreadyApplied(f)) {
 				out.added.push(a);
-				addObserved(a.kind, a.steamId, a.reason);
+				put(a.steamId);
 			} else if (isUnreachable(f)) {
-				out.aborted = f.message;
+				out.aborted = f.phrase;
 				return out;
-			} else out.failedAdds.push({ ...a, error: f.message });
+			} else out.failedAdds.push({ ...a, error: `Could not add: ${f.phrase}` });
 		}
 	}
 	return out;
+}
+
+/**
+ * The listener refuses a request body over 64 KB (`limits.maxBodyBytes` on every build seen), and
+ * the whole document goes in one; this much of it is left for the reserved list to grow into.
+ */
+const DOCUMENT_BUDGET_BYTES = 65_536 - 2048;
+const DOCUMENT_FULL = "The server's config document is full.";
+
+const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
+
+/**
+ * The adds that fit, in the order given: the document with `kept` must stay within the budget.
+ * Each add is one more `.DefaultReservedPlayerIds=<id>` line.
+ */
+export function fitting(text: string, kept: string[], adds: string[]): string[] {
+	const eol = text.includes('\r\n') ? 2 : 1;
+	let size = bytes(reservedIntoText(text, kept));
+	const placed: string[] = [];
+	for (const id of adds) {
+		const cost = bytes(`.${RESERVED_KEY}=${id}`) + eol;
+		if (size + cost > DOCUMENT_BUDGET_BYTES) break;
+		size += cost;
+		placed.push(id);
+	}
+	return placed;
+}
+
+/**
+ * On a build that takes reserved slots through its config document: every change for the server in
+ * one write. One read, one PUT against the revision read, one look at the running list. On a
+ * revision conflict the document is read again and the same changes made to what it now holds (an
+ * add already there and a removal already gone change nothing), so the other writer's edit stays; a
+ * second conflict fails the run's changes. Removals always go in; adds go in by priority while the
+ * document stays within the budget, and the rest wait as failed until there is room. The document's
+ * text never leaves this function and no error of the game's is kept (see syncPhrase).
+ */
+async function throughDocument(
+	client: WardogsClient,
+	plan: SyncPlan,
+	out: Outcome
+): Promise<Outcome> {
+	const adds = [...plan.adds].sort((a, b) => a.priority - b.priority);
+	const removing = new Set(plan.removes.map((r) => r.steamId));
+	try {
+		for (let attempt = 0; ; attempt++) {
+			const doc = await readConfig(client);
+			if (!doc.writable) throw new GameError(400, 'The document is read-only.', 'config_readonly');
+			const before = reservedFromText(doc.text);
+			const kept = before.filter((id) => !removing.has(id));
+			const fresh = adds.map((a) => a.steamId).filter((id) => !kept.includes(id));
+			const ids = [...kept, ...fitting(doc.text, kept, fresh)];
+			const changed = ids.length !== before.length || ids.some((id, i) => id !== before[i]);
+			if (changed) {
+				const { status, body, etag } = await client.configCall(
+					'PUT',
+					'/v1/config',
+					reservedIntoText(doc.text, ids),
+					doc.revision
+				);
+				const r = configResult(status, body, etag);
+				if (r.conflict) {
+					if (attempt === 0) continue;
+					throw new GameError(412, 'The document kept changing.', 'revision_conflict');
+				}
+				if (!r.ok) throw classifyGameError('PUT', '/v1/config', status, '', body);
+			}
+			const placed = new Set(ids);
+			out.removed.push(...plan.removes);
+			for (const a of adds)
+				if (placed.has(a.steamId)) out.added.push(a);
+				else out.failedAdds.push({ ...a, error: `Could not add: ${DOCUMENT_FULL}` });
+			out.observed.configured = ids.filter(isSteamId);
+			if (changed) {
+				const live = await liveReservedIds(client).catch(() => null);
+				if (live) out.observed.reserved = live.filter(isSteamId);
+			}
+			return out;
+		}
+	} catch (err) {
+		const f = failure(err);
+		if (isUnreachable(f)) {
+			out.aborted = f.phrase;
+			return out;
+		}
+		for (const r of plan.removes)
+			out.failedRemoves.push({ ...r, error: `Could not remove: ${f.phrase}` });
+		for (const a of adds) out.failedAdds.push({ ...a, error: `Could not add: ${f.phrase}` });
+		return out;
+	}
 }
 
 interface Bookkeeping {
@@ -634,6 +845,29 @@ async function bookkeep(env: Env, serverId: string, b: Bookkeeping): Promise<voi
 		.insert(serverListSync)
 		.values({ serverId, ...b, updatedAt: new Date() })
 		.onConflictDoUpdate({ target: serverListSync.serverId, set: { ...b, updatedAt: new Date() } });
+}
+
+/**
+ * Ownership before the write: each add is recorded as the panel's before the server is touched, so
+ * a crash between the write and the record cannot leave an id the panel placed looking like
+ * someone else's (local, which the panel never removes). Until the server holds it, such a row
+ * reads as pending and the next run adds it again; a removal's row goes only after the write.
+ */
+async function claim(env: Env, serverId: string, adds: PlanAdd[], now: Date): Promise<void> {
+	if (!adds.length) return;
+	await env.db.transaction(async (tx) => {
+		for (const a of adds)
+			await upsertState(tx, {
+				serverId,
+				kind: a.kind,
+				steamId: a.steamId,
+				sourceListId: a.listId,
+				state: 'applied',
+				error: '',
+				attemptedAt: now,
+				updatedAt: now
+			});
+	});
 }
 
 /** One transaction: state rows for what happened, the snapshot as it now stands, the sync row. */
@@ -761,7 +995,7 @@ export async function kickBanned(
 			if (isGone(f)) continue;
 			if (isUnreachable(f)) return;
 			b.retryAt = now.getTime() + KICK_RETRY_MS;
-			error = f.message;
+			error = f.phrase;
 		}
 		await writeAudit(env, null, {
 			actorName: 'ban list',
@@ -774,7 +1008,7 @@ export async function kickBanned(
 			status: error ? 502 : 200,
 			message: error ? `Could not remove a banned player: ${error}` : 'Banned player removed',
 			detail: { banId: banUid(entry.id) }
-		}).catch((err) => console.error('[warcon] ban.enforce audit', err));
+		}).catch((err) => console.error('[warcon] ban.enforce audit', forLog(err)));
 	}
 }
 
@@ -805,7 +1039,7 @@ async function liveEntry(env: Env, serverId: string, b: PanelBan, now: Date) {
  * reported as still syncing.
  */
 export async function fanOut(env: Env, org: OrgRow): Promise<ListSyncSummary> {
-	await expireEntries(env).catch((err) => console.error('[warcon] list expiry', err));
+	await expireEntries(env).catch((err) => console.error('[warcon] list expiry', forLog(err)));
 	const rows = await env.db
 		.select({ server: servers })
 		.from(servers)
@@ -830,7 +1064,7 @@ export async function fanOut(env: Env, org: OrgRow): Promise<ListSyncSummary> {
 			}).catch((err): SyncResult => ({
 				...pending,
 				pending: false,
-				error: publicMessage(err, 'Sync failed.')
+				error: syncPhrase(err)
 			}));
 			const timer = new Promise<SyncResult>((r) => setTimeout(() => r(pending), FANOUT_WAIT_MS));
 			return Promise.race([work, timer]);

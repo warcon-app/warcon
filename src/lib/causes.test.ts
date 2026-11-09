@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { causeKind, causeLabel, knownCauses } from './causes';
+import {
+	causeKind,
+	causeLabel,
+	isVehicleCrash,
+	knownCauses,
+	notCountedLabel,
+	VEHICLE_CRASH
+} from './causes';
 
 describe('causeLabel', () => {
 	test('named weapons, tools, buildables and vehicles', () => {
@@ -13,7 +20,25 @@ describe('causeLabel', () => {
 		expect(causeLabel('Id.Item.WEPN_029')).toBe('Galil');
 		expect(causeLabel('Id.Item.MMGL')).toBe('MGL-40');
 		expect(causeLabel('Id.Item.CGM4')).toBe('MAAWS');
+		expect(causeLabel('Id.Item.Launcher_04')).toBe('9K333 Verba');
+		expect(causeLabel('Id.Item.WEPN_030')).toBe('FAL');
+		expect(causeLabel('Id.Item.WEPN_033')).toBe('Bushmaster M17S');
+		expect(causeLabel('Id.Item.SMG_03')).toBe('PP-19 Vityaz');
+		expect(causeLabel('Id.Item.WEPN_028')).toBe('MP5');
+		expect(causeLabel('Id.Item.SR_04')).toBe('AMR 50');
+		expect(causeLabel('Id.Item.WEPN_035')).toBe('Scout Rifle TD');
+		expect(causeLabel('Id.Item.WEPN_026')).toBe('M1911');
+		expect(causeLabel('Id.Item.WEPN_032')).toBe('GGX 18');
+		expect(causeLabel('Id.Item.WEPN_027')).toBe('Deagle');
 		expect(causeLabel('Id.Item.M4')).toBe('M4');
+		expect(causeLabel('Id.Item.WEPN_037')).toBe('TCX');
+		expect(causeLabel('Id.Item.WEPN_031')).toBe('PP-Bizon');
+		expect(causeLabel('Id.Item.WEPN_034')).toBe('M14');
+		expect(causeLabel('Id.Item.WEPN_036')).toBe('EVO-3 Ultra');
+		expect(causeLabel('Id.Item.Molotov')).toBe('Molotov');
+		expect(causeLabel('Id.Item.IED.Explosive')).toBe('Improvised explosive device');
+		expect(causeLabel('ID.Item.SmokeGrenade.Black')).toBe('M18 smoke grenade (black)');
+		expect(causeLabel('ID.Item.SmokeGrenade.White')).toBe('M18 smoke grenade (white)');
 		expect(causeLabel('Id.Item.M67Grenade')).toBe('M67 frag grenade');
 		expect(causeLabel('Id.Item.Crowbar')).toBe('Halligan bar');
 		expect(causeLabel('ID.Item.BuildTool.Hammer.Large')).toBe('Large hammer');
@@ -21,6 +46,10 @@ describe('causeLabel', () => {
 		expect(causeLabel('Vehicle.Variant.Air.Rotary.Littlebird.Default')).toBe('MH-6');
 		expect(causeLabel('Vehicle.Variant.Land.Tracked.SpawnVehicle.Lonestar')).toBe('M113 APC');
 		expect(causeLabel('Vehicle.Variant.Stationary.Phalanx')).toBe('Vanguard CIWS');
+		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_03.MainBarrel')).toBe('L81 mortar');
+		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_02.MainCannon')).toBe('Vanguard CIWS');
+		expect(causeLabel('Vehicle.Variant.Stationary.STN_05')).toBe('Drone');
+		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_05.MainBarrel')).toBe('Drone');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.WHL_02.SUV.RingTurret')).toBe('Kodiak M249');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.ROT_02.30mmCannon')).toBe(
 			'Havoc 2A42 autocannon'
@@ -35,12 +64,8 @@ describe('causeLabel', () => {
 	});
 
 	test('tags the game sends that have no name are listed in their own words', () => {
-		expect(causeLabel('Id.Item.SR_04')).toBe('SR 04');
-		expect(causeLabel('Id.Item.Launcher_04')).toBe('Launcher 04');
-		expect(causeLabel('Id.Item.WEPN_035')).toBe('WEPN 035');
 		expect(causeLabel('ID.Item.RepairTool.Drill.Light')).toBe('Light drill');
 		expect(causeLabel('Vehicle.Variant.Land.Wheeled.Humvee.Default')).toBe('Humvee');
-		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_05.MainBarrel')).toBe('STN 05 main gun');
 		const listed = new Set(knownCauses().map((c) => c.cause.toLowerCase()));
 		for (const tag of ['Id.Item.MMGL', 'Id.Item.Mosin', 'Vehicle.Variant.Stationary.STN_05'])
 			expect([tag, listed.has(tag.toLowerCase())]).toEqual([tag, true]);
@@ -80,5 +105,33 @@ describe('causeKind', () => {
 		expect(causeKind('Vehicle.Variant.Air.Rotary.Littlebird.Default')).toBe('vehicle');
 		expect(causeKind('Id.Buildable.Gate')).toBe('buildable');
 		expect(causeKind(null)).toBe('none');
+	});
+});
+
+describe('isVehicleCrash', () => {
+	test("a vehicle's own blast is a crash; a weapon that blows one up, or a roadkill, is not", () => {
+		const heli = 'Vehicle.Variant.Air.Rotary.ROT_04.Default';
+		expect(isVehicleCrash({ cause: heli, tags: ['VehicleExplosion'] })).toBe(true);
+		expect(
+			isVehicleCrash({ cause: heli.toUpperCase(), tags: ['Penetration', 'VehicleExplosion'] })
+		).toBe(true);
+		expect(isVehicleCrash({ cause: heli, tags: [] })).toBe(false);
+		expect(isVehicleCrash({ cause: heli, tags: ['RoadKill'] })).toBe(false);
+		expect(isVehicleCrash({ cause: 'Id.Item.C4Explosive', tags: ['VehicleExplosion'] })).toBe(
+			false
+		);
+		expect(
+			isVehicleCrash({
+				cause: 'Id.Vehicle.WeaponExtension.TNK_01.Artillery',
+				tags: ['VehicleExplosion']
+			})
+		).toBe(false);
+		expect(isVehicleCrash({ cause: null, tags: ['VehicleExplosion'] })).toBe(false);
+	});
+
+	test("the Team kill limit's entry for crashes is named in any case, the rest by their cause", () => {
+		expect(notCountedLabel(VEHICLE_CRASH)).toBe('Vehicle crash');
+		expect(notCountedLabel('vehicleexplosion')).toBe('Vehicle crash');
+		expect(notCountedLabel('Id.Buildable.BarbedWire')).toBe('Barbed wire');
 	});
 });

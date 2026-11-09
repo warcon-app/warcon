@@ -2,13 +2,20 @@
 	import type { Snippet } from 'svelte';
 	let {
 		title = '',
+		label = '',
 		wide = false,
+		back,
 		onclose,
 		children,
 		actions
 	}: {
 		title?: string;
-		wide?: boolean;
+		/** names the dialog when its content draws its own heading in place of `title` */
+		label?: string;
+		/** `'xl'`: wider still and held at the top, for a grid of choices */
+		wide?: boolean | 'xl';
+		/** a way back to the step that opened this one, shown above the title */
+		back?: { label: string; onclick: () => void };
 		onclose: () => void;
 		children: Snippet;
 		actions?: Snippet;
@@ -56,7 +63,12 @@
 
 <svelte:window {onkeydown} />
 
-<div class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+<!-- An 'xl' dialog keeps its top edge where it opened, so a list it filters shrinks from the bottom. -->
+<div
+	class="fixed inset-0 z-50 flex justify-center p-3 sm:p-4 {wide === 'xl'
+		? 'items-start sm:pt-10'
+		: 'items-center'}"
+>
 	<button
 		type="button"
 		class="absolute inset-0 cursor-default bg-black/70"
@@ -67,13 +79,23 @@
 	></button>
 	<div
 		bind:this={box}
-		class="relative max-h-[calc(100dvh-1.5rem)] w-full rise overflow-y-auto panel shadow-pop {wide
-			? 'max-w-3xl'
-			: 'max-w-lg'}"
+		class="relative max-h-[calc(100dvh-1.5rem)] w-full rise overflow-y-auto panel shadow-pop {wide ===
+		'xl'
+			? 'max-w-5xl sm:max-h-[calc(100dvh-3.5rem)]'
+			: wide
+				? 'max-w-3xl'
+				: 'max-w-lg'}"
 		role="dialog"
 		aria-modal="true"
-		aria-label={title || 'Dialog'}
+		aria-label={label || title || 'Dialog'}
 	>
+		<!-- data-close: the first field still takes the focus on open, not the way back -->
+		{#if back}<button
+				type="button"
+				class="mb-2.5 block cursor-pointer caps text-mist-400 hover:text-mist-100"
+				data-close
+				onclick={back.onclick}>← {back.label}</button
+			>{/if}
 		{#if title}<h3 class="mb-4 text-[15px] font-semibold">{title}</h3>{/if}
 		{@render children()}
 		{#if actions}<div class="mt-5 flex flex-wrap justify-end gap-2">{@render actions()}</div>{/if}

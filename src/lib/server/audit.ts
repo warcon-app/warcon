@@ -16,6 +16,7 @@ import {
 import type { Env } from './env';
 import { userAgent, int, str } from './http';
 import { auditLog, user, type AuditRow } from './db/schema';
+import { storableText } from './db/storable';
 import { notifyWebhooks } from './webhook-delivery';
 import { OWNERS_ROWS } from './audit-rows';
 
@@ -45,17 +46,23 @@ const SECRET_KEYS = /pass|secret|token|key|authorization|cookie/i;
 const SECRET_LINES =
 	/^([ \t]*[A-Za-z0-9_.-]*(?:pass|secret|token|key)[A-Za-z0-9_.-]*[ \t]*=)[^\r\n]*/gim;
 const MAX_TEXT = 4000;
+/**
+ * What a key named `__proto__` is kept under. Assigned, it became the copy's prototype and dropped
+ * out of the trail; kept as an own key, devalue refuses to send the row to the Audit page.
+ */
+const PROTO_KEY = '__proto__ (key)';
 
 /** Strips anything that looks like a credential (by key name, and by line inside text) before it is persisted. */
 export function redact(value: unknown, depth = 0): unknown {
 	if (depth > 6) return '[deep]';
 	if (Array.isArray(value)) return value.slice(0, 50).map((v) => redact(v, depth + 1));
 	if (value && typeof value === 'object') {
-		const out: Record<string, unknown> = {};
-		for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-			out[k] = SECRET_KEYS.test(k) ? (v ? '[redacted]' : v) : redact(v, depth + 1);
-		}
-		return out;
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+				k === '__proto__' ? PROTO_KEY : k,
+				SECRET_KEYS.test(k) ? (v ? '[redacted]' : v) : redact(v, depth + 1)
+			])
+		);
 	}
 	if (typeof value === 'string') {
 		const text = value.replace(SECRET_LINES, '$1[redacted]');
@@ -77,23 +84,25 @@ export async function writeAudit(env: Env, req: Request | null, ev: AuditEvent):
 			.limit(1);
 		actorName = row?.username || row?.name || '';
 	}
+	// The row is written after the game has acted, so no text it carries may stop it: what Postgres
+	// refuses (NUL, half a surrogate pair) is stored as U+FFFD, here and in detail (the jsonb type).
 	const [row] = await env.db
 		.insert(auditLog)
 		.values({
 			ts: new Date(),
 			actorId: ev.actor?.id ?? null,
-			actorName,
+			actorName: storableText(actorName),
 			serverId: ev.server?.id ?? null,
-			serverName: ev.server?.name ?? '',
+			serverName: storableText(ev.server?.name ?? ''),
 			orgId: ev.orgId ?? null,
 			category: ev.category,
-			action: ev.action,
-			target: str(ev.target, 300),
+			action: storableText(ev.action),
+			target: storableText(str(ev.target, 300)),
 			detail: ev.detail === undefined || ev.detail === null ? null : redact(ev.detail),
 			outcome: ev.outcome,
 			status: ev.status ?? null,
-			message: str(ev.message, 1000),
-			userAgent: ev.userAgent ?? (req ? userAgent(req) : ''),
+			message: storableText(str(ev.message, 1000)),
+			userAgent: storableText(ev.userAgent ?? (req ? userAgent(req) : '')),
 			durationMs: ev.durationMs ?? null
 		})
 		.returning();

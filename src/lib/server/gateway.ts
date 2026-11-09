@@ -10,6 +10,7 @@ import type { WarconEvent } from './events';
 import type { Priority } from './dispatcher';
 import type { SyncResult } from './lists-sync';
 import type { PollerStats } from './poller';
+import type { MatchFeed } from './match-feed';
 
 export interface Gateway {
 	/** Runs a registry action on the server through its lane. */
@@ -45,6 +46,8 @@ export interface Gateway {
 	statusChanged(): void;
 	/** The kill feed just delivered these for a server: publish them, and let kill rules see them. */
 	killsIngested(env: Env, serverId: string, kills: KillView[]): void;
+	/** The feed just reported the match's state or result for a server (match-feed.ts). */
+	matchFeed(env: Env, serverId: string, feed: MatchFeed): void;
 	/** Live events (observations, deliveries). */
 	subscribe(fn: (e: WarconEvent) => void): () => void;
 	/** The worker's scheduler stats (for /api/health and the settings page). */

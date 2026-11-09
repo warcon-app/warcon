@@ -11,10 +11,19 @@
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import CareerPanel from '$lib/components/CareerPanel.svelte';
 	import CombatSummary from '$lib/components/CombatSummary.svelte';
+	import SavedMessages from '$lib/components/SavedMessages.svelte';
 	import { describeSync, STATE_TONE } from '$lib/lists';
+	import { RULE_KINDS } from '$lib/rule-kinds';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort } from '$lib/table.svelte';
-	import type { DossierView, ListSyncServer, ListSyncSummary } from '$lib/types';
+	import type {
+		DossierAction,
+		DossierView,
+		ListSyncServer,
+		ListSyncSummary,
+		PlayerBanView,
+		SeedRewardProgress
+	} from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -46,6 +55,8 @@
 	let canKick = $derived(can(data.server.caps, 'players.kick'));
 	let chat = $derived(can(data.server.caps, 'chat.send'));
 	let bans = $derived(can(data.server.caps, 'bans.manage'));
+	// a ban goes on this server's own list (Bans here) or the org's (its ban list's editors)
+	let canBanAny = $derived(bans || d.orgLists.canBan);
 	let notes = $derived(can(data.server.caps, 'players.notes'));
 	let base = $derived(`/api/servers/${encodeURIComponent(id)}/players/${d.steamId}`);
 	let onThisServer = $derived(d.online?.serverId === id);
@@ -54,10 +65,39 @@
 	let busy = $state(false);
 	let banning = $state(false);
 
+	// Every ban that holds the player on a server the reader can open; the org's list holds them on
+	// all of them at once.
+	let orgBan = $derived(d.bans.find((b) => b.source === 'org') ?? null);
+	let bannedServers = $derived([
+		...new Map(d.bans.filter((b) => b.serverId).map((b) => [b.serverId, b.serverName])).values()
+	]);
+	let bannedBadge = $derived(
+		orgBan
+			? 'banned org-wide'
+			: bannedServers.length === 1
+				? `banned on ${bannedServers[0]}`
+				: `banned on ${bannedServers.length} servers`
+	);
+	const SOURCE_LABEL: Record<PlayerBanView['source'], string> = {
+		org: 'org list',
+		server: 'server list',
+		game: 'game list'
+	};
+	/** when it lifts and who placed it, where the reader may know */
+	const banMore = (b: PlayerBanView) =>
+		[
+			b.source === 'game' ? '' : b.expiresAt ? `until ${fmtTime(b.expiresAt)}` : 'permanent',
+			b.by ? `by ${b.by}` : ''
+		]
+			.filter(Boolean)
+			.map((p) => `· ${p}`)
+			.join(' ');
+
 	const serverSort = new TableSort<DossierView['perServer'][number]>({
 		server: { by: (s) => s.serverName },
 		sessions: { by: (s) => s.sessions, dir: 'desc' },
 		minutes: { by: (s) => s.minutes, dir: 'desc' },
+		seeded: { by: (s) => s.seedMinutes, dir: 'desc' },
 		kills: { by: (s) => s.kills, dir: 'desc' },
 		deaths: { by: (s) => s.deaths, dir: 'desc' },
 		lastSeen: { by: (s) => s.lastSeen, dir: 'desc' }
@@ -150,20 +190,30 @@
 		}, '');
 	}
 
-	// A ban goes on the server's own list, so the panel keeps the reason and who placed it.
-	async function banHere() {
-		const sure = await confirmDialog(`Ban ${d.name} (${d.steamId}) on ${data.server.name}?`, {
-			okLabel: 'Do it',
-			danger: true
-		});
+	/** Lift one ban, through the route its list has; the org's list goes through orgRemove. */
+	async function lift(b: PlayerBanView) {
+		if (b.source === 'org') return orgRemove('ban');
+		const where = b.serverName;
+		const sure = await confirmDialog(
+			b.source === 'server'
+				? `Unban ${d.name} on ${where}? The panel lifts it at once.`
+				: `Take ${d.name} off the game's own ban list on ${where}?`,
+			{ okLabel: 'Unban', danger: true }
+		);
 		if (!sure) return;
 		await run(async () => {
-			const res = await api<{ sync: ListSyncServer }>(
-				'POST',
-				`/api/servers/${encodeURIComponent(id)}/lists/ban/entries`,
-				{ steamId: d.steamId, reason: reason.trim() }
-			);
-			toast(describeSync({ servers: [res.sync] }, `Banned ${d.name}.`), 'ok', 8000);
+			if (b.source === 'server') {
+				const res = await api<{ sync: ListSyncServer }>(
+					'DELETE',
+					`/api/servers/${encodeURIComponent(b.serverId!)}/lists/ban/entries/${d.steamId}`
+				);
+				toast(describeSync({ servers: [res.sync] }, `Unbanned on ${where}.`), 'ok', 8000);
+			} else {
+				const r = await rconPost<{ message?: string }>(b.serverId!, 'unban', {
+					steamId: d.steamId
+				});
+				toast(r?.message || `Unbanned on ${where}.`, 'ok');
+			}
 		}, '');
 	}
 
@@ -180,7 +230,50 @@
 		'rcon.changeTeam': 'move',
 		'player.note': 'note',
 		'player.note.delete': 'note deleted',
-		'player.watch': 'watchlist'
+		'player.watch': 'watchlist',
+		'ban.enforce': 'removed',
+		'list.expire': 'expired',
+		...Object.fromEntries(RULE_KINDS.map((r) => [`trigger.${r.kind}`, r.label]))
+	};
+	const actionLabel = (a: DossierAction) => {
+		const slot = a.list === 'reserve';
+		if (a.action === 'list.add') return slot ? 'slot' : 'ban';
+		if (a.action === 'list.update') return slot ? 'slot changed' : 'ban changed';
+		if (a.action === 'list.remove') return slot ? 'slot withdrawn' : 'unban';
+		return ACTION_LABEL[a.action] || a.action;
+	};
+	const DAY = 86400_000;
+	/** how long a ban or slot added or changed lasts, in words */
+	const lengthOf = (a: DossierAction) => {
+		if (!a.length) return '';
+		const changed = a.action === 'list.update';
+		if (a.length.until === null) return changed ? 'now permanent' : 'permanent';
+		const until = fmtTime(a.length.until);
+		if (changed) return `now until ${until}`;
+		const days = Math.round((Date.parse(a.length.until) - Date.parse(a.ts)) / DAY);
+		return days >= 1 ? `${days} day${days === 1 ? '' : 's'}, until ${until}` : `until ${until}`;
+	};
+	/** what the row was about: a whisper's words, a kick's or a ban's reason, else the trail's line
+	 *  (a list row that says neither, such as a ban a rule lengthened, keeps the trail's line) */
+	const detailOf = (a: DossierAction) =>
+		a.text
+			? `“${a.text}”`
+			: a.list && a.action !== 'list.remove' && (a.reason || a.length || a.action === 'list.add')
+				? a.reason || (a.action === 'list.add' ? 'No reason given' : '')
+				: a.reason || a.message || a.outcome;
+
+	/** Where the player stands with this server's Seeding reward, as the rule sees it. */
+	const seedLine = (r: SeedRewardProgress) => {
+		const here = data.server.name;
+		if (r.holdsSlot)
+			return r.holdsSlot.until
+				? `Holds a reserved slot on ${here} until ${fmtTime(r.holdsSlot.until)}. The rule passes over them until it lapses.`
+				: `Holds a reserved slot on ${here}. The rule passes over them while they hold it.`;
+		const left = r.minutes - Math.floor(r.seconds / 60);
+		if (left <= 0)
+			return `Earned: the slot goes to them the next time they are on ${here} while it is low${r.untilFull ? ', or as it fills' : ''}.`;
+		const where = r.scope === 'server' ? `on ${here}` : `on every server in ${data.server.orgName}`;
+		return `${left} min more earns a reserved slot ${where} for ${r.slotDays} day${r.slotDays === 1 ? '' : 's'}.`;
 	};
 </script>
 
@@ -201,6 +294,7 @@
 			{#if d.online}<Badge tone="ok"
 					>online · {onThisServer ? 'this server' : d.online.serverName}</Badge
 				>{/if}
+			{#if d.bans.length}<Badge tone="err">{bannedBadge}</Badge>{/if}
 			{#if d.watch.watched}<Badge tone="warn">watchlist</Badge>{/if}
 			<Badge tone={RISK_TONE[d.risk.level]}>risk {d.risk.level} · {d.risk.score}</Badge>
 		</h2>
@@ -255,8 +349,8 @@
 	</div>
 </div>
 
-<div class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-	{#each [['Sessions', fmtNum(d.summary.sessions), 'A session is one stay on a server, from joining to leaving.'], ['Playtime', d.summary.sessions ? minutes(d.summary.minutes) : '—', ''], ['Kills', fmtNum(d.summary.kills), SCOREBOARD_NOTE], ['Deaths', fmtNum(d.summary.deaths), SCOREBOARD_NOTE], ['K/D', kd(d.summary.kills, d.summary.deaths), SCOREBOARD_NOTE], ['First seen', d.summary.firstSeen ? fmtTime(d.summary.firstSeen) : '—', '']] as [label, value, note] (label)}
+<div class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+	{#each [['Sessions', fmtNum(d.summary.sessions), 'A session is one stay on a server, from joining to leaving.'], ['Playtime', d.summary.sessions ? minutes(d.summary.minutes) : '—', ''], ['Seeded', d.summary.seedMinutes ? minutes(d.summary.seedMinutes) : '—', 'Time on with the server low, as a Seeding reward counts it.'], ['Kills', fmtNum(d.summary.kills), SCOREBOARD_NOTE], ['Deaths', fmtNum(d.summary.deaths), SCOREBOARD_NOTE], ['K/D', kd(d.summary.kills, d.summary.deaths), SCOREBOARD_NOTE], ['First seen', d.summary.firstSeen ? fmtTime(d.summary.firstSeen) : '—', '']] as [label, value, note] (label)}
 		<div class="panel py-4" title={note || undefined}>
 			<div class="caps text-mist-400">{label}</div>
 			<div class="mt-1 font-display text-2xl font-semibold tabular">{value}</div>
@@ -266,19 +360,31 @@
 
 <div class="grid grid-cols-1 gap-4 xl:grid-cols-[3fr_2fr]">
 	<div class="space-y-4">
-		{#if d.bannedOn.length}
+		{#if d.bans.length}
 			<div class="callout border-l-danger">
-				<b
-					>Banned on {d.bannedOn.length} of {d.orgServerCount} server{d.orgServerCount === 1
-						? ''
-						: 's'} in this organisation.</b
-				>
-				{#each d.bannedOn as b (b.serverId)}
-					<div>
-						{b.serverName}{#if b.reason}: {b.reason}{/if}{#if b.bannedBy}
-							<span class="text-mist-400">(by {b.bannedBy})</span>{/if}
-					</div>
-				{/each}
+				<div class="mb-2">
+					<b
+						>{#if orgBan}Banned on every server in this organisation.{:else}Banned on {bannedServers.length}
+							of {d.orgServerCount} server{d.orgServerCount === 1 ? '' : 's'} in this organisation.{/if}</b
+					>
+				</div>
+				<div class="space-y-2">
+					{#each d.bans as b (b.source + (b.serverId ?? ''))}
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+							<Badge>{SOURCE_LABEL[b.source]}</Badge>
+							<span
+								><b>{b.serverId ? b.serverName : `Every server in ${data.server.orgName}`}</b
+								>{#if b.reason}: {b.reason}{/if}</span
+							>
+							<span class="text-mist-400">{banMore(b)}</span>
+							{#if b.canUnban}<button
+									class="ml-auto btn btn-sm"
+									disabled={busy}
+									onclick={() => lift(b)}>{b.source === 'org' ? 'Unban org-wide' : 'Unban'}</button
+								>{/if}
+						</div>
+					{/each}
+				</div>
 			</div>
 		{/if}
 
@@ -291,6 +397,7 @@
 							<SortHeader sort={serverSort} key="server">Server</SortHeader>
 							<SortHeader sort={serverSort} key="sessions" num>Sessions</SortHeader>
 							<SortHeader sort={serverSort} key="minutes" num>Playtime</SortHeader>
+							<SortHeader sort={serverSort} key="seeded" num>Seeded</SortHeader>
 							<SortHeader sort={serverSort} key="kills" num>K</SortHeader>
 							<SortHeader sort={serverSort} key="deaths" num>D</SortHeader>
 							<SortHeader sort={serverSort} key="lastSeen">Last seen</SortHeader>
@@ -307,12 +414,13 @@
 									></td
 								>
 								<td class="num">{s.sessions}</td><td class="num">{minutes(s.minutes)}</td>
+								<td class="num">{s.seedMinutes ? minutes(s.seedMinutes) : '—'}</td>
 								<td class="num">{fmtNum(s.kills)}</td><td class="num">{fmtNum(s.deaths)}</td>
 								<td class="whitespace-nowrap text-mist-400">{fmtTime(s.lastSeen)}</td>
 							</tr>
 						{:else}
 							<tr
-								><td colspan="6" class="py-6 text-center text-mist-600"
+								><td colspan="7" class="py-6 text-center text-mist-600"
 									>Never seen on a server you can access.</td
 								></tr
 							>
@@ -442,23 +550,34 @@
 		</div>
 
 		<div class="panel">
-			<span class="label-sm">Admin actions on this player</span>
+			<div class="mb-3 flex flex-wrap items-center gap-2">
+				<span class="label-sm mb-0!">Admin actions on this player</span>
+				<a
+					href="/audit?q={encodeURIComponent(d.steamId)}"
+					class="ml-auto text-[12px] text-accent hover:underline">All in the audit trail →</a
+				>
+			</div>
 			<div class="max-h-[360px] table-wrap">
 				<table>
 					<thead
-						><tr><th>When</th><th>By</th><th>Action</th><th>Server</th><th>Result</th></tr></thead
+						><tr><th>When</th><th>By</th><th>Action</th><th>Server</th><th>Details</th></tr></thead
 					>
 					<tbody>
 						{#each d.actions as a (a.id)}
+							{@const said = detailOf(a)}
+							{@const length = lengthOf(a)}
 							<tr>
 								<td class="whitespace-nowrap">{fmtTime(a.ts)}</td>
 								<td>{a.actorName || '—'}</td>
-								<td><span class="chip">{ACTION_LABEL[a.action] || a.action}</span></td>
+								<td class="whitespace-nowrap"><span class="chip">{actionLabel(a)}</span></td>
 								<td>{a.serverName}</td>
-								<td class="max-w-[360px]">
-									<span class={a.outcome === 'ok' ? '' : 'text-danger'}
-										>{a.message || a.outcome}</span
-									>
+								<td class="max-w-[420px]">
+									{#if a.outcome !== 'ok'}<span class="text-danger">{a.message || a.outcome}</span
+										>{#if said && said !== a.message}{' '}<span class="text-mist-400">· {said}</span
+											>{/if}
+									{:else}{said}{#if length}<span class="text-mist-400"
+												>{said ? ' · ' : ''}{length}</span
+											>{/if}{/if}
 								</td>
 							</tr>
 						{:else}
@@ -475,117 +594,146 @@
 	</div>
 
 	<div class="space-y-4 self-start">
-		{#if onThisServer && (canKick || chat)}
+		{#if onThisServer ? canKick || chat || canBanAny : canBanAny}
 			<div class="panel border-accent/40">
-				<span class="label-sm">Quick actions (online here)</span>
-				<div class="join w-full">
-					<input
-						class="input"
-						type="text"
-						placeholder="Private message…"
-						maxlength={MAX_CHAT}
-						bind:value={whisper}
-					/>
-					<button
-						class="btn btn-primary"
-						disabled={busy || !chat || !whisper.trim()}
-						onclick={async () => {
-							await act('whisper', { steamId: d.steamId, message: whisper.trim() });
-							whisper = '';
-						}}>Whisper</button
-					>
+				<div class="mb-3 flex items-center gap-2">
+					<span class="label-sm mb-0!">Quick actions</span>
+					{#if onThisServer}<Badge tone="ok" class="ml-auto">online here</Badge>{:else}<Badge
+							class="ml-auto">not on {data.server.name}</Badge
+						>{/if}
 				</div>
-				<div class="join join-wrap mt-2 w-full">
-					<input
-						class="input"
-						type="text"
-						placeholder="Reason (optional)…"
-						maxlength="200"
-						bind:value={reason}
-					/>
-					<button
-						class="btn btn-danger"
-						disabled={busy || !canKick}
-						onclick={() =>
-							act('kick', { steamId: d.steamId, reason: reason.trim() }, `Kick ${d.name}?`)}
-						>Kick</button
+				{#if onThisServer}
+					<SavedMessages
+						server={data.server}
+						label="Whisper"
+						labelFor="dossier-whisper"
+						inputId="dossier-whisper"
+						value={whisper}
+						onpick={(text) => (whisper = text)}
+						send="Whisper"
+						enabled={chat}
 					>
-					<button class="btn btn-danger" disabled={busy || !bans} onclick={banHere}>Ban</button>
-				</div>
+						<div class="join w-full">
+							<input
+								id="dossier-whisper"
+								class="input"
+								type="text"
+								placeholder="Private message…"
+								maxlength={MAX_CHAT}
+								bind:value={whisper}
+							/>
+							<button
+								class="btn btn-primary"
+								disabled={busy || !chat || !whisper.trim()}
+								onclick={async () => {
+									await act('whisper', { steamId: d.steamId, message: whisper.trim() });
+									whisper = '';
+								}}>Whisper</button
+							>
+						</div>
+					</SavedMessages>
+					<div class="join join-wrap mt-2 w-full">
+						<input
+							class="input"
+							type="text"
+							placeholder="Reason (optional)…"
+							maxlength="200"
+							bind:value={reason}
+						/>
+						<button
+							class="btn btn-danger"
+							disabled={busy || !canKick}
+							onclick={() =>
+								act('kick', { steamId: d.steamId, reason: reason.trim() }, `Kick ${d.name}?`)}
+							>Kick</button
+						>
+						<button
+							class="btn btn-danger"
+							disabled={busy || !canBanAny}
+							onclick={() => (banning = true)}>Ban…</button
+						>
+					</div>
+				{:else}
+					<p class="text-[13px] text-mist-400">
+						Whisper and kick need the player on {data.server.name}. A ban waits for them: they are
+						removed the moment they join.
+					</p>
+					<div class="mt-3 flex justify-end">
+						<button class="btn btn-danger" disabled={busy} onclick={() => (banning = true)}
+							>Ban…</button
+						>
+					</div>
+				{/if}
 			</div>
 		{/if}
 
-		<!-- an entry, its reason and who added it are for those who may edit that list -->
-		{#if d.orgLists.canBan || d.orgLists.canReserve}
+		<!-- the rule's terms are how the server is run: Automation holders only (null for the rest) -->
+		{#if d.seedReward}
+			{@const r = d.seedReward}
+			{@const pct = Math.min(100, Math.round((r.seconds / (r.minutes * 60)) * 100))}
+			<div class="panel">
+				<div class="mb-3 flex items-center gap-2">
+					<span class="label-sm mb-0!">Seeding reward</span>
+					<a
+						href="/server/{encodeURIComponent(id)}/automation"
+						class="ml-auto text-[12px] text-accent hover:underline">Rule →</a
+					>
+				</div>
+				<div class="mb-1 flex justify-between text-[13px]">
+					<span
+						>{Math.floor(r.seconds / 60)} of {r.minutes} min in the last {r.windowDays} day{r.windowDays ===
+						1
+							? ''
+							: 's'}</span
+					>
+					<span class="font-mono text-mist-400 tabular">{pct}%</span>
+				</div>
+				<div class="progress"><span class="progress-bar" style="width:{pct}%"></span></div>
+				<p class="mt-2 text-[13px]">{seedLine(r)}</p>
+				<p class="note">
+					{#if r.untilFull}Seed time on {data.server.name} with {r.lowAt} or fewer on, banked once the
+						server fills with the player still on, so a seed in progress shows once it is banked.{:else}Seed
+						time on {data.server.name}: every minute with {r.lowAt} or fewer on.{/if}
+				</p>
+			</div>
+		{/if}
+
+		<!-- an entry, its note and who added it are for those who may edit that list -->
+		{#if d.orgLists.canReserve}
 			<div class="panel">
 				<div class="mb-3 flex items-center gap-2">
 					<span class="label-sm mb-0!">Organisation lists</span>
 					<a
-						href="/orgs/{encodeURIComponent(data.server.orgId)}/{d.orgLists.canBan
-							? 'bans'
-							: 'reserved'}"
+						href="/orgs/{encodeURIComponent(data.server.orgId)}/reserved"
 						class="ml-auto text-[12px] text-accent hover:underline">Open the lists →</a
 					>
 				</div>
-				<div class="space-y-3 text-[13px]">
-					{#if d.orgLists.canBan}
-						<div class="flex flex-wrap items-center gap-2">
-							{#if d.orgLists.ban}
-								{@const b = d.orgLists.ban}
-								<Badge tone="err">banned org-wide</Badge>
-								<span class="min-w-0 flex-1 truncate text-mist-400"
-									>{b.reason || 'no reason'} · by {b.addedByName || '—'}{#if b.expiresAt}
-										· until {fmtTime(b.expiresAt)}{/if}</span
+				<div class="flex flex-wrap items-center gap-2 text-[13px]">
+					{#if d.orgLists.reserve}
+						{@const r = d.orgLists.reserve}
+						<Badge tone="accent">reserved slot</Badge>
+						<span class="min-w-0 flex-1 truncate text-mist-400"
+							>{r.reason || 'org-wide'}{#if r.member}
+								· member{/if}{#if r.expiresAt}
+								· until {fmtTime(r.expiresAt)}{/if}</span
+						>
+						<span class="inline-flex flex-wrap gap-1">
+							{#each r.servers as s (s.serverId)}
+								<span title="{s.serverName}: {s.state}{s.error ? ` — ${s.error}` : ''}"
+									><Badge tone={STATE_TONE[s.state]}>{s.serverName}</Badge></span
 								>
-								<span class="inline-flex flex-wrap gap-1">
-									{#each b.servers as s (s.serverId)}
-										<span title="{s.serverName}: {s.state}{s.error ? ` — ${s.error}` : ''}"
-											><Badge tone={STATE_TONE[s.state]}>{s.serverName}</Badge></span
-										>
-									{/each}
-								</span>
-								<button class="btn btn-sm" disabled={busy} onclick={() => orgRemove('ban')}
-									>Unban org-wide</button
-								>
-							{:else}
-								<span class="text-mist-400">Not on the organisation's ban list.</span>
-								<button
-									class="ml-auto btn btn-sm btn-danger"
-									disabled={busy}
-									onclick={() => (banning = true)}>Ban org-wide</button
-								>
-							{/if}
-						</div>
-					{/if}
-					{#if d.orgLists.canReserve}
-						<div class="flex flex-wrap items-center gap-2">
-							{#if d.orgLists.reserve}
-								{@const r = d.orgLists.reserve}
-								<Badge tone="accent">reserved slot</Badge>
-								<span class="min-w-0 flex-1 truncate text-mist-400"
-									>{r.reason || 'org-wide'}{#if r.member}
-										· member{/if}{#if r.expiresAt}
-										· until {fmtTime(r.expiresAt)}{/if}</span
-								>
-								<span class="inline-flex flex-wrap gap-1">
-									{#each r.servers as s (s.serverId)}
-										<span title="{s.serverName}: {s.state}{s.error ? ` — ${s.error}` : ''}"
-											><Badge tone={STATE_TONE[s.state]}>{s.serverName}</Badge></span
-										>
-									{/each}
-								</span>
-								{#if !r.member}
-									<button class="btn btn-sm" disabled={busy} onclick={() => orgRemove('reserve')}
-										>Withdraw</button
-									>
-								{/if}
-							{:else}
-								<span class="text-mist-400">No reserved slot from the organisation.</span>
-								<button class="ml-auto btn btn-sm" disabled={busy} onclick={orgReserve}
-									>Reserve a slot</button
-								>
-							{/if}
-						</div>
+							{/each}
+						</span>
+						{#if !r.member}
+							<button class="btn btn-sm" disabled={busy} onclick={() => orgRemove('reserve')}
+								>Withdraw</button
+							>
+						{/if}
+					{:else}
+						<span class="text-mist-400">No reserved slot from the organisation.</span>
+						<button class="ml-auto btn btn-sm" disabled={busy} onclick={orgReserve}
+							>Reserve a slot</button
+						>
 					{/if}
 				</div>
 			</div>
@@ -770,9 +918,16 @@
 		orgName={data.server.orgName}
 		steamId={d.steamId}
 		name={d.name}
-		canOrg
-		reasons={d.orgLists.banReasons ?? []}
+		server={bans ? { id, name: data.server.name } : null}
+		canOrg={d.orgLists.canBan}
+		scope="server"
+		reason={reason.trim()}
+		banMessage={d.banDialog?.message ?? null}
+		reasons={d.banDialog?.reasons ?? []}
 		onclose={() => (banning = false)}
-		ondone={() => invalidateAll()}
+		ondone={() => {
+			reason = '';
+			return invalidateAll();
+		}}
 	/>
 {/if}

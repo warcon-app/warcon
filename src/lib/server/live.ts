@@ -7,6 +7,7 @@ import { serverLive, type ServerLiveRow } from './db/schema';
 import type { ServerMemory } from './observe';
 import type { LiveView, Player, Status } from '$lib/types';
 import { saneScores } from '$lib/format';
+import { matchStateOf } from '$lib/match-state';
 
 const iso = (ms: number): string | null => (ms > 0 ? new Date(ms).toISOString() : null);
 
@@ -28,6 +29,9 @@ export function liveView(m: ServerMemory): LiveView {
 		gameServerId: m.identity.gameServerId,
 		startedAt: iso(m.startedAt),
 		reservedSlots: m.identity.reservedSlots,
+		restartTimeUtc: m.identity.restartTimeUtc,
+		restartTimeUtcFile: m.identity.restartTimeUtcFile,
+		matchState: m.matchState,
 		throttledUntil: m.holdUntil > Date.now() ? iso(m.holdUntil) : null,
 		status: m.status,
 		players: m.players,
@@ -50,6 +54,9 @@ export function liveViewFromRow(r: ServerLiveRow): LiveView {
 		gameServerId: r.gameServerId ?? '',
 		startedAt: r.startedAt ? r.startedAt.toISOString() : null,
 		reservedSlots: r.reservedSlots ?? null,
+		restartTimeUtc: r.restartTimeUtc ?? null,
+		restartTimeUtcFile: r.restartTimeUtcFile ?? null,
+		matchState: matchStateOf(r.matchState),
 		// A hold lasts seconds; a row read cold from the database is not inside one.
 		throttledUntil: null,
 		status: saneStatus(r.status),
@@ -71,6 +78,8 @@ export async function writeLive(db: DbOrTx, m: ServerMemory, ts: Date): Promise<
 		gameServerId: m.identity.gameServerId,
 		startedAt: m.startedAt ? new Date(m.startedAt) : null,
 		reservedSlots: m.identity.reservedSlots,
+		restartTimeUtc: m.identity.restartTimeUtc,
+		restartTimeUtcFile: m.identity.restartTimeUtcFile,
 		status: m.status,
 		players: m.players,
 		playerCount: m.status?.playerCount ?? m.players.length,

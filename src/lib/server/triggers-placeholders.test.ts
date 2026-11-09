@@ -152,6 +152,33 @@ describe('placeholders every rule fills', () => {
 		});
 		expect(await texts(row, quiet)).toEqual(['1 of 20 on Zestafona']);
 	});
+	test('an AFK watch warning and kick, with how long the player has been idle and when it acts', async () => {
+		const row = rule('afk_watch', {
+			minutes: 15,
+			warnMinutes: 10,
+			warnMessage: '{player} ({steamid}) on {map}: idle {idle} min, kicked at {limit}',
+			minPlayers: 1,
+			reason: '{player} on {map}: idle {idle} of {limit} min'
+		});
+		// a slow cadence, so looks minutes apart are no gap in the rule's watch; someone else on,
+		// earning, so the rule sees the server's cash move
+		const at = async (minute: number) => {
+			const earner = { ...OWL, name: 'Earner', steamId: '76561198000000702', cash: minute * 100 };
+			const ctx = tick({
+				ts: new Date(NOW + minute * 60_000),
+				playersIntervalMs: 600_000,
+				players: [OWL, earner]
+			});
+			const ev = await evaluateTriggers({} as Env, ctx, [row]);
+			for (const f of ev.afterCommit ?? []) f();
+			return ev.intents.map((i) => (i.params.message ?? i.params.reason) as string);
+		};
+		expect(await at(0)).toEqual([]);
+		expect(await at(11)).toEqual([
+			`[ABC] Night Owl (${OWL.steamId}) on Zestafona: idle 11 min, kicked at 15`
+		]);
+		expect(await at(16)).toEqual(['[ABC] Night Owl on Zestafona: idle 16 of 15 min']);
+	});
 	test('a match broadcast names the map that ended as players know it', async () => {
 		const row = rule('match_broadcast', {
 			endMessage: '{faction} won {previous} {score}-{scores}',

@@ -15,6 +15,7 @@ import { organizations } from '$lib/server/db/schema';
 import { RELAY_PREFIX, serializeError } from '$lib/server/relay';
 import { metricsResponse } from '$lib/server/metrics';
 import type { KillView } from '$lib/types';
+import { matchFeedOf } from '$lib/server/match-feed';
 import type { Priority } from '$lib/server/dispatcher';
 
 const json = (data: unknown, status = 200) =>
@@ -131,6 +132,9 @@ export async function relay(env: Env, path: string, url: URL, req: Request): Pro
 				String(body.serverId),
 				Array.isArray(body.kills) ? (body.kills as KillView[]) : []
 			);
+			return ok(null);
+		case '/match-feed':
+			localGateway.matchFeed(env, String(body.serverId), matchFeedOf(body.feed));
 			return ok(null);
 		case '/events': {
 			const encoder = new TextEncoder();

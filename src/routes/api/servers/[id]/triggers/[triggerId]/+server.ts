@@ -29,12 +29,12 @@ export const PATCH = route(async (event) => {
 export const DELETE = route(async (event) => {
 	const env = getEnv();
 	const user = requireUser(event.locals);
-	const { server } = await requireServerCap(
+	const { server, access } = await requireServerCap(
 		env,
 		event.locals,
 		param(event, 'id'),
 		'automation.manage'
 	);
-	await deleteTrigger(env, event.request, user, server, param(event, 'triggerId'));
+	await deleteTrigger(env, event.request, user, server, access, param(event, 'triggerId'));
 	return apiJson({ ok: true });
 });

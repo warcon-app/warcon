@@ -21,6 +21,7 @@
 	import { STATUS_STYLE_LABELS, STATUS_STYLES, type StatusStyle } from '$lib/status-styles';
 	import CardOptions from '$lib/components/CardOptions.svelte';
 	import { FEATURE_LABELS, PUBLIC_FEATURES, allowed } from '$lib/features';
+	import { FAILURES_ONLY, NO_ACTIONS, RULE_GROUPS, RULE_KINDS } from '$lib/rule-kinds';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -52,6 +53,9 @@
 				label: string;
 				url: string;
 				events: Record<string, boolean>;
+				/** with Automation ticked: every kind of rule, or only those ticked in `kinds` */
+				everyKind: boolean;
+				kinds: Record<string, boolean>;
 				status: boolean;
 				style: StatusStyle;
 				interval: number;
@@ -241,6 +245,8 @@
 			events[e.key] = w
 				? w.events.includes(e.key)
 				: e.key === 'bans' || e.key === 'commands' || e.key === 'triggers';
+		const kinds: Record<string, boolean> = {};
+		for (const k of RULE_KINDS) kinds[k.kind] = !!w?.triggerKinds?.includes(k.kind);
 		const servers: Record<string, boolean> = {};
 		for (const s of data.orgServers) servers[s.id] = !!w?.serverIds?.includes(s.id);
 		dialog = {
@@ -249,6 +255,8 @@
 			label: w?.label ?? '',
 			url: '',
 			events,
+			everyKind: !w?.triggerKinds,
+			kinds,
 			status: w?.statusEnabled ?? false,
 			style: w?.statusStyle ?? 'banner',
 			interval: w?.statusIntervalS ?? 60,
@@ -267,6 +275,10 @@
 			events: Object.entries(d.events)
 				.filter(([, on]) => on)
 				.map(([k]) => k),
+			triggerKinds:
+				!d.events.triggers || d.everyKind
+					? null
+					: RULE_KINDS.filter((k) => d.kinds[k.kind]).map((k) => k.kind),
 			statusEnabled: d.status,
 			statusStyle: d.style,
 			statusIntervalS: d.interval,
@@ -317,6 +329,11 @@
 	}
 	const eventLabel = (key: string) =>
 		data.webhookEvents.find((e) => e.key === key)?.label.split(' (')[0] ?? key;
+	/** "Automation (4 kinds)" for a webhook that carries only some kinds of rule */
+	const eventSummary = (w: WebhookView, key: string) => {
+		const n = key === 'triggers' ? w.triggerKinds?.length : undefined;
+		return n ? `${eventLabel(key)} (${n} kind${n === 1 ? '' : 's'})` : eventLabel(key);
+	};
 
 	// --- JSON webhooks ---
 	const openJsonHook = (w: JsonWebhookView | null) => {
@@ -731,10 +748,11 @@
 			</div>
 			<p class="mb-3 text-[13px] text-mist-400">
 				A webhook is one Discord channel, and each one carries what you tick for it: the audit trail
-				(bans, kicks, trigger actions, sign-ins), team kills from the kill feed, and live status
-				cards, one per server, showing the map and who is on. Add one webhook per channel; a
-				team-kill channel is simply a webhook with only that box ticked. In Discord, open the
-				channel's settings → Integrations → Webhooks, copy the URL and paste it here.
+				(bans, kicks, trigger actions, sign-ins), team kills from the kill feed, bounties set and
+				claimed by a Bounty rule, and live status cards, one per server, showing the map and who is
+				on. Add one webhook per channel; a team-kill or bounty channel is simply a webhook with only
+				that box ticked. In Discord, open the channel's settings → Integrations → Webhooks, copy the
+				URL and paste it here.
 			</p>
 			{#each data.webhooks as w (w.id)}
 				<div class="kv items-start">
@@ -749,7 +767,7 @@
 						<div class="text-[12px] text-mist-400">
 							{[
 								...(w.statusEnabled ? [`Status cards (${w.statusStyle})`] : []),
-								...w.events.map(eventLabel)
+								...w.events.map((e) => eventSummary(w, e))
 							].join(' · ')}
 							{#if w.serverIds}· {w.serverIds.length} server{w.serverIds.length === 1
 									? ''
@@ -1041,6 +1059,30 @@
 						<label class="flex items-center gap-2 text-[13px]"
 							><input type="checkbox" bind:checked={d.events[e.key]} /> {e.label}</label
 						>
+						{#if e.key === 'triggers' && d.events.triggers}
+							<div class="space-y-1 pl-5">
+								<label class="flex items-center gap-2 text-[13px]"
+									><input type="checkbox" bind:checked={d.everyKind} /> Every kind of rule</label
+								>
+								{#if !d.everyKind}
+									<div class="space-y-1 pl-5">
+										{#each RULE_GROUPS as g, i (g)}
+											<span class="block caps text-[10px] text-mist-400 {i ? 'pt-1.5' : 'pt-0.5'}"
+												>{g}</span
+											>
+											{#each RULE_KINDS.filter((k) => k.group === g && !NO_ACTIONS.includes(k.kind)) as k (k.kind)}
+												<label class="flex items-center gap-2 text-[13px]"
+													><input type="checkbox" bind:checked={d.kinds[k.kind]} />
+													{k.label}{#if FAILURES_ONLY.includes(k.kind)}<span
+															class="text-[12px] text-mist-400">· failures only</span
+														>{/if}</label
+												>
+											{/each}
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/if}
 					{/each}
 				</div>
 			</div>
@@ -1070,7 +1112,9 @@
 				<button
 					type="submit"
 					class="btn btn-primary"
-					disabled={busy || (!d.allServers && !Object.values(d.servers).some(Boolean))}
+					disabled={busy ||
+						(!d.allServers && !Object.values(d.servers).some(Boolean)) ||
+						(d.events.triggers && !d.everyKind && !Object.values(d.kinds).some(Boolean))}
 					>{d.id ? 'Save' : 'Add webhook'}</button
 				>
 			</div>

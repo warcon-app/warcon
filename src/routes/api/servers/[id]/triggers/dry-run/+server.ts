@@ -17,9 +17,14 @@ export const POST = route(async (event) => {
 	if (!isTriggerKind(body.kind)) throw new ApiError(400, 'Unknown trigger kind.');
 	// A dry run names the players a rule would act on and why: for those who could save the rule.
 	requireRuleCaps(body.kind, body.config, server, access);
+	// The slots the live rules go by: the server's list as the panel keeps it (its config document),
+	// the running list where the build serves no document.
 	const reserved = () =>
 		gateway()
-			.run(env, server, 'reserved', {})
-			.then((r) => (r as { reserved: string[] }).reserved);
+			.run(env, server, 'reserved', { document: 1 })
+			.then((r) => {
+				const { reserved, document } = r as { reserved: string[]; document?: string[] | null };
+				return document ?? reserved;
+			});
 	return apiJson({ ok: true, result: await dryRun(env, server, body.kind, body.config, reserved) });
 });

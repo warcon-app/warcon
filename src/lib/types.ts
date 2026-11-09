@@ -3,6 +3,7 @@ import type { StatusStyle } from './status-styles';
 import type { OrgRole } from '$lib/server/access';
 import type { BuiltinRole, Capability } from '$lib/capabilities';
 import type { BanReason } from '$lib/ban-reasons';
+import type { ManualRestart } from '$lib/uptime';
 
 export type { OrgRole, Capability, BuiltinRole };
 
@@ -65,6 +66,8 @@ export interface ServerInfo {
 	publicLeaderboards: boolean;
 	/** the public status page also carries the last kills */
 	publicKills: boolean;
+	/** an owner's own restart time (UTC), used instead of the game's; null: the game decides */
+	restartSchedule: ManualRestart | null;
 	/** what the site owner allows this server's organisation */
 	allowPublicStatus: boolean;
 	allowPublicLeaderboards: boolean;
@@ -145,6 +148,18 @@ export interface LiveView {
 	 * reserved players, on top of `status.maxPlayers`; null until the worker has read it
 	 */
 	reservedSlots: number | null;
+	/**
+	 * RestartTimeUtc ("HH:MM", UTC) from the config document as the running process started with
+	 * it, and as the document holds it now (in effect from the next restart); null when unset or
+	 * not read yet
+	 */
+	restartTimeUtc?: string | null;
+	restartTimeUtcFile?: string | null;
+	/**
+	 * The last match state the kill feed reported (Season 2 builds; $lib/match-state), null when
+	 * none has; read it through currentState
+	 */
+	matchState?: MatchStateView | null;
 	/** set while the listener has asked the panel to slow down (429 with Retry-After) */
 	throttledUntil: string | null;
 	status: Status | null;
@@ -152,6 +167,15 @@ export interface LiveView {
 	statusAt: string | null;
 	playersAt: string | null;
 	observedAt: string | null;
+}
+/** The last match state the kill feed reported ($lib/match-state names them). */
+export interface MatchStateView {
+	/** the game's name, e.g. MatchState.PreMatch.WaitingForPlayers.PlayerCount */
+	state: string;
+	/** the map's catalog id as the event named it */
+	map: string;
+	/** when Warcon received it */
+	at: string;
 }
 /** One kill as the game's feed reported it and Warcon stored it (kills table). */
 export interface KillView {
@@ -370,6 +394,8 @@ export interface PlayerMark {
 	risk: RiskView;
 	/** the Steam profile's name, as the dossier shows it; null without a profile on record */
 	steamName: string | null;
+	/** kills and deaths over the matches the player finished on this server; null before the first */
+	record: { kills: number; deaths: number } | null;
 }
 
 export interface PlayerNoteView {
@@ -433,24 +459,27 @@ export interface DossierView {
 	steam: SteamView | null;
 	risk: RiskView;
 	watch: { watched: boolean; reason: string; updatedByName: string; updatedAt: string | null };
-	bannedOn: { serverId: string; serverName: string; reason: string; bannedBy: string }[];
+	/** every ban that holds the player on the servers the viewer can open */
+	bans: PlayerBanView[];
 	/** how many servers the organisation runs (for "banned on N of M") */
 	orgServerCount: number;
 	/**
-	 * the player's entry on each organisation list the viewer edits (null on the others, whatever
-	 * they hold), and which lists those are
+	 * the player's reserved slot on the organisation's list when the viewer edits that list, and
+	 * which of the organisation's lists the viewer edits
 	 */
 	orgLists: {
-		ban: ListEntryView | null;
 		reserve: ListEntryView | null;
 		canBan: boolean;
 		canReserve: boolean;
-		/** the org's quick reasons for the ban dialog; null unless canBan */
-		banReasons: BanReason[] | null;
 	};
+	/** the org's quick reasons and ban message for the ban dialog; null unless the viewer may ban
+	 *  here (Bans) or on the org's list */
+	banDialog: { reasons: BanReason[]; message: string } | null;
 	summary: {
 		sessions: number;
 		minutes: number;
+		/** of the minutes, those with the server low, as a Seeding reward counts them */
+		seedMinutes: number;
 		kills: number;
 		deaths: number;
 		firstSeen: string | null;
@@ -463,21 +492,74 @@ export interface DossierView {
 		serverName: string;
 		sessions: number;
 		minutes: number;
+		seedMinutes: number;
 		kills: number;
 		deaths: number;
 		lastSeen: string;
 	}[];
 	recent: DossierSession[];
 	notes: PlayerNoteView[];
-	actions: {
-		id: number;
-		ts: string;
-		actorName: string;
-		action: string;
-		serverName: string;
-		outcome: string;
-		message: string;
-	}[];
+	actions: DossierAction[];
+	/** where the player stands with this server's Seeding reward; null unless the viewer holds
+	 *  Automation here and the server has the rule switched on */
+	seedReward: SeedRewardProgress | null;
+}
+
+/** A ban that holds a player on a server the viewer can open, as the dossier lists it. */
+export interface PlayerBanView {
+	/** org: the organisation's ban list; server: one server's own list; game: the game's own list */
+	source: 'org' | 'server' | 'game';
+	/** the server it holds them on; null for the organisation's list, which holds them on every
+	 *  server that takes it */
+	serverId: string | null;
+	serverName: string;
+	reason: string;
+	/** when it was placed, where known */
+	addedAt: string | null;
+	/** when the panel lifts it; null for one with no end (the game's own list keeps none) */
+	expiresAt: string | null;
+	/** who placed it: a panel ban's author only for those who manage bans on that server or edit
+	 *  the org's ban list; the game's own name for one on its list */
+	by: string;
+	/** may the viewer lift it from the dossier (the route it calls checks again) */
+	canUnban: boolean;
+}
+
+/** One row of the dossier's admin actions: the trail row, with the parts of it the table shows. */
+export interface DossierAction {
+	id: number;
+	ts: string;
+	actorName: string;
+	action: string;
+	serverName: string;
+	outcome: string;
+	message: string;
+	/** the reason a hand-sent kick or ban gave */
+	reason: string;
+	/** what a hand-sent whisper said */
+	text: string;
+	/** the list a list row is about */
+	list: ListKind | null;
+	/** how long a ban or slot added or changed lasts: null when the row says nothing of it,
+	 *  `{ until: null }` for one with no end */
+	length: { until: string | null } | null;
+}
+
+/** Where a player stands with a server's Seeding reward, as the rule adds it up. */
+export interface SeedRewardProgress {
+	/** the rule's terms: `minutes` of seed time over the last `windowDays` earn a slot for
+	 *  `slotDays`, here or on every server of the org */
+	minutes: number;
+	windowDays: number;
+	lowAt: number;
+	untilFull: boolean;
+	slotDays: number;
+	scope: 'server' | 'org';
+	/** seed time banked on this server in the window */
+	seconds: number;
+	/** a reserved slot the player holds here, which the rule passes over them for; `until` when
+	 *  the panel lifts it, null for one with no end or one the game holds on its own list */
+	holdsSlot: { until: string | null } | null;
 }
 
 // ---- automation ---------------------------------------------------------------------------------
@@ -498,7 +580,14 @@ export type TriggerKind =
 	| 'two_teams'
 	| 'kill_distance'
 	| 'afk_protection'
-	| 'name_change';
+	| 'afk_watch'
+	| 'name_change'
+	| 'bounty'
+	| 'rotation_shuffle'
+	| 'live_name'
+	| 'restart_skip'
+	| 'weather_cycle'
+	| 'death_whisper';
 
 export interface TriggerView {
 	id: string;
@@ -512,6 +601,19 @@ export interface TriggerView {
 	createdAt: string | null;
 	/** an AFK protection rule's standing: acting while the server seeds, or off since a match went live */
 	phase?: { on: boolean; since: string | null; why: string } | null;
+	/** a Bounty rule's open bounty: on whom, the run that set it, and when */
+	bounty?: { steamId: string; name: string; streak: number; setAt: string } | null;
+	/**
+	 * a Live server name rule's last write (the name and when) and why the latest try wrote nothing
+	 * ('' when it did); `restored` once its own name went back after it was switched off
+	 */
+	liveName?: {
+		name: string;
+		at: string | null;
+		refused: string;
+		since: string | null;
+		restored: boolean;
+	} | null;
 }
 
 export interface DryRunResult {
@@ -530,6 +632,8 @@ export interface WebhookView {
 	label: string;
 	urlHint: string;
 	events: string[];
+	/** with Automation ticked, the kinds of rule it carries; null is every kind */
+	triggerKinds: TriggerKind[] | null;
 	serverIds: string[] | null;
 	enabled: boolean;
 	/** keeps a live status card per covered server in the channel, edited in place */
@@ -626,6 +730,23 @@ export interface ListSyncSummary {
 	servers: ListSyncServer[];
 }
 
+/** How one server took an announcement (POST /api/orgs/:id/broadcast). */
+export interface AnnounceResult {
+	serverId: string;
+	serverName: string;
+	ok: boolean;
+	/** the game's answer when it was sent, else why it was not */
+	message: string;
+	/** the refusal's code ('unreachable', 'rate_limited', …) when it was not sent */
+	code?: string;
+}
+
+export interface AnnounceAnswer {
+	sent: number;
+	failed: number;
+	results: AnnounceResult[];
+}
+
 export interface OrgListsView {
 	role: 'owner' | 'editor';
 	/** the lists the reader edits; `lists` holds only these */
@@ -643,7 +764,32 @@ export interface OrgListsView {
 		/** why the last run could not reach or finish on the server */
 		lastError: string;
 	}[];
+	/** the org's default lists of the kinds the reader edits */
 	lists: ListView[];
+	/** the org's reserved-slot groups; empty unless the reader edits reserved slots */
+	groups: SlotGroupView[];
+}
+
+/**
+ * A reserved-slot group: a list of the org's beside its default one, on in a window (switched on
+ * and off by hand or set ahead), on every server or chosen ones.
+ */
+export interface SlotGroupView {
+	id: string;
+	name: string;
+	/** on right now */
+	on: boolean;
+	/** when the window opens; null when it is open since it was switched on, or there is none */
+	onFrom: string | null;
+	/** when it closes, or closed; null while on until switched off */
+	onUntil: string | null;
+	/** on every server of the org, now and later; else the servers chosen */
+	everyServer: boolean;
+	servers: { id: string; name: string }[];
+	entryCount: number;
+	/** its players whose slot was taken out of a server's document and that server keeps until it restarts */
+	leaving: number;
+	createdAt: string;
 }
 
 export interface ImportCandidate {
@@ -680,6 +826,8 @@ export interface ReservedSlotState {
 	member: boolean;
 	/** the list a managed slot comes from: the organisation's, or this server's own */
 	scope: 'org' | 'server';
+	/** the organisation's group the slot comes from, for staff (as the note); null otherwise */
+	group: string | null;
 	/** when the panel lifts the slot; null for a permanent one (or one not managed) */
 	expiresAt: string | null;
 }

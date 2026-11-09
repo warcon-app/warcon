@@ -121,10 +121,30 @@ describe('validateConfig', () => {
 		expect(riskKickScore({ watchlist: true })).toBeNull();
 		expect(() => validateConfig('risk_kick', { kickAtLevel: 'low' })).toThrow('at least one rule');
 	});
+	test('risk_kick: players it never kicks are SteamID64 strings, each once, 100 at most', () => {
+		const rule = (exempt: unknown) =>
+			validateConfig('risk_kick', { watchlist: true, exempt }) as RiskKickConfig;
+		expect(rule(undefined).exempt).toEqual([]);
+		expect(rule([' 76561198000000001', '76561198000000001', '']).exempt).toEqual([
+			'76561198000000001'
+		]);
+		expect(() => rule(['Ramon'])).toThrow('"Ramon" is not a SteamID64');
+		expect(() => rule('76561198000000001')).toThrow('exempt must be a list');
+		// a JSON number that long arrives rounded, and would leave another player alone
+		expect(() => rule(JSON.parse('[76561198100000101]'))).toThrow('sent as strings');
+		const many = Array.from({ length: 101 }, (_, i) => String(76561198000000000n + BigInt(i)));
+		expect(rule(many.slice(0, 100)).exempt).toHaveLength(100);
+		expect(() => rule(many)).toThrow('At most 100');
+		// a list of players is no rule to kick by
+		expect(() => validateConfig('risk_kick', { exempt: ['76561198000000001'] })).toThrow(
+			'at least one rule'
+		);
+	});
 	test('ping_kick validates the ping and duration and supplies a reason', () => {
 		expect(validateConfig('ping_kick', {})).toEqual({
 			maxPingMs: 200,
 			durationSeconds: 60,
+			spareReserved: false,
 			reason: 'Ping too high for too long.'
 		});
 		expect(() => validateConfig('ping_kick', { maxPingMs: 0 })).toThrow('ping limit');
@@ -132,6 +152,14 @@ describe('validateConfig', () => {
 		expect(validateConfig('ping_kick', { maxPingMs: 250, durationSeconds: 30 })).toMatchObject({
 			maxPingMs: 250,
 			durationSeconds: 30
+		});
+	});
+	test('ping_kick spares reserved slots only when told to', () => {
+		expect(validateConfig('ping_kick', { spareReserved: true })).toMatchObject({
+			spareReserved: true
+		});
+		expect(validateConfig('ping_kick', { spareReserved: false })).toMatchObject({
+			spareReserved: false
 		});
 	});
 	test('seed_reward needs a seed time that fits its window, and fills in the rest', () => {
@@ -456,7 +484,7 @@ describe('riskKickVerdict', () => {
 				{ ...cfg, spareReserved: false },
 				{ ...base, reserved: true, bannedOn: [{ serverName: 'x', reason: '' }] }
 			)
-		).toBe('banned on x');
+		).toBe('banned on another server of this organisation');
 	});
 	test('order: ban elsewhere, watchlist, VAC, age', () => {
 		expect(riskKickVerdict(cfg, { ...base, watched: { reason: 'tk' } })).toBe(
@@ -544,8 +572,8 @@ describe('riskKickVerdict', () => {
 			resembles: [{ name: 'Nomad', steamId: '76561198000000009', serverName: 'EU #2' }]
 		};
 		expect(riskKickVerdict({ ...none, kickAtScore: 50 }, lookalike)).toBeNull();
-		expect(riskKickVerdict({ ...none, kickAtScore: 20 }, lookalike)).toMatch(
-			/^medium risk \(40\): Steam account is 8 days old; Name resembles banned Nomad/
+		expect(riskKickVerdict({ ...none, kickAtScore: 20 }, lookalike)).toBe(
+			'medium risk (40): Steam account is 8 days old; Name resembles a banned player'
 		);
 		// any whole score works, not only the level boundaries
 		expect(riskKickVerdict({ ...none, kickAtScore: 40 }, lookalike)).toStartWith(
@@ -590,12 +618,38 @@ describe('riskKickVerdict', () => {
 		expect(riskKickVerdict(levelOnly, { ...old, performance })).toStartWith('medium risk (28)');
 		expect(riskKickVerdict(levelOnly, old)).toBeNull();
 	});
+	test('a verdict never says which server banned the player, why, or whom they resemble', () => {
+		const signals = {
+			...base,
+			steamEnabled: false,
+			profile: null,
+			bannedOn: [
+				{ serverName: 'EU #2', reason: 'Griefing' },
+				{ serverName: 'EU #3', reason: 'Cheating' }
+			],
+			resembles: [{ name: 'Nomad', steamId: '76561198000000009', serverName: 'EU #2' }]
+		};
+		const verdicts = [
+			riskKickVerdict(cfg, signals),
+			riskKickVerdict({ ...cfg, bannedElsewhere: false, kickAtScore: 50 }, signals)
+		];
+		expect(verdicts).toEqual([
+			'banned on another server of this organisation',
+			// two bans read as one line, not two
+			'high risk (100): Banned on another server of this organisation; Name resembles a banned player [Steam not checked]'
+		]);
+		for (const v of verdicts)
+			for (const told of ['EU #', 'Griefing', 'Cheating', 'Nomad', '76561198000000009'])
+				expect({ v, told: v!.includes(told) }).toEqual({ v, told: false });
+	});
 	test('the risk level works from local signals alone and says when Steam was not checked', () => {
 		const v = riskKickVerdict(
 			{ ...cfg, bannedElsewhere: false, kickAtScore: 50 },
 			{ ...base, steamEnabled: false, profile: null, bannedOn: [{ serverName: 'x', reason: 'tk' }] }
 		);
-		expect(v).toBe('high risk (60): Banned on x: tk [Steam not checked]');
+		expect(v).toBe(
+			'high risk (60): Banned on another server of this organisation [Steam not checked]'
+		);
 		expect(
 			riskKickVerdict(
 				{ ...cfg, kickAtScore: 50 },
@@ -693,6 +747,19 @@ describe('restartNoticeStage', () => {
 		expect(restartNoticeStage({ ...cfg, leadMinutes: 0 }, null, at(23.9))).toBeNull();
 		expect(restartNoticeStage({ ...cfg, leadMinutes: 0 }, null, at(24))!.stage).toBe('due');
 	});
+	test('a daily time opens the window at that time UTC, not 24 hours up', () => {
+		// the start is midnight UTC, so 12:00 UTC comes twelve hours later
+		for (const source of ['config', 'manual'] as const) {
+			const schedule = { kind: 'daily', time: '12:00', source } as const;
+			const on = (hours: number) => ({ ...at(hours), schedule });
+			const lead = restartNoticeStage(cfg, null, on(11.6))!;
+			expect(lead.stage).toBe('lead');
+			expect(lead.minutes).toBe(24);
+			expect(restartNoticeStage(cfg, lead.state, on(12.1))!.stage).toBe('due');
+		}
+		// 24 hours up would still be twelve hours off
+		expect(restartNoticeStage(cfg, null, at(12.1))).toBeNull();
+	});
 });
 
 describe('team_kill', () => {
@@ -736,6 +803,10 @@ describe('team_kill', () => {
 			'Id.Item.ATMine',
 			'Id.Item.Claymore'
 		]);
+		expect(notCounted(['Id.Buildable.BarbedWire', 'VehicleExplosion'])).toEqual([
+			'Id.Buildable.BarbedWire',
+			'VehicleExplosion'
+		]);
 		expect(() => notCounted(['Barbed <b>wire</b>'])).toThrow('kill feed tag');
 		expect(() => notCounted(Array.from({ length: 41 }, (_, i) => `Id.Item.W${i}`))).toThrow(
 			'at most 40'
@@ -744,16 +815,41 @@ describe('team_kill', () => {
 
 	test('countsForTeamKill: any cause but those left out, in any case; an older rule leaves out barbed wire', () => {
 		const wire = 'Id.Buildable.BarbedWire';
+		const by = (cause: string | null) => ({ cause, tags: [] });
 		// saved before the list existed
-		expect(countsForTeamKill({}, wire)).toBe(false);
-		expect(countsForTeamKill({}, 'ID.BUILDABLE.BARBEDWIRE')).toBe(false);
-		expect(countsForTeamKill({}, 'Id.Item.AK74M')).toBe(true);
-		expect(countsForTeamKill({}, null)).toBe(true);
+		expect(countsForTeamKill({}, by(wire))).toBe(false);
+		expect(countsForTeamKill({}, by('ID.BUILDABLE.BARBEDWIRE'))).toBe(false);
+		expect(countsForTeamKill({}, by('Id.Item.AK74M'))).toBe(true);
+		expect(countsForTeamKill({}, by(null))).toBe(true);
 		// a list, even an empty one, is what the rule says
-		expect(countsForTeamKill({ notCounted: [] }, wire)).toBe(true);
-		expect(countsForTeamKill({ notCounted: ['Id.Item.Claymore'] }, wire)).toBe(true);
-		expect(countsForTeamKill({ notCounted: ['Id.Item.Claymore'] }, 'id.item.claymore')).toBe(false);
-		expect(countsForTeamKill({ notCounted: [wire] }, null)).toBe(true);
+		expect(countsForTeamKill({ notCounted: [] }, by(wire))).toBe(true);
+		expect(countsForTeamKill({ notCounted: ['Id.Item.Claymore'] }, by(wire))).toBe(true);
+		expect(countsForTeamKill({ notCounted: ['Id.Item.Claymore'] }, by('id.item.claymore'))).toBe(
+			false
+		);
+		expect(countsForTeamKill({ notCounted: [wire] }, by(null))).toBe(true);
+	});
+
+	test('countsForTeamKill: a crash is left out when the list holds it, in any case; a teammate who blows a vehicle up, or runs one over, still counts', () => {
+		const heli = 'Vehicle.Variant.Air.Rotary.Littlebird.Default';
+		const crash = { cause: heli, tags: ['VehicleExplosion'] };
+		const crashes = { notCounted: ['Id.Buildable.BarbedWire', 'VehicleExplosion'] };
+		expect(countsForTeamKill(crashes, crash)).toBe(false);
+		expect(countsForTeamKill({ notCounted: ['vehicleexplosion'] }, crash)).toBe(false);
+		// a rule without it, saved before the list or since
+		expect(countsForTeamKill({}, crash)).toBe(true);
+		expect(countsForTeamKill({ notCounted: ['Id.Buildable.BarbedWire'] }, crash)).toBe(true);
+		expect(
+			countsForTeamKill(crashes, { cause: 'Id.Item.C4Explosive', tags: ['VehicleExplosion'] })
+		).toBe(true);
+		expect(
+			countsForTeamKill(crashes, {
+				cause: 'Id.Vehicle.WeaponExtension.STN_01.MistralAA',
+				tags: ['VehicleExplosion']
+			})
+		).toBe(true);
+		expect(countsForTeamKill(crashes, { cause: heli, tags: ['RoadKill'] })).toBe(true);
+		expect(countsForTeamKill(crashes, { cause: null, tags: ['VehicleExplosion'] })).toBe(true);
 	});
 
 	test('teamKillStage: a whisper from warnAt on, a kick from kickAt on', () => {

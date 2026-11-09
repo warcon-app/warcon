@@ -24,7 +24,8 @@
 		shadowed = [],
 		disabled = false,
 		tickRange = null,
-		liveRoutes = true
+		liveRoutes = true,
+		nameRule = null
 	}: {
 		text: string;
 		/** the document as last loaded from (or applied to) the server, for change marks */
@@ -36,6 +37,8 @@
 		tickRange?: { min: number; max: number } | null;
 		/** whether the build serves PATCH /v1/settings, so the "also changeable live" hints apply */
 		liveRoutes?: boolean;
+		/** the Automation tab, when a Live server name rule keeps the server name (shown read-only) */
+		nameRule?: string | null;
 	} = $props();
 
 	let parsed = $derived(parseIni(text));
@@ -58,7 +61,9 @@
 		new Map(shadowed.map((s) => [`${s.section}|${String(s.key).toLowerCase()}`, s]))
 	);
 	// A key the command line pins is shown but never editable (live build CL-501228+).
-	const locked = (f: ConfigField) => !!lockedFor(f, sections);
+	// So is the name while a Live server name rule keeps it: an edit would be written over.
+	const ruled = (f: ConfigField) => !!nameRule && f.key === 'serverName';
+	const locked = (f: ConfigField) => !!lockedFor(f, sections) || ruled(f);
 	function badge(f: ConfigField): { label: string; cls: string; title: string } | null {
 		const pin = lockedFor(f, sections);
 		if (pin)
@@ -117,6 +122,7 @@
 				<div class="mb-1.5 flex flex-wrap items-center gap-2">
 					<span class="caps text-mist-400">{row.label}</span>
 					{#if b}<span class="pip {b.cls}" title={b.title}>{b.label}</span>{/if}
+					{#if ruled(first)}<span class="pip bg-accent/15 text-accent">live name rule</span>{/if}
 					{#if row.fields.some(changed)}<span class="pip bg-accent/15 text-accent">modified</span
 						>{/if}
 					{#if !row.fields.every(inFile)}<span
@@ -191,8 +197,14 @@
 					{/each}
 				</div>
 				<p class="note mt-1.5">
-					{row.help}
-					{#if first.live && liveRoutes}Also changeable at once, without a file apply, from {first.live}.{/if}
+					{#if ruled(first)}
+						The name shown in the server browser. The Live server name rule on the
+						<a class="link" href={nameRule}>Automation tab</a> keeps it, with its live part appended,
+						at most once a minute; change it there.
+					{:else}
+						{row.help}
+						{#if first.live && liveRoutes}Also changeable at once, without a file apply, from {first.live}.{/if}
+					{/if}
 				</p>
 			</div>
 		{/each}

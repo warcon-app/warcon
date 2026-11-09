@@ -2,6 +2,7 @@
 // something; the web's SSE route fans it out to browsers. When web and worker run as separate
 // processes the web subscribes to the worker's relay stream and re-emits here.
 import type { KillView, LiveView } from '$lib/types';
+import { forLog } from './http';
 
 export interface LiveEvent {
 	type: 'live';
@@ -36,7 +37,7 @@ export function emit(e: WarconEvent): void {
 		try {
 			fn(e);
 		} catch (err) {
-			console.error('[warcon] event listener', err);
+			console.error('[warcon] event listener', forLog(err));
 		}
 	}
 }

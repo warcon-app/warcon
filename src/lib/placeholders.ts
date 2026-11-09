@@ -61,8 +61,9 @@ interface MessageRule {
 	fields: readonly string[];
 	own: readonly string[];
 	player: boolean;
-	/** its text can be kept where staff read it (a Kill distance reason becomes a ban reason), so it
-	 *  has no org-wide stats: staff of this server may not see the organisation's other servers */
+	/** its text can be kept where staff read it (a Kill distance reason becomes a ban reason), or is
+	 *  said to the whole server (a Bounty's), so it has no org-wide stats: staff of this server may
+	 *  not see the organisation's other servers, and a player's are told to them alone */
 	kept?: boolean;
 }
 
@@ -70,6 +71,8 @@ interface MessageRule {
 export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> = {
 	welcome: { fields: ['message'], own: [], player: true },
 	faction_change: { fields: ['message'], own: ['previous'], player: true },
+	// who killed the player, with what, from how far: blank where it does not apply (a fall)
+	death_whisper: { fields: ['messages'], own: ['killer', 'weapon', 'distance'], player: true },
 	broadcast: { fields: ['messages'], own: [], player: false },
 	restart_notice: { fields: ['leadMessage', 'message'], own: ['minutes'], player: false },
 	// the result of the match that ended, and from its players' lines the best of them
@@ -81,6 +84,8 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 	risk_kick: { fields: ['reason'], own: [], player: true },
 	name_filter: { fields: ['reason'], own: ['why'], player: true },
 	ping_kick: { fields: ['reason'], own: [], player: true },
+	// how long the player has been idle, and the idle time the rule acts at (both whole minutes)
+	afk_watch: { fields: ['warnMessage', 'reason'], own: ['idle', 'limit'], player: true },
 	team_kill: { fields: ['warnMessage', 'kickReason'], own: ['victim', 'count'], player: true },
 	two_teams: { fields: ['message'], own: ['team'], player: true },
 	kill_distance: {
@@ -92,7 +97,15 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 	seed_reward: { fields: ['message'], own: ['minutes', 'until', 'days'], player: true },
 	afk_protection: { fields: ['message', 'doneMessage'], own: ['goal'], player: false },
 	// the name the player had before the change
-	name_change: { fields: ['reason'], own: ['previous'], player: true }
+	name_change: { fields: ['reason'], own: ['previous'], player: true },
+	// said to the whole server, so no org-wide stats: `{name}` is the marked player when the bounty is
+	// set and the claimer after, `{target}` always the marked player
+	bounty: {
+		fields: ['setMessage', 'claimMessage', 'whisper'],
+		own: ['target', 'streak', 'reward', 'days', 'until'],
+		player: true,
+		kept: true
+	}
 };
 
 export type PlaceholderGroupKey = 'own' | 'player' | 'stats' | 'org' | 'server';

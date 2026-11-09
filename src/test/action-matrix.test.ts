@@ -49,6 +49,7 @@ const ACTION_CAPS: Record<string, Capability> = {
 	rotationSettings: 'rotation.save',
 	serverLog: 'audit.read',
 	config: 'config.apply',
+	feed: 'config.apply',
 	settings: 'config.apply',
 	configValidate: 'config.apply',
 	configApply: 'config.apply',

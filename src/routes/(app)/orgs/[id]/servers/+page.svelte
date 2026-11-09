@@ -4,6 +4,8 @@
 	// owner sees them side by side.
 	import { watchLive } from '$lib/live';
 	import { fmtNum, mapName } from '$lib/format';
+	import { can } from '$lib/capabilities';
+	import AnnounceDialog from '$lib/components/AnnounceDialog.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import Pulse from '$lib/components/Pulse.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
@@ -58,6 +60,8 @@
 	let playing = $derived(
 		seen.reduce((n, s) => n + (live[s.id].ok ? (live[s.id].status?.playerCount ?? 0) : 0), 0)
 	);
+	let canAnnounce = $derived(data.orgServers.some((s) => can(s.caps, 'chat.send')));
+	let announcing = $state(false);
 </script>
 
 <div class="mb-4 flex flex-wrap items-center gap-3">
@@ -78,9 +82,12 @@
 			{/if}
 		</p>
 	</div>
-	{#if owner}
+	{#if owner || canAnnounce}
 		<span class="ml-auto inline-flex gap-1.5">
-			<a class="btn btn-primary" href="/servers">Manage servers</a>
+			{#if canAnnounce}
+				<button class="btn" onclick={() => (announcing = true)}>Announce</button>
+			{/if}
+			{#if owner}<a class="btn btn-primary" href="/servers">Manage servers</a>{/if}
 		</span>
 	{/if}
 </div>
@@ -176,4 +183,12 @@
 			</tbody>
 		</table>
 	</div>
+{/if}
+
+{#if announcing}
+	<AnnounceDialog
+		servers={data.orgServers}
+		orgId={data.org.id}
+		onclose={() => (announcing = false)}
+	/>
 {/if}

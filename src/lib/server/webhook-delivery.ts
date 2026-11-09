@@ -5,11 +5,17 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Env } from './env';
 import { decryptSecret } from './crypto';
+import { forLog, str } from './http';
 import { playerMarks, servers, webhooks, type AuditRow, type WebhookRow } from './db/schema';
 import { OWNERS_ROWS } from './audit-rows';
 import { escapeMarkdown } from './webhook-status-core';
 import { KILL_DISTANCE_SKIP } from './kill-distance';
 import { causeLabel } from '$lib/causes';
+import { MAX_CHAT } from '$lib/chat';
+import { mapName } from '$lib/format';
+import { oneLine } from '$lib/saved-messages';
+import type { BountyLapse } from './bounty';
+import { FAILURES_ONLY } from '$lib/rule-kinds';
 import type { KillView } from '$lib/types';
 
 export const WEBHOOK_EVENTS = [
@@ -20,18 +26,20 @@ export const WEBHOOK_EVENTS = [
 	'management',
 	'auth',
 	'teamkills',
-	'watched'
+	'watched',
+	'bounties'
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
 	bans: 'Bans and unbans',
-	commands: 'Other game commands (kick, broadcast, map, config…)',
+	commands: 'Game commands and chat (kick, map, config…; whisper and broadcast text)',
 	triggers: 'Automation (trigger actions)',
 	players: 'Player notes and watchlist changes',
 	management: 'Servers, members, invite links, accounts',
 	auth: 'Sign-ins and sign-in failures',
 	teamkills: 'Team kills (from the kill feed)',
-	watched: 'Watched players joining'
+	watched: 'Watched players joining',
+	bounties: "Bounties (set, claimed and lapsed, for a players' channel)"
 };
 
 /** Which event class an audit row belongs to. */
@@ -142,16 +150,25 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.faction_change': 'Trigger · faction change whisper',
 	'trigger.broadcast': 'Trigger · scheduled broadcast',
 	'trigger.empty_reset': 'Trigger · empty-server map reset',
-	'trigger.risk_kick': 'Trigger · risk kick',
+	'trigger.restart_skip': 'Trigger · skip map after restart',
+	'trigger.risk_kick': 'Trigger · kick on connect risk',
+	'trigger.ping_kick': 'Trigger · high ping kick',
 	'trigger.restart_notice': 'Trigger · restart notice',
 	'trigger.team_kill': 'Trigger · team kill limit',
+	'trigger.seed_reward': 'Trigger · seeding reward',
 	'trigger.match_broadcast': 'Trigger · match broadcast',
 	'trigger.name_filter': 'Trigger · name filter',
 	'trigger.kill_rate': 'Trigger · kill rate watch',
-	'trigger.two_teams': 'Trigger · two-team mode',
+	'trigger.two_teams': 'Trigger · team balance',
 	'trigger.kill_distance': 'Trigger · kill distance watch',
 	'trigger.afk_protection': 'Trigger · AFK protection',
+	'trigger.afk_watch': 'Trigger · AFK watch',
 	'trigger.name_change': 'Trigger · name change watch',
+	'trigger.bounty': 'Trigger · bounty',
+	'trigger.rotation_shuffle': 'Trigger · rotation shuffle',
+	'trigger.live_name': 'Trigger · live server name',
+	'trigger.weather_cycle': 'Trigger · weather cycle',
+	'trigger.death_whisper': 'Trigger · death whisper',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',
@@ -159,6 +176,10 @@ const ACTION_TITLES: Record<string, string> = {
 	'list.update': 'Org list · changed',
 	'list.import': 'Org list · imported from a server',
 	'list.expire': 'Org list · expired',
+	'list.group.create': 'Reserved-slot group · made',
+	'list.group.update': 'Reserved-slot group · changed',
+	'list.group.switch': 'Reserved-slot group · switched',
+	'list.group.archive': 'Reserved-slot group · removed',
 	'lists.sync': 'Org list · sync',
 	'ban.enforce': 'Ban · banned player removed',
 	login: 'Sign-in',
@@ -176,6 +197,19 @@ const plain = (s: string, n: number) =>
 /** The same inside a code span, which no escape reaches: its own backtick would close the span. */
 const code = (s: string, n: number) => `\`${clip(s.replace(/`/g, 'ˋ'), n)}\``;
 
+/** Whispers by hand, whose detail keeps what they said and whose message is the game's answer. A
+ *  rule's whisper keeps no words of its own (see OWN_WORDS in outbox.ts). */
+const WHISPERS = new Set(['rcon.whisper', 'rcon.whisperMany']);
+
+/** What a whisper by hand said, as the action cut it for the game, on one line; none on a refused
+ *  request, whose words stay in the audit trail. */
+function whisperOf(row: AuditRow): string {
+	const message = (row.detail as { message?: unknown } | null)?.message;
+	return WHISPERS.has(row.action) && row.outcome !== 'denied' && typeof message === 'string'
+		? oneLine(str(message, MAX_CHAT), MAX_CHAT)
+		: '';
+}
+
 export function buildEmbed(appName: string, row: AuditRow): Embed {
 	const title = ACTION_TITLES[row.action] || row.action;
 	const lines: string[] = [];
@@ -187,6 +221,8 @@ export function buildEmbed(appName: string, row: AuditRow): Embed {
 	const target = row.target && !bare ? ` → ${code(row.target, 120)}` : '';
 	lines.push(`**${plain(who, 60)}**${target}`);
 	if (row.serverName) lines.push(`Server: ${plain(row.serverName, 80)}`);
+	const said = whisperOf(row);
+	if (said) lines.push(`Message: ${plain(said, MAX_CHAT)}`);
 	if (row.outcome !== 'ok')
 		lines.push(`Outcome: **${row.outcome}**${row.status ? ` (${row.status})` : ''}`);
 	if (row.message && !bare) lines.push(plain(row.message, 600));
@@ -240,6 +276,87 @@ export function buildTeamKillEmbed(appName: string, serverName: string, k: KillV
 
 const WATCHED_COLOR = 0x5b8def;
 
+const BOUNTY_COLORS = { set: 0xd4a843, claim: 0x7bc462, lapse: 0x8a8a90 } as const;
+
+/** A bounty as a Bounties channel shows it: for players, so names only, never a SteamID. */
+export type BountyCard = {
+	/** when it happened (ISO) */
+	at: string;
+	/** the map's id, as the game names it */
+	map: string | null;
+	/** the reward in words; '' for none */
+	reward: string;
+	/** the slot is on every server of the organisation */
+	orgWide: boolean;
+} & (
+	| { kind: 'set'; name: string; faction: string | null; streak: number }
+	| { kind: 'claim'; claimer: string; target: string; run: number }
+	| { kind: 'lapse'; name: string; run: number; why: BountyLapse }
+);
+
+/** One bounty set, claimed or lapsed as an embed: who, the run, the reward, where. */
+export function buildBountyEmbed(appName: string, serverName: string, c: BountyCard): Embed {
+	const reward = c.reward
+		? `Reward: ${plain(c.reward, 80)}${c.orgWide ? ', on every server' : ''}`
+		: '';
+	const where = `${plain(serverName, 80)}${c.map ? ` · ${plain(mapName(c.map), 40)}` : ''}`;
+	const card =
+		c.kind === 'set'
+			? {
+					// the name goes in the body, where it is escaped like every other name (titles are not)
+					title: 'Bounty set',
+					lines: [
+						`**${plain(c.name, 60)}**: ${c.streak} kills without dying${c.faction ? `, for ${plain(c.faction, 30)}` : ''}`,
+						reward
+					]
+				}
+			: c.kind === 'claim'
+				? {
+						title: 'Bounty claimed',
+						lines: [
+							`**${plain(c.claimer, 60)}** ended **${plain(c.target, 60)}**'s run at ${c.run}`,
+							reward
+						]
+					}
+				: {
+						title: 'Bounty lapsed',
+						lines: [
+							c.why === 'left'
+								? `**${plain(c.name, 60)}** left the server on a run of ${c.run}`
+								: `The match ended with **${plain(c.name, 60)}** on a run of ${c.run}`
+						]
+					};
+	return {
+		title: card.title,
+		description: clip([...card.lines, where].filter(Boolean).join('\n'), 2000),
+		color: BOUNTY_COLORS[c.kind],
+		timestamp: c.at,
+		footer: { text: appName }
+	};
+}
+
+/** Posts a bounty to the org's webhooks with Bounties ticked for the server. Never throws. */
+export async function notifyBounty(
+	env: Env,
+	serverId: string,
+	serverName: string,
+	cards: BountyCard[]
+): Promise<void> {
+	try {
+		if (!cards.length) return;
+		const orgId = await orgOfServer(env, serverId);
+		if (!orgId) return;
+		const hooks = hooksFor(await enabledWebhooks(env, orgId), 'bounties', serverId);
+		if (!hooks.length) return;
+		for (const c of cards) {
+			const embed = buildBountyEmbed(env.APP_NAME || 'Warcon', serverName, c);
+			for (const hook of hooks) enqueue(env, hook, embed);
+		}
+	} catch (err) {
+		console.error('[warcon] webhook bounties', forLog(err));
+	}
+}
+
 /** The player's page in the panel, for a staff post about one player; none without an origin. */
 export function dossierUrl(origin: string | undefined, serverId: string, steamId: string) {
 	if (!origin || !/^\d{17}$/.test(steamId)) return undefined;
@@ -273,6 +390,9 @@ export function buildWatchedJoinEmbed(
 
 const FLUSH_AFTER_MS = 1500;
 const MAX_EMBEDS = 10;
+/** Discord refuses a message whose embeds hold more characters than this between them, titles,
+ *  descriptions, fields, footers and authors counted together. */
+const MAX_CHARS = 6000;
 const MAX_QUEUE = 100;
 
 interface Queue {
@@ -312,13 +432,33 @@ function scheduleFlush(env: Env, hook: WebhookRow, q: Queue): void {
 	q.chain = q.chain
 		.then(() => flush(env, hook, q))
 		.catch((err) => {
-			console.error('[warcon] webhook flush', err);
+			console.error('[warcon] webhook flush', forLog(err));
 		});
+}
+
+const charsOf = (e: Embed) =>
+	e.title.length +
+	e.description.length +
+	(e.footer?.text.length ?? 0) +
+	(e.author?.name.length ?? 0) +
+	(e.fields ?? []).reduce((n, f) => n + f.name.length + f.value.length, 0);
+
+/** Takes the next message's embeds off the front of a queue: as many as Discord takes in one, and
+ *  at least one, so a burst of long cards goes as several messages, not one that Discord refuses. */
+export function nextBatch(embeds: Embed[]): Embed[] {
+	let n = 0;
+	let chars = 0;
+	while (n < embeds.length && n < MAX_EMBEDS) {
+		chars += charsOf(embeds[n]);
+		if (n > 0 && chars > MAX_CHARS) break;
+		n++;
+	}
+	return embeds.splice(0, n);
 }
 
 async function flush(env: Env, hook: WebhookRow, q: Queue): Promise<void> {
 	while (q.embeds.length) {
-		const batch = q.embeds.splice(0, MAX_EMBEDS);
+		const batch = nextBatch(q.embeds);
 		const result = await postDiscord(env, hook, { embeds: batch });
 		await recordResult(env, hook.id, result);
 		if (result.retryAfterMs) {
@@ -464,23 +604,30 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
 			})
 			.where(eq(webhooks.id, id));
 	} catch (err) {
-		console.error('[warcon] webhook status', err);
+		console.error('[warcon] webhook status', forLog(err));
 	}
 }
 
 /**
  * Rules whose actions come by the hundred as a matter of course: a Team balance sort at every match
- * start, an AFK protection round every few minutes while a server seeds. The audit trail keeps each
- * one; Discord hears only of those that fail, so they neither flood a staff channel nor push another
- * rule's card out of the webhook's queue.
+ * start, an AFK protection round every few minutes while a server seeds, a Weather cycle change every
+ * few minutes all day, a Death whisper at nearly every death. The audit trail keeps each
+ * one (a Death whisper only when it fails); Discord hears only of those that fail, so they neither
+ * flood a staff channel nor push another rule's card out of the webhook's queue.
  */
-const QUIET_WHEN_OK = new Set(['trigger.two_teams', 'trigger.afk_protection']);
+const QUIET_WHEN_OK = new Set(FAILURES_ONLY.map((kind) => `trigger.${kind}`));
 /** A delivery that only notes what a rule saw and let be: the audit trail keeps it, Discord does not. */
 const NOTES = new Set([KILL_DISTANCE_SKIP]);
 const isNote = (row: AuditRow): boolean => {
 	const action = (row.detail as { rconAction?: unknown } | null)?.rconAction;
 	return typeof action === 'string' && NOTES.has(action);
 };
+
+/** A webhook ticked for Automation carries every kind of rule, or only the kinds it names. */
+export function takesRule(hook: Pick<WebhookRow, 'triggerKinds'>, action: string): boolean {
+	const kinds = hook.triggerKinds as string[] | null;
+	return !kinds || kinds.includes(action.slice('trigger.'.length));
+}
 
 /** Fans one audit row out to the org's webhooks that want its event class. Never throws. */
 export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
@@ -496,13 +643,14 @@ export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
 		for (const hook of hooks) {
 			const events = (hook.events as string[]) || [];
 			if (!events.includes(event)) continue;
+			if (event === 'triggers' && !takesRule(hook, row.action)) continue;
 			const only = hook.serverIds as string[] | null;
 			if (only && only.length && (!row.serverId || !only.includes(row.serverId))) continue;
 			embed ??= withDossierLink(env, row, buildEmbed(env.APP_NAME || 'Warcon', row));
 			enqueue(env, hook, embed);
 		}
 	} catch (err) {
-		console.error('[warcon] webhook notify', err);
+		console.error('[warcon] webhook notify', forLog(err));
 	}
 }
 
@@ -570,7 +718,7 @@ export async function notifyWatchedJoins(
 			for (const hook of hooks) enqueue(env, hook, embed);
 		}
 	} catch (err) {
-		console.error('[warcon] webhook watched joins', err);
+		console.error('[warcon] webhook watched joins', forLog(err));
 	}
 }
 
@@ -593,7 +741,7 @@ export async function notifyTeamKills(
 			for (const hook of hooks) enqueue(env, hook, embed);
 		}
 	} catch (err) {
-		console.error('[warcon] webhook team kills', err);
+		console.error('[warcon] webhook team kills', forLog(err));
 	}
 }
 

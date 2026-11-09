@@ -5,6 +5,7 @@
 import { ApiError, int, str } from './http';
 import { fold, wordPattern, type WordPattern } from './name-fold';
 import { BUILTIN_WORDS } from './name-filter-words';
+import { steamIdList } from './steam';
 
 /** The outbox action of an alert-only match: a panel action, nothing is sent to the game. */
 export const NAME_FLAG = 'name_flag';
@@ -46,10 +47,14 @@ export interface NameFilterConfig {
 	/** `alert` writes the audit row (and so the Discord card) and leaves the player on */
 	action: 'kick' | 'alert';
 	spareReserved: boolean;
+	/** SteamIDs the rule never acts on, whatever their name: staff wearing a tag it keeps from
+	 *  everyone else (absent on rules saved before it) */
+	exempt?: string[];
 	reason: string;
 }
 
 const MAX_WORDS = 200;
+const MAX_EXEMPT = 100;
 const WORD = /^[\p{L}\p{N}][\p{L}\p{N} ]{0,38}[\p{L}\p{N}]$/u;
 
 function words(raw: unknown, what: string): string[] {
@@ -85,6 +90,7 @@ export function validateNameFilter(c: Record<string, unknown>): NameFilterConfig
 		allowed: words(c.allowed, 'Allowed words'),
 		action: c.action === 'alert' ? 'alert' : 'kick',
 		spareReserved: c.spareReserved === undefined ? true : !!c.spareReserved,
+		exempt: steamIdList(c.exempt, MAX_EXEMPT),
 		reason: str(c.reason, 200) || 'Your name is not allowed on this server: {why}.'
 	};
 	if (cfg.characters === 'off' && !cfg.minLetters && !cfg.builtinWords && !cfg.blocked.length)
@@ -114,6 +120,7 @@ interface Compiled {
 	words: ({ word: string } & WordPattern)[];
 	/** taken out of a name before the words are looked for; folded for each reading of a name */
 	except: { plain: string[]; leet: string[] };
+	exempt: Set<string>;
 }
 
 // Compiled once per saved config: the worker holds a rule's config object for as long as its
@@ -134,7 +141,8 @@ function compile(cfg: NameFilterConfig): Compiled {
 			word,
 			...wordPattern(word)
 		})),
-		except: { plain: except.map((e) => fold(e)), leet: except.map((e) => fold(e, true)) }
+		except: { plain: except.map((e) => fold(e)), leet: except.map((e) => fold(e, true)) },
+		exempt: new Set(cfg.exempt ?? [])
 	};
 	compiled.set(cfg, c);
 	return c;
@@ -170,14 +178,19 @@ export function nameVerdict(cfg: NameFilterConfig, rawName: string): NameVerdict
 		: null;
 }
 
-/** The joiners the rule acts on, each with its verdict; a reserved slot is spared when the rule says so. */
+/**
+ * The joiners the rule acts on, each with its verdict. A player on the rule's own list is never
+ * one, and a reserved slot is spared when the rule says so.
+ */
 export function nameFilterTargets<P extends { steamId: string; name: string }>(
 	cfg: NameFilterConfig,
 	joined: P[],
 	reserved: Set<string>
 ): { player: P; verdict: NameVerdict }[] {
+	const { exempt } = compile(cfg);
 	const out: { player: P; verdict: NameVerdict }[] = [];
 	for (const player of joined) {
+		if (exempt.has(player.steamId)) continue;
 		if (cfg.spareReserved && reserved.has(player.steamId)) continue;
 		const verdict = nameVerdict(cfg, player.name);
 		if (verdict) out.push({ player, verdict });

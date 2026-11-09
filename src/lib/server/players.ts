@@ -1,6 +1,6 @@
 // Player intelligence: the dossier (history across an org's servers, Steam data, risk, notes,
 // watchlist) and the marks the players table shows next to each connected player.
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { ApiError, str } from './http';
 import { queryAudit, writeAudit } from './audit';
@@ -13,17 +13,33 @@ import {
 	type ServerRow,
 	type SessionUser
 } from './access';
-import { orgListMembership } from './lists';
+import { orgListMembership, playerBans } from './lists';
 import { banReasonsFor } from './ban-reasons';
-import { kills, playerMarks, playerNotes, playerSessions, serverBans, servers } from './db/schema';
+import {
+	kills,
+	listEntries,
+	lists,
+	playerMarks,
+	playerNotes,
+	playerSessions,
+	playerTotals,
+	serverBans,
+	servers,
+	triggers
+} from './db/schema';
 import { getProfiles, isSteamId, steamEnabled, type SteamProfileRow } from './steam';
 import { accountAgeDays, assessRisk, namesResemble, type Risk, type RiskPerformance } from './risk';
 import { riskPerformanceFor } from './leaderboards';
+import { MAX_REASON, type SeedRewardConfig } from './trigger-rules';
+import { MAX_CHAT } from '$lib/chat';
+import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
 import type {
+	DossierAction,
 	DossierView,
 	PlayerCombat,
 	PlayerMark,
 	PlayerNoteView,
+	SeedRewardProgress,
 	SteamView,
 	CombatSummary
 } from '$lib/types';
@@ -70,28 +86,81 @@ export async function orgServers(env: Env, orgId: string): Promise<{ id: string;
 
 export interface BanHit {
 	steamId: string;
-	serverId: string;
+	/** null for the org's list, which holds the player on every server that takes it */
+	serverId: string | null;
 	serverName: string;
 	reason: string;
 	bannedBy: string;
 }
 
-/** The poller's snapshot of the ban lists of these servers. */
-async function bansOn(env: Env, serverIds: string[]): Promise<BanHit[]> {
+/** How a ban on the org's list names where it holds. */
+const ORG_WIDE = 'every server of the organisation';
+
+/**
+ * The bans that hold players on these servers: the game's own lists as the worker last read them,
+ * and the panel's, which since 9887c93 never reach those lists: each server's own list and the
+ * org's list. `steamIds` narrows it to those players; without it, every banned player of the
+ * servers (for the lookalike names).
+ */
+async function bansOn(
+	env: Env,
+	orgId: string,
+	serverIds: string[],
+	steamIds: string[] | null
+): Promise<BanHit[]> {
 	if (!serverIds.length) return [];
-	const rows = await env.db
-		.select({
-			steamId: serverBans.steamId,
-			serverId: serverBans.serverId,
-			serverName: servers.name,
-			reason: serverBans.reason,
-			bannedBy: serverBans.bannedBy
-		})
-		.from(serverBans)
-		.innerJoin(servers, eq(servers.id, serverBans.serverId))
-		.where(inArray(serverBans.serverId, serverIds))
-		.limit(5000);
-	return rows;
+	const now = new Date();
+	const [game, panel] = await Promise.all([
+		env.db
+			.select({
+				steamId: serverBans.steamId,
+				serverId: serverBans.serverId,
+				serverName: servers.name,
+				reason: serverBans.reason,
+				bannedBy: serverBans.bannedBy
+			})
+			.from(serverBans)
+			.innerJoin(servers, eq(servers.id, serverBans.serverId))
+			.where(
+				and(
+					inArray(serverBans.serverId, serverIds),
+					steamIds ? inArray(serverBans.steamId, steamIds) : undefined
+				)
+			)
+			.limit(5000),
+		env.db
+			.select({
+				steamId: listEntries.steamId,
+				serverId: lists.serverId,
+				serverName: servers.name,
+				reason: listEntries.reason
+			})
+			.from(listEntries)
+			.innerJoin(lists, eq(lists.id, listEntries.listId))
+			.leftJoin(servers, eq(servers.id, lists.serverId))
+			.where(
+				and(
+					eq(lists.orgId, orgId),
+					eq(lists.kind, 'ban'),
+					or(isNull(lists.serverId), inArray(lists.serverId, serverIds)),
+					steamIds ? inArray(listEntries.steamId, steamIds) : undefined,
+					isNull(listEntries.removedAt),
+					or(isNull(listEntries.expiresAt), gt(listEntries.expiresAt, now))
+				)
+			)
+			.limit(5000)
+	]);
+	return [
+		...game,
+		...panel.map((e) => ({
+			steamId: e.steamId,
+			serverId: e.serverId,
+			serverName: e.serverId === null ? ORG_WIDE : (e.serverName ?? ''),
+			reason: e.reason,
+			// who placed a panel ban is staff's; nothing here shows it
+			bannedBy: ''
+		}))
+	];
 }
 
 /** Last name each SteamID was seen with on these servers. */
@@ -131,7 +200,7 @@ export async function localSignals(
 					inArray(playerMarks.steamId, ids)
 				)
 			),
-		bansOn(env, orgServerIds)
+		bansOn(env, orgId, orgServerIds, withResembles ? null : ids)
 	]);
 	const watched = new Map(marks.map((m) => [m.steamId, { reason: m.reason }]));
 	const bannedIds = [...new Set(bans.map((b) => b.steamId))];
@@ -145,7 +214,13 @@ export async function localSignals(
 	for (const b of bans) if (!serverOfBan.has(b.steamId)) serverOfBan.set(b.steamId, b.serverName);
 	for (const p of players) {
 		if (!isSteamId(p.steamId) || out.has(p.steamId)) continue;
-		const bannedOn = bans.filter((b) => b.steamId === p.steamId && b.serverId !== currentServerId);
+		// A ban on this server, or on the org's list (which holds the player here as well), is the
+		// panel's to enforce here, not a sign from elsewhere; on the dossier every ban counts.
+		const bannedOn = bans.filter(
+			(b) =>
+				b.steamId === p.steamId &&
+				(currentServerId === null || (b.serverId !== null && b.serverId !== currentServerId))
+		);
 		const resembles = bannedNamed
 			.filter((b) => b.steamId !== p.steamId && namesResemble(p.name, b.name))
 			.slice(0, 5)
@@ -191,7 +266,7 @@ export async function marksFor(
 	// Bans elsewhere in the org count only where the reader could open them, as in the dossier.
 	const orgIds = (await accessibleServers(env, user, server.orgId)).map((s) => s.id);
 	const staff = access.caps.has('players.notes') || access.caps.has('players.notes.manage');
-	const [profiles, local, counts, performance] = await Promise.all([
+	const [profiles, local, counts, performance, totals] = await Promise.all([
 		getProfiles(env, ids),
 		localSignals(env, server.orgId, orgIds, server.id, players),
 		env.db
@@ -199,9 +274,21 @@ export async function marksFor(
 			.from(playerSessions)
 			.where(and(eq(playerSessions.serverId, server.id), inArray(playerSessions.steamId, ids)))
 			.groupBy(playerSessions.steamId),
-		riskPerformanceFor(env, orgIds, ids)
+		riskPerformanceFor(env, orgIds, ids),
+		// the matches each player finished here, which the Teams view's shuffle can spread by
+		env.db
+			.select({
+				steamId: playerTotals.steamId,
+				kills: playerTotals.kills,
+				deaths: playerTotals.deaths
+			})
+			.from(playerTotals)
+			.where(and(eq(playerTotals.serverId, server.id), inArray(playerTotals.steamId, ids)))
 	]);
 	const visits = new Map(counts.map((c) => [c.steamId, num(c.n)]));
+	const records = new Map(
+		totals.map((t) => [t.steamId, { kills: num(t.kills), deaths: num(t.deaths) }])
+	);
 	return ids.map((steamId) => {
 		const l = local.get(steamId);
 		return {
@@ -210,7 +297,8 @@ export async function marksFor(
 			reason: staff ? (l?.watched?.reason ?? '') : '',
 			firstVisit: (visits.get(steamId) ?? 0) <= 1,
 			risk: riskFor(env, profiles.get(steamId), l, performance.get(steamId), staff),
-			steamName: profiles.get(steamId)?.persona || null
+			steamName: profiles.get(steamId)?.persona || null,
+			record: records.get(steamId) ?? null
 		};
 	});
 }
@@ -233,11 +321,13 @@ export async function dossier(
 	const [summary] = await db.execute<{
 		sessions: string;
 		minutes: string | null;
+		seedSeconds: string | null;
 		firstSeen: Date | null;
 		lastSeen: Date | null;
 	}>(sql`
 		SELECT COUNT(*) AS sessions,
 		       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS minutes,
+		       SUM(seed_seconds) AS "seedSeconds",
 		       MIN(joined_at) AS "firstSeen", MAX(last_seen) AS "lastSeen"
 		  FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids.length ? ids : ['']}`);
 	const perServer = ids.length
@@ -245,11 +335,12 @@ export async function dossier(
 				serverId: string;
 				sessions: string;
 				minutes: string;
+				seedSeconds: string;
 				lastSeen: Date;
 			}>(sql`
 			SELECT server_id AS "serverId", COUNT(*) AS sessions,
 			       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS minutes,
-			       MAX(last_seen) AS "lastSeen"
+			       SUM(seed_seconds) AS "seedSeconds", MAX(last_seen) AS "lastSeen"
 			  FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids}
 			 GROUP BY server_id ORDER BY "lastSeen" DESC`)
 		: [];
@@ -330,16 +421,21 @@ export async function dossier(
 	]);
 	const l = local.get(steamId);
 	const admin = access.caps.has('players.notes.manage');
-	// What staff wrote about the player is for those who may write it; an org list entry (its
-	// reason, who added it, where it stands on every server) for those who may edit that list,
-	// and the org's quick reasons for those who may ban on its list.
+	// What staff wrote about the player is for those who may write it; the org's reserved-slot
+	// entry (its note, who added it, where it stands on every server) for that list's editors.
 	const staff = admin || access.caps.has('players.notes');
 	const canBan = !!listsRole?.kinds.includes('ban');
-	const [membership, banReasons] = await Promise.all([
-		org && listsRole
-			? orgListMembership(env, org, steamId, listsRole.kinds)
+	const canReserve = !!listsRole?.kinds.includes('reserve');
+	// The ban dialog's quick reasons and the message the org wraps its bans in are for those who
+	// may ban here or on the org's list, as on the Bans tab.
+	const banStaff = canBan || access.caps.has('bans.manage');
+	const [membership, reasons, bans, seedReward] = await Promise.all([
+		org && canReserve
+			? orgListMembership(env, org, steamId, ['reserve'])
 			: { ban: null, reserve: null },
-		canBan ? banReasonsFor(env, server.orgId) : null
+		banStaff ? banReasonsFor(env, server.orgId) : null,
+		playerBans(env, server.orgId, visible, steamId, canBan),
+		seedProgress(env, server, access, steamId)
 	]);
 	return {
 		steamId,
@@ -351,12 +447,7 @@ export async function dossier(
 			? { serverId: online.serverId, serverName: nameOf.get(online.serverId) || '' }
 			: null,
 		orgServerCount: allOrgServers.length,
-		orgLists: {
-			...membership,
-			canBan,
-			canReserve: !!listsRole?.kinds.includes('reserve'),
-			banReasons
-		},
+		orgLists: { reserve: membership.reserve, canBan, canReserve },
 		steamEnabled: steamEnabled(env),
 		steam: steamView(profiles.get(steamId)),
 		risk: riskFor(env, profiles.get(steamId), l, performance.get(steamId), staff),
@@ -366,16 +457,13 @@ export async function dossier(
 			updatedByName: staff ? (mark?.updatedByName ?? '') : '',
 			updatedAt: iso(mark?.updatedAt)
 		},
-		bannedOn: (l?.bannedOn ?? []).map((b) => ({
-			serverId: b.serverId,
-			serverName: b.serverName,
-			reason: b.reason,
-			bannedBy: b.bannedBy
-		})),
+		bans,
+		banDialog: reasons ? { reasons, message: org?.banMessage ?? DEFAULT_BAN_MESSAGE } : null,
 		combat,
 		summary: {
 			sessions: num(summary?.sessions),
 			minutes: Math.round(num(summary?.minutes)),
+			seedMinutes: Math.round(num(summary?.seedSeconds) / 60),
 			kills: recordedAll.kills,
 			deaths: recordedAll.deaths,
 			firstSeen: iso(summary?.firstSeen ? new Date(summary.firstSeen) : null),
@@ -386,6 +474,7 @@ export async function dossier(
 			serverName: nameOf.get(r.serverId) || r.serverId,
 			sessions: num(r.sessions),
 			minutes: Math.round(num(r.minutes)),
+			seedMinutes: Math.round(num(r.seedSeconds) / 60),
 			kills: num(recordedOn.get(r.serverId)?.kills),
 			deaths: num(recordedOn.get(r.serverId)?.deaths),
 			lastSeen: new Date(r.lastSeen).toISOString()
@@ -420,8 +509,104 @@ export async function dossier(
 			action: a.action,
 			serverName: a.serverName,
 			outcome: a.outcome,
-			message: a.message
-		}))
+			message: a.message,
+			...actionParts(a.action, a.detail)
+		})),
+		seedReward
+	};
+}
+
+const LIST_ACTIONS = new Set(['list.add', 'list.update', 'list.remove']);
+/** rows whose detail keeps the reason they were given (a list row's is in its message as well) */
+const REASONED = new Set(['rcon.kick', 'rcon.ban', 'list.add', 'list.update']);
+
+/**
+ * What the dossier's table shows of a trail row's detail, picked by name: the reason a hand-sent
+ * kick or ban, or a list entry, was given, a hand-sent whisper's text, and which list a list row is
+ * about and how long its entry lasts. Never the detail itself, which can hold anything an action was sent. The rows are
+ * the reader's own trail rows, so this shows nothing the Audit trail does not.
+ */
+export function actionParts(
+	action: string,
+	detail: unknown
+): Pick<DossierAction, 'reason' | 'text' | 'list' | 'length'> {
+	const d = detail && typeof detail === 'object' ? (detail as Record<string, unknown>) : {};
+	const text = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
+	const list =
+		LIST_ACTIONS.has(action) && (d.kind === 'ban' || d.kind === 'reserve') ? d.kind : null;
+	const until = d.expiresAt;
+	return {
+		reason: REASONED.has(action) ? text(d.reason, MAX_REASON) : '',
+		text: action === 'rcon.whisper' ? text(d.message, MAX_CHAT) : '',
+		list,
+		length:
+			list &&
+			action !== 'list.remove' &&
+			'expiresAt' in d &&
+			(until === null || typeof until === 'string')
+				? { until }
+				: null
+	};
+}
+
+/**
+ * Where the player stands with this server's Seeding reward, added up as the rule does it: seed
+ * time banked here over the rule's window, by sessions that ended in it and the one still open.
+ * The rule's terms are how the server is run, so only those who hold Automation here see them.
+ */
+async function seedProgress(
+	env: Env,
+	server: ServerRow,
+	access: ServerAccess,
+	steamId: string,
+	now = new Date()
+): Promise<SeedRewardProgress | null> {
+	if (!access.caps.has('automation.manage')) return null;
+	const [rule] = await env.db
+		.select({ config: triggers.config })
+		.from(triggers)
+		.where(
+			and(
+				eq(triggers.serverId, server.id),
+				eq(triggers.kind, 'seed_reward'),
+				eq(triggers.enabled, true)
+			)
+		)
+		.limit(1);
+	if (!rule) return null;
+	const c = rule.config as SeedRewardConfig;
+	const from = new Date(now.getTime() - c.windowDays * 86400_000);
+	const [[seed], [slot]] = await Promise.all([
+		env.db.execute<{ seconds: string | null }>(sql`
+			SELECT SUM(seed_seconds) AS seconds FROM player_sessions
+			 WHERE server_id = ${server.id} AND steam_id = ${steamId}
+			   AND (left_at IS NULL OR (left_at >= ${from} AND last_seen >= ${from}))`),
+		// The rule passes over a player the server's reserved list holds; how long for is the entry
+		// behind it, when a list this server takes has one (the latest end of them, none if any has none).
+		env.db.execute<{ held: boolean; endless: boolean; until: Date | null }>(sql`
+			SELECT EXISTS (SELECT 1 FROM server_reserved r
+			                WHERE r.server_id = ${server.id} AND r.steam_id = ${steamId}
+			                  AND r.live) AS held,
+			       bool_or(e.expires_at IS NULL) AS endless, MAX(e.expires_at) AS until
+			  FROM server_lists sl
+			  JOIN lists l ON l.id = sl.list_id AND l.kind = 'reserve' AND l.archived_at IS NULL
+			              AND (l.on_from IS NULL OR l.on_from <= ${now})
+			              AND (l.on_until IS NULL OR l.on_until > ${now})
+			  JOIN list_entries e ON e.list_id = l.id AND e.steam_id = ${steamId}
+			                     AND e.removed_at IS NULL AND (e.expires_at IS NULL OR e.expires_at > ${now})
+			 WHERE sl.server_id = ${server.id}`)
+	]);
+	return {
+		minutes: c.minutes,
+		windowDays: c.windowDays,
+		lowAt: c.lowAt,
+		untilFull: !!c.untilFull,
+		slotDays: c.slotDays,
+		scope: c.scope === 'server' ? 'server' : 'org',
+		seconds: num(seed?.seconds),
+		holdsSlot: slot?.held
+			? { until: slot.endless || !slot.until ? null : new Date(slot.until).toISOString() }
+			: null
 	};
 }
 

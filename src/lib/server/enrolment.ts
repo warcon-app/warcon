@@ -3,6 +3,7 @@
 // refreshAuthComplete after anything that adds or removes a method.
 import { and, count, eq, isNull, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
+import { forLog } from './http';
 import { account, orgMembers, orgRoles, passkey, serverGrants, user } from './db/schema';
 import { AUTH_ENFORCE, settings } from './settings';
 import type { Capability } from '$lib/capabilities';
@@ -67,7 +68,7 @@ export async function startGrace(env: Env, userId: string): Promise<void> {
 		.set({ authGraceStartedAt: new Date() })
 		.where(and(eq(user.id, userId), isNull(user.authGraceStartedAt)))
 		.then(() => {})
-		.catch((err) => console.error('enrolment grace', err));
+		.catch((err) => console.error('enrolment grace', forLog(err)));
 }
 
 export const statusFor = (u: EnrolmentSubject): EnrolmentStatus => enrolmentStatus(u, settings());

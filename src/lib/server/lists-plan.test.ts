@@ -4,8 +4,10 @@ import {
 	desiredOf,
 	isAlreadyApplied,
 	isGone,
+	isListOn,
 	isUnreachable,
 	planSync,
+	type DesiredEntry,
 	type PlanInput,
 	type StateLike
 } from './lists-plan';
@@ -69,14 +71,16 @@ const input = (p: Partial<PlanInput> = {}): PlanInput => ({
 });
 
 const ban = (steamId: string, reason = '') => ({ steamId, reason, listId: 'L' });
-const slot = (steamId: string, member = false) => ({ steamId, listId: 'L', member });
+const slot = (steamId: string, member = false) => ({ steamId, listId: 'L', member, priority: 1 });
 
 describe('planSync', () => {
 	const want = (...ids: string[]) => ({ bans: [], reserved: ids.map((id) => slot(id)) });
 
 	test('wanted and absent → add', () => {
 		const p = planSync(input({ desired: want('1') }));
-		expect(p.adds).toEqual([{ kind: 'reserve', steamId: '1', listId: 'L', reason: '' }]);
+		expect(p.adds).toEqual([
+			{ kind: 'reserve', steamId: '1', listId: 'L', reason: '', priority: 1 }
+		]);
 		expect(p.removes).toEqual([]);
 	});
 
@@ -181,15 +185,62 @@ test('isUnreachable: outages and rate limiting both stop the run; ordinary refus
 describe('desiredOf', () => {
 	test("a player on the org list and the server's own list is wanted once, from the org list", () => {
 		const want = desiredOf([
-			{ kind: 'reserve', steamId: '1', reason: 'donor here', listId: 'srv', serverId: 's1' },
-			{ kind: 'reserve', steamId: '1', reason: 'donor', listId: 'org', serverId: null },
-			{ kind: 'reserve', steamId: '2', reason: '', listId: 'srv', serverId: 's1' },
-			{ kind: 'ban', steamId: '3', reason: 'cheating', listId: 'bans', serverId: null }
+			entry('1', 'srv', { serverId: 's1', reason: 'donor here' }),
+			entry('1', 'org', { isDefault: true, reason: 'donor' }),
+			entry('2', 'srv', { serverId: 's1' }),
+			{ ...entry('3', 'bans', { isDefault: true, reason: 'cheating' }), kind: 'ban' }
 		]);
+		// attributed to the org list, and as pressing as the server's own entry
 		expect(want.reserved).toEqual([
-			{ steamId: '1', listId: 'org', member: false },
-			{ steamId: '2', listId: 'srv', member: false }
+			{ steamId: '1', listId: 'org', member: false, priority: 0 },
+			{ steamId: '2', listId: 'srv', member: false, priority: 0 }
 		]);
 		expect(want.bans).toEqual([{ steamId: '3', reason: 'cheating', listId: 'bans' }]);
+	});
+
+	test('a player in groups is attributed to the default list, else the first group by name', () => {
+		const want = desiredOf([
+			entry('1', 'g-zulu', { listName: 'Zulu' }),
+			entry('1', 'g-alpha', { listName: 'Alpha' }),
+			entry('2', 'g-zulu', { listName: 'Zulu' }),
+			entry('2', 'org', { isDefault: true }),
+			entry('3', 'srv', { serverId: 's1' }),
+			entry('3', 'g-zulu', { listName: 'Zulu' })
+		]);
+		expect(want.reserved).toEqual([
+			{ steamId: '2', listId: 'org', member: false, priority: 1 },
+			{ steamId: '1', listId: 'g-alpha', member: false, priority: 2 },
+			{ steamId: '3', listId: 'g-zulu', member: false, priority: 0 }
+		]);
+	});
+});
+
+const entry = (
+	steamId: string,
+	listId: string,
+	p: Partial<Pick<DesiredEntry, 'serverId' | 'isDefault' | 'listName' | 'reason'>> = {}
+): DesiredEntry => ({
+	kind: 'reserve',
+	steamId,
+	reason: '',
+	listId,
+	serverId: null,
+	isDefault: false,
+	listName: p.isDefault ? 'Default' : p.serverId ? 'Server' : 'Group',
+	...p
+});
+
+describe('isListOn', () => {
+	const off = { archivedAt: null, onFrom: null, onUntil: null };
+	test('a list with no window is on, an archived one never', () => {
+		expect(isListOn(off, now)).toBe(true);
+		expect(isListOn({ ...off, archivedAt: ago(1) }, now)).toBe(false);
+	});
+	test('a window holds from its start, up to and not at its end', () => {
+		expect(isListOn({ ...off, onFrom: now }, now)).toBe(true);
+		expect(isListOn({ ...off, onFrom: new Date(now.getTime() + 1) }, now)).toBe(false);
+		expect(isListOn({ ...off, onUntil: now }, now)).toBe(false);
+		expect(isListOn({ ...off, onUntil: new Date(now.getTime() + 1) }, now)).toBe(true);
+		expect(isListOn({ ...off, onFrom: ago(10), onUntil: ago(5) }, now)).toBe(false);
 	});
 });

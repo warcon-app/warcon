@@ -17,6 +17,7 @@ import { nudgeStatusMirror } from './webhook-status';
 import type { Gateway } from './gateway';
 import type { KillView, LiveView } from '$lib/types';
 import { onKillsIngested } from './feed-events';
+import { onMatchFeed, type MatchFeed } from './match-feed';
 
 /**
  * The player and faction a person's action moved, or null: `changeTeam` (which throws when the game
@@ -141,6 +142,9 @@ export const localGateway: Gateway = {
 	},
 	killsIngested(env: Env, serverId: string, kills: KillView[]) {
 		void onKillsIngested(env, serverId, kills);
+	},
+	matchFeed(env: Env, serverId: string, feed: MatchFeed) {
+		void onMatchFeed(env, memoryOf(serverId), feed);
 	},
 	subscribe,
 	health() {

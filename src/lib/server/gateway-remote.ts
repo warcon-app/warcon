@@ -3,7 +3,7 @@
 // event bus so the SSE route and pages work exactly as in the single-process role.
 import type { Env } from './env';
 import type { OrgRow, ServerRow } from './access';
-import { ApiError } from './http';
+import { ApiError, forLog } from './http';
 import { GameError } from './rcon';
 import { emit, subscribe, type WarconEvent } from './events';
 import type { Gateway } from './gateway';
@@ -11,6 +11,7 @@ import type { Priority } from './dispatcher';
 import type { KillView, LiveView, ListSyncSummary } from '$lib/types';
 import type { SyncResult } from './lists-sync';
 import type { PollerStats } from './poller';
+import type { MatchFeed } from './match-feed';
 import { RELAY_PREFIX, type RelayError } from './relay';
 
 const TIMEOUT_MS = 30_000;
@@ -70,7 +71,7 @@ export async function call<T>(
 		});
 	} catch (err) {
 		// The runtime's text can quote the relay's URL, which is for the log, not for whoever clicked.
-		console.error('[warcon] relay', err instanceof Error ? err.message : err);
+		console.error('[warcon] relay', forLog(err));
 		throw new ApiError(503, 'The worker is not reachable.', 'worker_unavailable');
 	}
 	const data = (await res.json().catch(() => null)) as {
@@ -136,7 +137,7 @@ function consumeEvents(env: Env): void {
 					}
 				}
 			} catch (err) {
-				console.warn('[warcon] worker event stream:', err instanceof Error ? err.message : err);
+				console.warn('[warcon] worker event stream:', forLog(err));
 			} finally {
 				clearTimeout(watchdog);
 			}
@@ -183,6 +184,9 @@ export function connectRemoteGateway(env: Env): Gateway {
 		},
 		killsIngested(env, serverId, kills: KillView[]) {
 			void call(env, '/kills', { serverId, kills }).catch(() => {});
+		},
+		matchFeed(env, serverId, feed: MatchFeed) {
+			void call(env, '/match-feed', { serverId, feed }).catch(() => {});
 		},
 		subscribe,
 		health(env) {

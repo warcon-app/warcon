@@ -174,12 +174,17 @@ describe.skipIf(!hasTestDb)('Kick, Kill and Move apart', () => {
 			stubGateway();
 		});
 
-		const move = async (who: SessionUser, steamId: unknown, faction: unknown) => {
+		const move = async (
+			who: SessionUser | null,
+			steamId: unknown,
+			faction: unknown,
+			extra: Record<string, unknown> = {}
+		) => {
 			const { POST } = await import(join(ROUTES, 'servers/[id]/rcon/[action]', '+server.ts'));
 			return callApi(POST, who, {
 				method: 'POST',
 				params: { id: w.server.id, action: 'changeTeam' },
-				body: { steamId, faction }
+				body: { steamId, faction, ...extra }
 			});
 		};
 
@@ -207,6 +212,32 @@ describe.skipIf(!hasTestDb)('Kick, Kill and Move apart', () => {
 			const got = await move(w.users.viewer!, PLAYER, 'Valkyra');
 			expect(got.status).toBe(200);
 			expect(requests).toEqual([`PATCH /v1/players/${PLAYER}`, `POST /v1/players/${PLAYER}/kill`]);
+		});
+
+		test('without the kill, as the Teams view saves, is the move alone, behind the same check', async () => {
+			await holds(['players.move']);
+			requests.length = 0;
+			const got = await move(w.users.viewer!, PLAYER, 'Valkyra', { kill: false });
+			expect([got.status, requests]).toEqual([200, [`PATCH /v1/players/${PLAYER}`]]);
+			expect((got.body as { result: { message: string } }).result.message).toBe(
+				'Moved to Valkyra.'
+			);
+			// View alone, another org's owner, a key held to the org's other server and nobody signed
+			// in are refused before the game hears of it
+			await holds([]);
+			requests.length = 0;
+			const refused: [string, SessionUser | null, number][] = [
+				['viewer', w.users.viewer, 403],
+				['outsider', w.users.outsider, 404],
+				['keyElsewhere', w.users.keyElsewhere, 404],
+				['anon', null, 401]
+			];
+			for (const [who, user, status] of refused)
+				expect([who, (await move(user, PLAYER, 'Valkyra', { kill: false })).status]).toEqual([
+					who,
+					status
+				]);
+			expect(requests).toEqual([]);
 		});
 
 		test('of a player the list does not hold goes to the game, which answers for them', async () => {

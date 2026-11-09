@@ -88,6 +88,11 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'POST api/orgs/[id]/seasons': 'orgOwner',
 	'PATCH api/orgs/[id]/seasons/[seasonId]': 'orgOwner',
 	'DELETE api/orgs/[id]/seasons/[seasonId]': 'orgOwner',
+	// its map sets. "Map set not found." is not one of the hidden answers, so a set looked up
+	// before the role check fails these lines.
+	'POST api/orgs/[id]/map-sets': 'orgOwner',
+	'PATCH api/orgs/[id]/map-sets/[setId]': 'orgOwner',
+	'DELETE api/orgs/[id]/map-sets/[setId]': 'orgOwner',
 	'GET api/orgs/[id]/webhooks': 'orgOwner',
 	'POST api/orgs/[id]/webhooks': 'orgOwner',
 	'PATCH api/orgs/[id]/webhooks/[webhookId]': 'orgOwner',
@@ -110,6 +115,19 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'POST api/orgs/[id]/lists/import': 'listsOwner',
 	'POST api/orgs/[id]/lists/sync': 'lists',
 	'GET api/orgs/[id]/players': 'lists',
+	// an announcement: Chat on each server it names, so Chat somewhere in the org to ask at all
+	'POST api/orgs/[id]/broadcast': 'anyCap:chat.send',
+	// its reserved-slot groups: whoever edits its reserved slots. "Group not found." is not one of
+	// the hidden answers, so a group looked up before the role check fails these lines.
+	'GET api/orgs/[id]/slot-groups': 'lists:reserve',
+	'POST api/orgs/[id]/slot-groups': 'lists:reserve',
+	'PATCH api/orgs/[id]/slot-groups/[groupId]': 'lists:reserve',
+	'DELETE api/orgs/[id]/slot-groups/[groupId]': 'lists:reserve',
+	'PUT api/orgs/[id]/slot-groups/[groupId]/switch': 'lists:reserve',
+	'GET api/orgs/[id]/slot-groups/[groupId]/entries': 'lists:reserve',
+	'POST api/orgs/[id]/slot-groups/[groupId]/entries': 'lists:reserve',
+	'PATCH api/orgs/[id]/slot-groups/[groupId]/entries/[steamId]': 'lists:reserve',
+	'DELETE api/orgs/[id]/slot-groups/[groupId]/entries/[steamId]': 'lists:reserve',
 
 	// a server: run by its org's owners
 	'GET api/servers': 'user',
@@ -139,6 +157,9 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'GET api/servers/[id]/players/marks': 'cap:server.view',
 	'GET api/servers/[id]/players/seen': 'cap:server.view',
 	'GET api/servers/[id]/summary': 'cap:server.view',
+	'GET api/servers/[id]/saved-messages': 'cap:chat.send',
+	// loading a map set is a config apply, so reading them is too
+	'GET api/servers/[id]/map-sets': 'cap:config.apply',
 	'POST api/servers/[id]/players/[steamId]/notes': 'cap:players.notes',
 	'DELETE api/servers/[id]/players/[steamId]/notes/[noteId]': 'cap:players.notes',
 	'PUT api/servers/[id]/players/[steamId]/watch': 'cap:players.notes',

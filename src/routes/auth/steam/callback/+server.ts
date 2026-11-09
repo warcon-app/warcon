@@ -7,7 +7,7 @@ import { getEnv } from '$lib/server/env';
 import { freeUsername } from '$lib/server/auth';
 import { account, user } from '$lib/server/db/schema';
 import { writeAudit } from '$lib/server/audit';
-import { ApiError, normalizeError } from '$lib/server/http';
+import { ApiError, forLog, normalizeError } from '$lib/server/http';
 import { verifySteamAssertion } from '$lib/server/steam-openid';
 import { takeSteamState, steamCallbackUrl } from '$lib/server/steam-auth';
 import { fetchSteam, steamEnabled } from '$lib/server/steam';
@@ -104,7 +104,7 @@ export const GET: RequestHandler = async (event) => {
 			});
 		} catch (err) {
 			const known = normalizeError(err);
-			console.error('steam sign-up', err instanceof Error ? err.stack : err);
+			console.error('steam sign-up', forLog(err));
 			redirect(303, withError(state.back, known?.code || 'steam_signup'));
 		}
 		await setSteamId(env, userId, steamId).catch(() => {});
@@ -127,7 +127,7 @@ export const GET: RequestHandler = async (event) => {
 		await auth.api.signInUser({ body: { userId }, headers: request.headers });
 	} catch (err) {
 		if (err instanceof ApiError) throw err;
-		console.error('steam sign-in', err instanceof Error ? err.stack : err);
+		console.error('steam sign-in', forLog(err));
 		redirect(303, withError(state.back, 'steam'));
 	}
 	redirect(303, state.next);

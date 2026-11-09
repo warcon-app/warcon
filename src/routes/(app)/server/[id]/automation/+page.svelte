@@ -1,11 +1,18 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidate, invalidateAll } from '$app/navigation';
 	import { api, errorMessage } from '$lib/api';
 	import { MAX_CHAT } from '$lib/chat';
-	import { fmtAgo, fmtSpan, fmtTime, mapLabel } from '$lib/format';
+	import { fmtAgo, fmtSpan, fmtTime, lightingLabel, mapLabel } from '$lib/format';
 	import { can } from '$lib/capabilities';
-	import { causeKind, causeLabel, knownCauses, TEAM_KILL_NOT_COUNTED } from '$lib/causes';
+	import {
+		causeKind,
+		causeLabel,
+		knownCauses,
+		notCountedLabel,
+		TEAM_KILL_NOT_COUNTED,
+		VEHICLE_CRASH
+	} from '$lib/causes';
 	import { placeholdersFor, unfilled, type PlaceholderGroupKey } from '$lib/placeholders';
 	import { isSteamId } from '$lib/steam-profiles';
 	import { toast } from '$lib/toast.svelte';
@@ -17,10 +24,16 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
 	import { watchLive } from '$lib/live';
+	import { FEED_KINDS, RULE_KINDS } from '$lib/rule-kinds';
+	import RulePicker from '$lib/components/RulePicker.svelte';
+	import { identity } from '$lib/health.svelte';
+	import { restartScheduleOf } from '$lib/uptime';
+	import { LIVE_NAME_APPEND_DEFAULT, LIVE_NAME_PLACEHOLDERS, liveName } from '$lib/live-name';
 	import type {
 		DryRunResult,
 		MapSelection,
 		OutboxView,
+		Status,
 		TriggerKind,
 		TriggerView
 	} from '$lib/types';
@@ -29,6 +42,16 @@
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let admin = $derived(can(data.server.caps, 'automation.manage'));
+	let restartNote = $derived.by(() => {
+		const s = restartScheduleOf(
+			data.server.restartSchedule,
+			(identity[data.server.id] ?? data.identity).restartTimeUtc
+		);
+		if (s.kind === 'uptime')
+			return 'The game restarts 24 hours after it started, once the round then in progress ends.';
+		const from = s.source === 'config' ? 'RestartTimeUtc in its config' : 'set on the Settings tab';
+		return `The game restarts daily at ${s.time} UTC (${from}), once the round then in progress ends.`;
+	});
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
 
 	/** A risk_kick rule's score threshold, 0 when off; rules saved with a level read as 20 or 50. */
@@ -63,12 +86,53 @@
 		'pending',
 		'sending'
 	];
-	let ruleNames = $derived([...new Set(deliveries.map((d) => d.triggerName))].sort());
+	// this server's rules, and the names of deleted ones still among the rows
+	let ruleNames = $derived(
+		[
+			...new Set([...data.triggers.map((t) => t.name), ...deliveries.map((d) => d.triggerName)])
+		].sort()
+	);
+	/** the server's rules under the chosen name, whose own rows are read from the server */
+	let ruleIds = $derived(
+		ruleFilter ? data.triggers.filter((t) => t.name === ruleFilter).map((t) => t.id) : []
+	);
+	/**
+	 * Those rules' own rows, the newest 40 of the last week: the server's newest 40, which the page
+	 * loads, can hold none of a quiet rule's once a busy one (a Death whisper) acts at every death.
+	 * Null while no such rule is chosen.
+	 */
+	let ruleRows = $state<OutboxView[] | null>(null);
+	let ruleRowsFor = '';
+	async function refreshRuleRows() {
+		const ids = untrack(() => ruleIds);
+		const key = ids.join(',');
+		ruleRowsFor = key;
+		if (!ids.length) {
+			ruleRows = null;
+			return;
+		}
+		const query = ids.map((r) => `rule=${encodeURIComponent(r)}`).join('&');
+		try {
+			const { items } = await api<{ items: OutboxView[] }>(
+				'GET',
+				`/api/servers/${encodeURIComponent(id)}/outbox?${query}`
+			);
+			// a later choice wins over an answer that comes back after it
+			if (ruleRowsFor === key) ruleRows = items;
+		} catch {
+			if (ruleRowsFor === key) ruleRows = null;
+		}
+	}
+	$effect(() => {
+		void ruleIds;
+		void refreshRuleRows();
+	});
 	let deliveryRows = $derived(
 		deliverySort.sorted(
-			deliveries.filter(
+			(ruleRows ?? deliveries).filter(
 				(d) =>
-					(!ruleFilter || d.triggerName === ruleFilter) &&
+					// read by id when it is one of the server's rules, so rows from before a rename show too
+					(ruleRows || !ruleFilter || d.triggerName === ruleFilter) &&
 					(!stateFilter || d.state === stateFilter) &&
 					matches(deliverySearch, d.triggerName, d.action, d.target, d.state, d.outcome)
 			)
@@ -83,7 +147,10 @@
 		actionsPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 	let deliveriesTimer: ReturnType<typeof setTimeout> | undefined;
+	/** what the server shows now, for a Live server name rule's preview */
+	let liveStatus = $state<Status | null>(null);
 	async function refreshDeliveries() {
+		if (untrack(() => ruleIds.length)) void refreshRuleRows();
 		try {
 			deliveries = (
 				await api<{ items: OutboxView[] }>('GET', `/api/servers/${encodeURIComponent(id)}/outbox`)
@@ -97,10 +164,25 @@
 		void refreshDeliveries();
 		return watchLive(
 			[id],
-			() => {},
+			(v) => {
+				const was = liveStatus?.serverName;
+				liveStatus = v.status;
+				// a Live server name rule's row says what it last wrote: re-read it when the name moves
+				if (
+					was !== undefined &&
+					v.status?.serverName !== was &&
+					untrack(() => data.triggers.some((t) => t.kind === 'live_name'))
+				)
+					void invalidate('warcon:triggers');
+			},
 			() => {
 				clearTimeout(deliveriesTimer);
-				deliveriesTimer = setTimeout(() => void refreshDeliveries(), 300);
+				deliveriesTimer = setTimeout(() => {
+					void refreshDeliveries();
+					// a Bounty rule's open bounty is set, claimed and lapsed by its actions
+					if (untrack(() => data.triggers.some((t) => t.kind === 'bounty' && t.enabled)))
+						void invalidate('warcon:triggers');
+				}, 300);
 			}
 		);
 	});
@@ -113,112 +195,15 @@
 					? 'warn'
 					: 'err';
 
-	// The kinds, grouped by what they act on for the Add menu. `needs` is what a kind must have
-	// before it can run here, shown in the menu and at the top of its editor; '' when it can.
-	type Group = 'Messages' | 'Players' | 'Server';
-	const KINDS: { kind: TriggerKind; group: Group; label: string; blurb: string }[] = [
-		{
-			kind: 'welcome',
-			group: 'Messages',
-			label: 'Welcome whisper',
-			blurb: 'Whisper players as they join, or once they pick a faction.'
-		},
-		{
-			kind: 'faction_change',
-			group: 'Messages',
-			label: 'Faction change whisper',
-			blurb: 'Whisper players who switch sides.'
-		},
-		{
-			kind: 'broadcast',
-			group: 'Messages',
-			label: 'Scheduled broadcast',
-			blurb: 'Rotate through messages every few minutes while people are on.'
-		},
-		{
-			kind: 'restart_notice',
-			group: 'Messages',
-			label: 'Restart notice',
-			blurb: 'Warn players before the 24-hour restart and tell them when it lands.'
-		},
-		{
-			kind: 'match_broadcast',
-			group: 'Messages',
-			label: 'Match broadcast',
-			blurb: 'Announce who won when a match ends, and the map as the next one starts.'
-		},
-		{
-			kind: 'risk_kick',
-			group: 'Players',
-			label: 'Kick on connect risk',
-			blurb: 'Kick joiners the panel already distrusts, before they get a slot.'
-		},
-		{
-			kind: 'name_filter',
-			group: 'Players',
-			label: 'Name filter',
-			blurb: 'Kick or flag joiners whose name uses characters or words this server does not allow.'
-		},
-		{
-			kind: 'name_change',
-			group: 'Players',
-			label: 'Name change watch',
-			blurb: "Flag or kick players who change their name mid-game, or take another player's."
-		},
-		{
-			kind: 'ping_kick',
-			group: 'Players',
-			label: 'High ping kick',
-			blurb: 'Kick players whose ping stays too high for a configured time.'
-		},
-		{
-			kind: 'team_kill',
-			group: 'Players',
-			label: 'Team kill limit',
-			blurb: 'Whisper a player about team kills and kick them past a limit.'
-		},
-		{
-			kind: 'kill_rate',
-			group: 'Players',
-			label: 'Kill rate watch',
-			blurb: 'Flag players who get kills too fast, or too many headshots, for staff to check.'
-		},
-		{
-			kind: 'kill_distance',
-			group: 'Players',
-			label: 'Kill distance watch',
-			blurb:
-				'Flag, warn, kill, kick or ban players for kills with chosen weapons or vehicles, at any distance or from too far.'
-		},
-		{
-			kind: 'two_teams',
-			group: 'Players',
-			label: 'Team balance',
-			blurb: 'Keep the sides even, and close a faction to play two teams.'
-		},
-		{
-			kind: 'seed_reward',
-			group: 'Players',
-			label: 'Seeding reward',
-			blurb: 'Give players who stay while the server is quiet a reserved slot.'
-		},
-		{
-			kind: 'afk_protection',
-			group: 'Players',
-			label: 'AFK protection',
-			blurb: 'Kill everyone every few minutes while the server seeds, so the idle kick spares them.'
-		},
-		{
-			kind: 'empty_reset',
-			group: 'Server',
-			label: 'Empty-server map reset',
-			blurb: 'Put an empty server back on a chosen map after a while.'
-		}
-	];
-	const GROUPS: Group[] = ['Messages', 'Players', 'Server'];
+	// The kinds, as the rule picker groups them ($lib/rule-kinds). `needs` is what a kind must have
+	// before it can run here, shown on its card and at the top of its editor; '' when it can.
+	const KINDS = RULE_KINDS;
 	/** The outbox action as the table shows it: a flag sends nothing to the game, so it reads as one. */
 	const actionLabel = (action: string) =>
-		action === 'name_flag' || action === 'kill_rate_flag' || action === 'kill_distance_flag'
+		action === 'name_flag' ||
+		action === 'kill_rate_flag' ||
+		action === 'kill_distance_flag' ||
+		action === 'afk_watch_flag'
 			? 'flag'
 			: action === 'panel_ban'
 				? 'ban'
@@ -228,7 +213,19 @@
 						? 'kill'
 						: action === 'kill_distance_skip'
 							? 'not counted'
-							: action;
+							: action === 'bounty_claim'
+								? 'claimed'
+								: action === 'bounty_lapse'
+									? 'lapsed'
+									: action === 'bounty_reward'
+										? 'reserved slot'
+										: action === 'rotation_shuffle'
+											? 'shuffle'
+											: action === 'restart_skip'
+												? 'skip map'
+												: action === 'weather_cycle'
+													? 'weather'
+													: action;
 	const label = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.label ?? kind;
 	const blurb = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.blurb ?? '';
 	/** Why a kind cannot run on this server yet, or '' when it can. */
@@ -249,6 +246,35 @@
 				return canSlotHere || canSlotOrg
 					? ''
 					: 'Saving needs the Reserved slots capability (or Org reserved slots, for a slot on every server) as well as Automation.';
+			case 'bounty':
+				return !data.feed
+					? 'Needs the kill feed, which is off on this server. Turn it on under Config.'
+					: !canChat
+						? 'Saving needs the Chat capability as well as Automation: the bounty is announced to the server.'
+						: '';
+			case 'death_whisper':
+				return !data.feed
+					? 'Needs the kill feed, which is off on this server. Turn it on under Config.'
+					: !canChat
+						? 'Saving needs the Chat capability as well as Automation: the rule whispers players.'
+						: '';
+			case 'empty_reset':
+			case 'restart_skip':
+				return canMatch
+					? ''
+					: 'Saving needs the Match control capability as well as Automation: the rule changes the map.';
+			case 'weather_cycle':
+				return canMatch
+					? ''
+					: 'Saving needs the Match control capability as well as Automation: the rule changes the weather.';
+			case 'rotation_shuffle':
+				return canConfig
+					? ''
+					: 'Saving needs the Config & settings capability as well as Automation: the rule rewrites the rotation in the config document.';
+			case 'live_name':
+				return canConfig
+					? ''
+					: 'Saving needs the Config & settings capability as well as Automation: the rule writes the server name in the config document.';
 			default:
 				return '';
 		}
@@ -267,6 +293,11 @@
 	let canChat = $derived(can(data.server.caps, 'chat.send'));
 	let canKill = $derived(can(data.server.caps, 'players.kill'));
 	let canBanHere = $derived(can(data.server.caps, 'bans.manage'));
+	/** a Rotation shuffle rule rewrites the rotation in the config document */
+	let canConfig = $derived(can(data.server.caps, 'config.apply'));
+	/** an Empty-server map reset and a Skip map after restart rule change the map, a Weather cycle
+	 *  the weather */
+	let canMatch = $derived(can(data.server.caps, 'match.control'));
 	let canBanOrg = $derived(can(data.server.caps, 'lists.ban'));
 	/** Charges that are placed and set off from anywhere: how far away the killer was says nothing. */
 	const PLACED = new Set([
@@ -323,22 +354,69 @@
 	const openAtFirst = (open: () => boolean) => (node: HTMLDetailsElement) => {
 		node.open = untrack(open);
 	};
-	/** What a Team kill limit can leave out of its count: things placed that a teammate runs into. */
+	/**
+	 * What a Team kill limit can leave out of its count: things placed that a teammate runs into,
+	 * and crashes.
+	 */
 	const notCountedChoices = (chosen: string[]) =>
-		causeChoices((c) => causeKind(c) === 'buildable' || PLACED.has(c.toLowerCase()), chosen);
+		[
+			...causeChoices(
+				(c) => causeKind(c) === 'buildable' || PLACED.has(c.toLowerCase()),
+				chosen.filter((c) => !holds([VEHICLE_CRASH], c))
+			),
+			{ cause: VEHICLE_CRASH, label: notCountedLabel(VEHICLE_CRASH) }
+		].sort((a, b) => a.label.localeCompare(b.label));
 	const holds = (list: string[], cause: string) =>
 		list.some((c) => c.toLowerCase() === cause.toLowerCase());
-	/** A kind that lacks what it needs stays in the menu, greyed, with the reason in a few words. */
+	/** A kind that lacks what it needs stays in the picker, greyed, with the reason in a few words. */
 	const short = (kind: TriggerKind): string =>
-		kind === 'team_kill' ||
-		kind === 'kill_rate' ||
-		kind === 'kill_distance' ||
-		kind === 'name_change'
-			? 'needs the kill feed'
-			: kind === 'risk_kick'
-				? 'needs a Steam key'
-				: '';
-	let addOpen = $state(false);
+		!needs(kind)
+			? ''
+			: kind === 'team_kill' ||
+				  kind === 'kill_rate' ||
+				  kind === 'kill_distance' ||
+				  kind === 'name_change' ||
+				  ((kind === 'bounty' || kind === 'death_whisper') && !data.feed)
+				? 'Needs the kill feed'
+				: kind === 'bounty' || kind === 'death_whisper'
+					? 'Needs Chat'
+					: kind === 'risk_kick'
+						? 'Needs a Steam key'
+						: kind === 'seed_reward'
+							? 'Needs Reserved slots'
+							: kind === 'rotation_shuffle' || kind === 'live_name'
+								? 'Needs Config & settings'
+								: kind === 'empty_reset' || kind === 'restart_skip' || kind === 'weather_cycle'
+									? 'Needs Match control'
+									: '';
+	/** A Bounty rule's texts until they are written: a slot is named, an announcement-only rule asks. */
+	const bountyTexts = (reward: 'slot' | 'none') =>
+		reward === 'slot'
+			? {
+					setMessage: 'BOUNTY on {name}: {streak} kills without dying. Kill them for {reward}.',
+					claimMessage: "{name} ended {target}'s run of {streak} and takes {reward}.",
+					whisper: 'Bounty claimed. Your reserved slot lasts until {until}.'
+				}
+			: {
+					setMessage: 'BOUNTY on {name}: {streak} kills without dying. Who ends the run?',
+					claimMessage: "{name} ended {target}'s run of {streak}.",
+					whisper: ''
+				};
+	/** Switching the reward swaps the texts still as the rule began them. */
+	const swapBounty = (f: Form) => {
+		const from = bountyTexts(f.bountyReward === 'slot' ? 'none' : 'slot');
+		const to = bountyTexts(f.bountyReward);
+		for (const k of ['setMessage', 'claimMessage', 'whisper'] as const)
+			if (f[k] === from[k]) f[k] = to[k];
+	};
+	/** The Add rule picker is open; `fromPicker`: the editor came from it, so it offers the way back. */
+	let picking = $state(false);
+	let fromPicker = $state(false);
+	function pick(kind: TriggerKind, t?: TriggerView) {
+		picking = false;
+		open(kind, t);
+		fromPicker = true;
+	}
 
 	// The status lines count up on their own: a minute clock, only while the page is open.
 	let now = $state(Date.now());
@@ -402,6 +480,23 @@
 	let rows = $derived(
 		onlyFailing ? data.triggers.filter((t) => health.get(t.id)?.failing) : data.triggers
 	);
+	// The kill feed rules that are on while nothing comes from the feed ($lib/feed-health): they say
+	// so on their rows, and one notice above the list names them.
+	let feedSilent = $derived(data.feedStatus.state === 'silent');
+	const onFeed = (t: { kind: TriggerKind; enabled: boolean }) =>
+		feedSilent && t.enabled && FEED_KINDS.includes(t.kind);
+	let waitingOnFeed = $derived(data.triggers.filter(onFeed));
+	/** "Bounty", "Bounty and Team kills", "Bounty, Team kills and Long shots", "5 rules" */
+	let waitingNames = $derived.by(() => {
+		const names = waitingOnFeed.map((t) => t.name);
+		if (names.length > 3) return `${names.length} rules`;
+		return names.length > 1
+			? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+			: (names[0] ?? '');
+	});
+	let feedStarted = $derived(
+		data.feedStatus.startedAt ? fmtAgo(data.feedStatus.startedAt, now) : ''
+	);
 
 	interface Form {
 		id: string | null;
@@ -443,6 +538,8 @@
 		untilFull: boolean;
 		fullAt: number | null;
 		minutes: number;
+		/** an AFK watch rule's warning, minutes idle; 0 for none */
+		warnMinutes: number;
 		windowDays: number;
 		slotDays: number;
 		slotScope: 'server' | 'org';
@@ -475,6 +572,21 @@
 		banScope: 'server' | 'org';
 		stopAt: number;
 		doneMessage: string;
+		streak: number;
+		bountyReward: 'slot' | 'none';
+		setMessage: string;
+		claimMessage: string;
+		whisper: string;
+		/** a Rotation shuffle rule's map ids, in the order they take turns */
+		mapOrder: string[];
+		/** a Live server name rule's own name and what it appends */
+		liveBase: string;
+		liveAppend: string;
+		/** a Weather cycle rule's rows (its lightings in their turn, then the server's others) and
+		 *  the ticked ones */
+		lightOrder: string[];
+		lightOn: string[];
+		random: boolean;
 	}
 	/** WARDOGS' factions, offered for Team balance; a name the game adds later can still be typed. */
 	const FACTIONS = ['Lonestar', 'Valkyra', 'Manticore'];
@@ -535,8 +647,49 @@
 		}
 	});
 
+	/** A rule's turn: what it names, in its order, then the rest of what the game lists. */
+	function turnOf(named: unknown, all: string[]): string[] {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const id of [...(Array.isArray(named) ? (named as string[]) : []), ...all])
+			if (!seen.has(id.toLowerCase())) {
+				seen.add(id.toLowerCase());
+				out.push(id);
+			}
+		return out;
+	}
+	/** A Rotation shuffle rule's turn: the maps it names, then the game's other maps. */
+	const mapTurn = (named: unknown) =>
+		turnOf(
+			named,
+			data.catalog.maps.map((m) => m.id)
+		);
+	function moveMap(f: Form, i: number, by: -1 | 1) {
+		const list = f.mapOrder.slice();
+		[list[i], list[i + by]] = [list[i + by], list[i]];
+		f.mapOrder = list;
+	}
+	/** A Weather cycle rule's lighting a turn earlier or later: its row goes just above the ticked one
+	 *  before it, or just below the one after it. */
+	function moveLight(f: Form, l: string, by: -1 | 1) {
+		const ticked = f.lightOrder.filter((x) => f.lightOn.includes(x));
+		const other = ticked[ticked.indexOf(l) + by];
+		if (!other) return;
+		const list = f.lightOrder.filter((x) => x !== l);
+		list.splice(list.indexOf(other) + (by > 0 ? 1 : 0), 0, l);
+		f.lightOrder = list;
+	}
+	/** A new Weather cycle rule's lightings: clear, fog, cloud and rain, where the server has them. */
+	const WEATHER_PICKS = ['DayClear', 'DayEarlyFog', 'DayLateGray', 'DayLateRain'];
+	function weatherPicks(): string[] {
+		const ids = data.catalog.lightings.map((l) => l.id);
+		const picked = ids.filter((id) => WEATHER_PICKS.includes(id));
+		return picked.length >= 2 ? picked : ids.slice(0, 2);
+	}
+
 	/** The editor for a new rule of a kind, an existing rule, or a copy of one (`copy`). */
 	function open(kind: TriggerKind, t?: TriggerView, copy = false) {
+		fromPicker = false;
 		const c = (t?.config ?? {}) as Record<string, unknown>;
 		const s = (k: string, d: string) => (typeof c[k] === 'string' ? (c[k] as string) : d);
 		const n = (k: string, d: number) => (typeof c[k] === 'number' ? (c[k] as number) : d);
@@ -557,6 +710,9 @@
 						: canChat
 							? 'warn'
 							: 'kick';
+		// a new Bounty rule gives a slot when its author may reserve one, and announces only otherwise
+		const bountyReward: Form['bountyReward'] =
+			c.reward === 'none' || (!t && !canSlotHere && !canSlotOrg) ? 'none' : 'slot';
 		form = {
 			id: copy ? null : (t?.id ?? null),
 			kind,
@@ -580,9 +736,14 @@
 			afterFaction: b('afterFaction', false),
 			messages: Array.isArray(c.messages)
 				? (c.messages as string[]).join('\n')
-				: 'Join our Discord for events and support.\nNo team-killing. Admins are watching.',
-			everyMinutes: n('everyMinutes', kind === 'afk_protection' ? 3 : 15),
-			minPlayers: n('minPlayers', 1),
+				: kind === 'death_whisper'
+					? 'While you wait, {name}: join our Discord for events and support.\n{killer} got you with the {weapon}. Tell us how the server plays on our Discord.'
+					: 'Join our Discord for events and support.\nNo team-killing. Admins are watching.',
+			everyMinutes: n(
+				'everyMinutes',
+				kind === 'afk_protection' ? 3 : kind === 'weather_cycle' ? 30 : 15
+			),
+			minPlayers: n('minPlayers', kind === 'bounty' || kind === 'afk_watch' ? 20 : 1),
 			maxPlayers: typeof c.maxPlayers === 'number' ? c.maxPlayers : null,
 			afterMinutes: n('afterMinutes', 20),
 			cooldownMinutes: n('cooldownMinutes', 30),
@@ -596,7 +757,12 @@
 			bannedElsewhere: b('bannedElsewhere', true),
 			watchlist: b('watchlist', false),
 			kickAtScore: kickAtScoreOf(c),
-			spareReserved: b('spareReserved', true),
+			// a High ping kick saved before it could spare reserved slots spares nobody, and a new Death
+			// whisper whispers everyone until told otherwise
+			spareReserved: b(
+				'spareReserved',
+				kind === 'death_whisper' ? false : kind !== 'ping_kick' || !t
+			),
 			reason: s(
 				'reason',
 				kind === 'name_filter'
@@ -605,9 +771,11 @@
 						? 'Changing your name mid-game is not allowed here.'
 						: kind === 'ping_kick'
 							? 'Ping too high for too long.'
-							: kind === 'kill_distance'
-								? distanceText(distanceAction)
-								: 'Your account does not meet this server’s requirements.'
+							: kind === 'afk_watch'
+								? 'AFK: no kill, death or cash earned for {idle} minutes.'
+								: kind === 'kill_distance'
+									? distanceText(distanceAction)
+									: 'Your account does not meet this server’s requirements.'
 			),
 			leadMinutes: n('leadMinutes', 30),
 			leadMessage: s(
@@ -618,7 +786,12 @@
 			endMessage: s('endMessage', 'Match over: {faction} wins on {previous} · {scores}'),
 			startMessage: s('startMessage', 'New match on {map}. Good luck!'),
 			warnAt: n('warnAt', 2),
-			warnMessage: s('warnMessage', 'Careful, {name}: that was a team kill ({count} this match).'),
+			warnMessage: s(
+				'warnMessage',
+				kind === 'afk_watch'
+					? '{name}, you look AFK: no kill, death or cash earned for {idle} min. Play on, or you are kicked at {limit} min.'
+					: 'Careful, {name}: that was a team kill ({count} this match).'
+			),
 			kickAt: n('kickAt', 4),
 			kickReason: s('kickReason', 'Team killing ({count} this match).'),
 			notCounted: Array.isArray(c.notCounted)
@@ -627,9 +800,11 @@
 			lowAt: n('lowAt', 20),
 			untilFull: b('untilFull', true),
 			fullAt: typeof c.fullAt === 'number' ? c.fullAt : null,
-			minutes: n('minutes', 60),
+			minutes: n('minutes', kind === 'afk_watch' ? 15 : 60),
+			// a new AFK watch rule warns first
+			warnMinutes: n('warnMinutes', 10),
 			windowDays: n('windowDays', 7),
-			slotDays: n('slotDays', 7),
+			slotDays: n('slotDays', kind === 'bounty' ? 1 : 7),
 			// a rule saved before the scope existed hands out org-wide slots; a new one, this server's
 			slotScope: c.scope === 'server' ? 'server' : t ? 'org' : canSlotHere ? 'server' : 'org',
 			characters: c.characters === 'ascii' || c.characters === 'off' ? c.characters : 'latin',
@@ -671,7 +846,22 @@
 			// a new rule bans where its author may: this server's list first
 			banScope: c.banScope === 'org' ? 'org' : t || canBanHere || !canBanOrg ? 'server' : 'org',
 			stopAt: n('stopAt', 20),
-			doneMessage: s('doneMessage', 'Thanks for seeding {server}! The match is live.')
+			doneMessage: s('doneMessage', 'Thanks for seeding {server}! The match is live.'),
+			streak: n('streak', 15),
+			bountyReward,
+			setMessage: s('setMessage', bountyTexts(bountyReward).setMessage),
+			claimMessage: s('claimMessage', bountyTexts(bountyReward).claimMessage),
+			whisper: s('whisper', bountyTexts(bountyReward).whisper),
+			mapOrder: mapTurn(c.maps),
+			// a new rule starts from the name the server shows now
+			liveBase: s('base', liveStatus?.serverName ?? ''),
+			liveAppend: s('append', LIVE_NAME_APPEND_DEFAULT),
+			lightOrder: turnOf(
+				Array.isArray(c.lightings) ? c.lightings : weatherPicks(),
+				data.catalog.lightings.map((l) => l.id)
+			),
+			lightOn: Array.isArray(c.lightings) ? [...(c.lightings as string[])] : weatherPicks(),
+			random: b('random', false)
 		};
 		dry = null;
 		pendingSel =
@@ -688,11 +878,15 @@
 	const dryLabel = (kind: TriggerKind) =>
 		kind === 'restart_notice'
 			? 'Preview next cycle'
-			: kind === 'name_filter'
-				? 'Dry run, past players'
-				: kind === 'ping_kick'
-					? 'Check dry-run limits'
-					: 'Dry run, last 24 h';
+			: kind === 'rotation_shuffle'
+				? 'Preview next shuffle'
+				: kind === 'restart_skip'
+					? 'Preview next restart'
+					: kind === 'name_filter'
+						? 'Dry run, past players'
+						: kind === 'ping_kick' || kind === 'afk_watch'
+							? 'Check dry-run limits'
+							: 'Dry run, last 24 h';
 	const lines = (text: string) =>
 		text
 			.split(/[\n,]/)
@@ -709,6 +903,14 @@
 				};
 			case 'faction_change':
 				return { message: f.message };
+			case 'death_whisper':
+				return {
+					messages: f.messages.split('\n'),
+					cooldownMinutes: Number(f.cooldownMinutes),
+					minPlayers: Number(f.minPlayers),
+					spareReserved: f.spareReserved,
+					exempt: f.exempt.split(/[\s,]+/).filter(Boolean)
+				};
 			case 'broadcast':
 				return {
 					messages: f.messages.split('\n'),
@@ -733,6 +935,7 @@
 					watchlist: f.watchlist,
 					kickAtScore: Number(f.kickAtScore) || null,
 					spareReserved: f.spareReserved,
+					exempt: f.exempt.split(/[\s,]+/).filter(Boolean),
 					reason: f.reason
 				};
 			case 'name_filter':
@@ -746,6 +949,7 @@
 					allowed: lines(f.allowed),
 					action: f.nameAction,
 					spareReserved: f.spareReserved,
+					exempt: f.exempt.split(/[\s,]+/).filter(Boolean),
 					reason: f.reason
 				};
 			case 'name_change':
@@ -761,6 +965,18 @@
 				return {
 					maxPingMs: Number(f.maxPingMs),
 					durationSeconds: Number(f.durationSeconds),
+					spareReserved: f.spareReserved,
+					reason: f.reason
+				};
+			case 'afk_watch':
+				return {
+					minutes: Number(f.minutes),
+					warnMinutes: Number(f.warnMinutes),
+					warnMessage: f.warnMessage,
+					action: f.nameAction,
+					minPlayers: Number(f.minPlayers),
+					spareReserved: f.spareReserved,
+					exempt: f.exempt.split(/[\s,]+/).filter(Boolean),
 					reason: f.reason
 				};
 			case 'restart_notice':
@@ -836,6 +1052,30 @@
 					slotDays: Number(f.slotDays),
 					scope: f.slotScope,
 					message: f.message
+				};
+			case 'bounty':
+				return {
+					streak: Number(f.streak),
+					minPlayers: Number(f.minPlayers),
+					reward: f.bountyReward,
+					slotDays: Number(f.slotDays),
+					scope: f.slotScope,
+					setMessage: f.setMessage,
+					claimMessage: f.claimMessage,
+					whisper: f.whisper
+				};
+			case 'rotation_shuffle':
+				return { maps: f.mapOrder };
+			case 'live_name':
+				return { base: f.liveBase, append: f.liveAppend };
+			case 'restart_skip':
+				return {};
+			case 'weather_cycle':
+				return {
+					lightings: f.lightOrder.filter((l) => f.lightOn.includes(l)),
+					everyMinutes: Number(f.everyMinutes),
+					random: f.random,
+					minPlayers: Number(f.minPlayers)
 				};
 		}
 	}
@@ -918,6 +1158,15 @@
 				return `"${c.message}"${c.afterFaction ? ' · after faction pick' : ' · on join'}${c.onlyFirstVisit ? ' · first visit only' : ''}`;
 			case 'faction_change':
 				return `"${c.message}"`;
+			case 'death_whisper': {
+				const count = Array.isArray(c.messages) ? c.messages.length : 0;
+				const exempt = Array.isArray(c.exempt) ? c.exempt.length : 0;
+				const spares = [
+					c.spareReserved && 'reserved slots',
+					exempt && `${exempt} player${exempt === 1 ? '' : 's'}`
+				].filter(Boolean);
+				return `${count} message${count === 1 ? '' : 's'} · each player at most every ${c.cooldownMinutes} min · at least ${c.minPlayers} on${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
+			}
 			case 'broadcast':
 				return `${(c.messages as string[]).length} message${(c.messages as string[]).length === 1 ? '' : 's'} every ${c.everyMinutes} min · ${typeof c.maxPlayers === 'number' ? `${c.minPlayers} to ${c.maxPlayers}` : `at least ${c.minPlayers}`} on`;
 			case 'empty_reset':
@@ -933,7 +1182,12 @@
 					c.watchlist && 'watchlist',
 					kickAtScoreOf(c) && `risk ${kickAtScoreOf(c)}+`
 				].filter(Boolean);
-				return `${rules.join(', ')}${c.spareReserved ? ' · spares reserved slots' : ''}`;
+				const exempt = ((c.exempt as string[] | undefined) ?? []).length;
+				const spares = [
+					c.spareReserved && 'reserved slots',
+					exempt && `${exempt} player${exempt === 1 ? '' : 's'}`
+				].filter(Boolean);
+				return `${rules.join(', ')}${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
 			}
 			case 'name_filter': {
 				const also = ((c.extraScripts as string[] | undefined) ?? []).map(
@@ -941,9 +1195,14 @@
 				);
 				const blocked = ((c.blocked as string[] | undefined) ?? []).length;
 				const allowed = ((c.allowed as string[] | undefined) ?? []).length;
+				const exempt = ((c.exempt as string[] | undefined) ?? []).length;
 				const lists = [
 					c.builtinWords && 'built-in list',
 					blocked && `${blocked} word${blocked === 1 ? '' : 's'}`
+				].filter(Boolean);
+				const spares = [
+					c.spareReserved && 'reserved slots',
+					exempt && `${exempt} player${exempt === 1 ? '' : 's'}`
 				].filter(Boolean);
 				return [
 					c.characters === 'ascii'
@@ -957,7 +1216,7 @@
 						? `${lists.join(' and ')}${allowed ? `, ${allowed} exception${allowed === 1 ? '' : 's'}` : ''}`
 						: '',
 					c.action === 'alert' ? 'alert only' : 'kick',
-					c.spareReserved ? 'spares reserved slots' : ''
+					spares.length ? `spares ${spares.join(' and ')}` : ''
 				]
 					.filter(Boolean)
 					.join(' · ');
@@ -973,7 +1232,22 @@
 					.filter(Boolean)
 					.join(' · ');
 			case 'ping_kick':
-				return `ping over ${c.maxPingMs} ms for ${c.durationSeconds} s`;
+				return `ping over ${c.maxPingMs} ms for ${c.durationSeconds} s${c.spareReserved ? ' · spares reserved slots' : ''}`;
+			case 'afk_watch': {
+				const exempt = ((c.exempt as string[] | undefined) ?? []).length;
+				const spares = [
+					c.spareReserved && 'reserved slots',
+					exempt && `${exempt} player${exempt === 1 ? '' : 's'}`
+				].filter(Boolean);
+				return [
+					`no kill, death or cash earned for ${c.minutes} min of a live match, ${c.minPlayers}+ on`,
+					Number(c.warnMinutes) ? `warn at ${c.warnMinutes} min` : '',
+					c.action === 'alert' ? 'alert only' : 'kick',
+					spares.length ? `spares ${spares.join(' and ')}` : ''
+				]
+					.filter(Boolean)
+					.join(' · ');
+			}
 			case 'restart_notice':
 				return `"${c.message}"${c.leadMinutes ? ` · heads-up ${c.leadMinutes} min before` : ''}${c.repeatMinutes ? ` · again every ${c.repeatMinutes} min` : ''} · at least ${c.minPlayers} on`;
 			case 'match_broadcast':
@@ -995,7 +1269,7 @@
 					left.length > 3
 						? `${left.length} causes not counted`
 						: left.length
-							? `${left.map((x) => causeLabel(x)).join(', ')} not counted`
+							? `${left.map((x) => notCountedLabel(x)).join(', ')} not counted`
 							: ''
 				]
 					.filter(Boolean)
@@ -1047,21 +1321,47 @@
 			}
 			case 'afk_protection':
 				return `kill everyone every ${c.everyMinutes} min while fewer than ${c.stopAt} are on and no side has scored · then off until the server empties or restarts${c.message ? ' · with a broadcast' : ''}${c.doneMessage ? ' · thanks at the start' : ''}`;
+			case 'bounty': {
+				const days = Number(c.slotDays);
+				return [
+					`${c.streak} kills without dying, with ${c.minPlayers}+ on`,
+					c.reward === 'none'
+						? 'announced only'
+						: `reserved slot ${c.scope === 'org' ? 'on every server' : 'here'} for ${days} day${days === 1 ? '' : 's'}`,
+					c.claimMessage ? 'announces the claim' : '',
+					c.whisper ? 'whispers the claimer' : ''
+				]
+					.filter(Boolean)
+					.join(' · ');
+			}
 			case 'seed_reward':
 				return `${c.minutes} min with ${c.lowAt} or fewer on${c.untilFull === false ? '' : `, staying until ${typeof c.fullAt === 'number' ? `${c.fullAt}+ on` : 'it fills'}`}, within ${c.windowDays} day${c.windowDays === 1 ? '' : 's'} · slot ${c.scope === 'server' ? 'here' : 'on every server'} for ${c.slotDays} day${c.slotDays === 1 ? '' : 's'}${c.message ? ' · with a whisper' : ''}`;
+			case 'rotation_shuffle': {
+				const maps = Array.isArray(c.maps) ? (c.maps as string[]) : [];
+				return `${maps.length ? maps.map((m) => mapLabel(data.catalog, m)).join(', ') : 'The maps'} in turn · zones in turn · a new order every day`;
+			}
+			case 'live_name':
+				return `${c.base} + ${c.append} · at most once a minute`;
+			case 'restart_skip':
+				return 'Skips the map a restart starts on, when the rotation does not have it';
+			case 'weather_cycle': {
+				const ls = Array.isArray(c.lightings) ? (c.lightings as string[]) : [];
+				const which =
+					ls.length > 4
+						? `${ls.length} lightings ${c.random ? 'at random' : 'in turn'}`
+						: c.random
+							? `${ls.map((l) => lightingLabel(data.catalog, l)).join(', ')} at random`
+							: ls.map((l) => lightingLabel(data.catalog, l)).join(' → ');
+				return `${which} · every ${c.everyMinutes} min · at least ${c.minPlayers} on`;
+			}
 		}
 	}
 </script>
 
-<svelte:window
-	onclick={() => (addOpen = false)}
-	onkeydown={(e) => e.key === 'Escape' && (addOpen = false)}
-/>
-
 <p class="mb-4 text-[13px] text-mist-400">
 	Rules act on {data.server.demo ? 'the demo server' : 'this server'} as things happen: a join, a kill,
 	a quiet hour. Every action is recorded below and in the audit trail as
-	<span class="chip">trigger</span>.
+	<span class="chip">trigger</span>, but for a Death whisper that went, which is only below.
 </p>
 
 <div class="mb-3 flex flex-wrap items-start gap-3">
@@ -1075,6 +1375,9 @@
 				{#if lastAction}· last action <span title={fmtTime(lastAction)}
 						>{fmtAgo(lastAction, now)}</span
 					>{/if}
+				{#if waitingOnFeed.length}
+					· <span class="text-warn">{waitingOnFeed.length} waiting on the kill feed</span>
+				{/if}
 				{#if failingCount}
 					· <button
 						type="button"
@@ -1090,52 +1393,27 @@
 		</div>
 	</div>
 	{#if admin}
-		<div class="relative">
-			<button
-				type="button"
-				class="btn gap-1.5 pr-2.5"
-				aria-haspopup="menu"
-				aria-expanded={addOpen}
-				onclick={(e) => {
-					e.stopPropagation();
-					addOpen = !addOpen;
-				}}
-			>
-				Add rule <span class="text-[10px] text-mist-600">▼</span>
-			</button>
-			{#if addOpen}
-				<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-				<div
-					class="absolute top-[calc(100%+6px)] right-0 z-40 min-w-[270px] rise rounded-card border border-black bg-ink-900 p-1 shadow-pop"
-					role="menu"
-					tabindex="-1"
-					onclick={(e) => e.stopPropagation()}
-				>
-					{#each GROUPS as g (g)}
-						<div class="px-3 pt-2 pb-1 caps text-mist-600">{g}</div>
-						{#each KINDS.filter((k) => k.group === g) as k (k.kind)}
-							<button
-								type="button"
-								class="menu-item {needs(k.kind) ? 'text-mist-600!' : ''}"
-								role="menuitem"
-								title={k.blurb}
-								onclick={() => {
-									addOpen = false;
-									open(k.kind);
-								}}
-							>
-								<span>{k.label}</span>
-								{#if needs(k.kind) && short(k.kind)}
-									<span class="ml-auto text-[11px] text-mist-600">{short(k.kind)}</span>
-								{/if}
-							</button>
-						{/each}
-					{/each}
-				</div>
-			{/if}
-		</div>
+		<button type="button" class="btn" aria-haspopup="dialog" onclick={() => (picking = true)}
+			>Add rule</button
+		>
 	{/if}
 </div>
+
+{#if waitingOnFeed.length}
+	<div
+		class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-ctl border border-warn/30 bg-warn/10 px-3 py-2 text-[13px]"
+	>
+		<span class="min-w-0 grow basis-105"
+			><span class="font-semibold">The kill feed is silent.</span>
+			<span class="text-mist-400"
+				>Nothing has come from it since the server started {feedStarted}, so {waitingNames} cannot act.</span
+			></span
+		>
+		{#if can(data.server.caps, 'config.apply')}
+			<a class="btn btn-sm" href="/server/{encodeURIComponent(id)}/config">Check the kill feed</a>
+		{/if}
+	</div>
+{/if}
 
 <!-- A dry run from a row opens here, above the list, so the rows never change height. -->
 {#if dry && dryFor !== 'form' && !form}
@@ -1183,8 +1461,25 @@
 						<span class="chip">{label(t.kind)}</span>
 					</div>
 					<div class="mt-0.5 line-clamp-2 text-[13px] text-mist-400">
-						{describe(t.kind, t.config)}
+						{#if t.kind === 'live_name'}
+							<span class="font-mono text-[12.5px]">{t.config.base}</span> +
+							<span class="font-mono text-[12.5px] text-mist-100">{t.config.append}</span> · at most once
+							a minute
+						{:else}
+							{describe(t.kind, t.config)}
+						{/if}
 					</div>
+					{#if t.kind === 'bounty' && t.enabled && t.bounty}
+						{@const b = t.bounty}
+						<div class="mt-0.5 text-[12px] text-mist-100">
+							Open: <a
+								class="link"
+								href="/server/{id}/players/{b.steamId}"
+								data-sveltekit-preload-data="tap">{b.name}</a
+							>, marked at {b.streak} kills without dying · set
+							<span title={fmtTime(b.setAt)}>{fmtAgo(b.setAt, now)}</span>
+						</div>
+					{/if}
 					{#if t.kind === 'afk_protection' && t.enabled && t.phase}
 						{@const phase = t.phase}
 						<!-- Where it stands: acting while the server seeds, or off since a match went live. -->
@@ -1198,41 +1493,77 @@
 							{/if}
 						</div>
 					{/if}
-					<!-- One of four shapes, most urgent first: failing, off, fired, never fired. -->
-					<div class="mt-0.5 text-[12px] {h?.failing ? 'text-mist-100' : 'text-mist-600'}">
-						{#if h?.failing}
-							Latest actions failed · <span class="font-mono text-[11.5px] text-mist-400"
-								>{h.outcome}</span
-							>
-							· <span title={fmtTime(h.latest)}>{fmtAgo(h.latest, now)}</span>
-							<button type="button" class="ml-1 btn btn-sm" onclick={() => seeActions(t)}
-								>See actions</button
-							>
-						{:else if !t.enabled}
-							Off · {#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
-									>{fmtAgo(t.lastFiredAt, now)}</span
-								>{:else}never fired{/if}
-						{:else if t.lastFiredAt}
-							Fired <span title={fmtTime(t.lastFiredAt)}>{fmtAgo(t.lastFiredAt, now)}</span>
-							{#if h?.count}· {countLine(h)}{:else if t.fireCount}· {t.fireCount} action{t.fireCount ===
-								1
-									? ''
-									: 's'} so far{/if}
-						{:else}
-							Never fired{#if needs(t.kind)}
-								· {needs(t.kind)}{/if}
-						{/if}
-					</div>
+					{#if t.kind === 'live_name'}
+						<!-- What it last wrote, why it could not, or that its own name went back once off. -->
+						{@const ln = t.liveName}
+						<div
+							class="mt-0.5 text-[12px] {t.enabled && ln?.refused ? 'text-warn' : 'text-mist-600'}"
+						>
+							{#if !t.enabled}
+								Off{#if ln?.restored && ln.at}
+									· name put back to <span class="font-mono text-mist-400">{ln.name}</span>
+									<span title={fmtTime(ln.at)}>{fmtAgo(ln.at, now)}</span>{/if}
+							{:else if ln?.refused}
+								Not written: {ln.refused}{#if ln.since}
+									· <span title={fmtTime(ln.since)}>{fmtAgo(ln.since, now)}</span>{/if}
+							{:else if ln?.at}
+								Now <span class="font-mono text-mist-400">{ln.name}</span> · written
+								<span title={fmtTime(ln.at)}>{fmtAgo(ln.at, now)}</span>
+							{:else}
+								Nothing written yet{#if needs(t.kind)}
+									· {needs(t.kind)}{/if}
+							{/if}
+						</div>
+					{:else}
+						<!-- One of five shapes, most urgent first: failing, off, waiting on a silent kill feed, fired, never fired. -->
+						<div
+							class="mt-0.5 text-[12px] {h?.failing
+								? 'text-mist-100'
+								: onFeed(t)
+									? 'text-warn'
+									: 'text-mist-600'}"
+						>
+							{#if h?.failing}
+								Latest actions failed · <span class="font-mono text-[11.5px] text-mist-400"
+									>{h.outcome}</span
+								>
+								· <span title={fmtTime(h.latest)}>{fmtAgo(h.latest, now)}</span>
+								<button type="button" class="ml-1 btn btn-sm" onclick={() => seeActions(t)}
+									>See actions</button
+								>
+							{:else if !t.enabled}
+								Off · {#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
+										>{fmtAgo(t.lastFiredAt, now)}</span
+									>{:else}never fired{/if}
+							{:else if onFeed(t)}
+								Waiting on the kill feed · nothing since the server started {feedStarted} ·
+								{#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
+										>{fmtAgo(t.lastFiredAt, now)}</span
+									>{:else}never fired{/if}
+							{:else if t.lastFiredAt}
+								Fired <span title={fmtTime(t.lastFiredAt)}>{fmtAgo(t.lastFiredAt, now)}</span>
+								{#if h?.count}· {countLine(h)}{:else if t.fireCount}· {t.fireCount} action{t.fireCount ===
+									1
+										? ''
+										: 's'} so far{/if}
+							{:else}
+								Never fired{#if needs(t.kind)}
+									· {needs(t.kind)}{/if}
+							{/if}
+						</div>
+					{/if}
 				</div>
 				{#if admin}
 					<RowMenu label="Actions for {t.name}">
-						<button
-							type="button"
-							class="menu-item"
-							role="menuitem"
-							disabled={dryBusy}
-							onclick={() => dryRun(t.kind, t.config, t.id, t.name)}>{dryLabel(t.kind)}</button
-						>
+						{#if t.kind !== 'live_name'}
+							<button
+								type="button"
+								class="menu-item"
+								role="menuitem"
+								disabled={dryBusy}
+								onclick={() => dryRun(t.kind, t.config, t.id, t.name)}>{dryLabel(t.kind)}</button
+							>
+						{/if}
 						<button type="button" class="menu-item" role="menuitem" onclick={() => open(t.kind, t)}
 							>Edit</button
 						>
@@ -1266,11 +1597,11 @@
 						>+ Scheduled broadcast</button
 					>
 				</div>
-				<p class="max-w-[52ch] text-[12.5px] text-mist-600">
-					Or add any rule: {KINDS.filter((k) => k.kind !== 'welcome' && k.kind !== 'broadcast')
-						.map((k) => k.label)
-						.join(' · ')}.
-				</p>
+				<button
+					type="button"
+					class="cursor-pointer text-[12.5px] text-mist-400 underline decoration-mist-600 underline-offset-[3px] hover:text-mist-100"
+					onclick={() => (picking = true)}>Or see all {KINDS.length} kinds of rule</button
+				>
 			{:else if onlyFailing}
 				<p class="text-mist-600">No rule is failing.</p>
 			{:else}
@@ -1307,7 +1638,13 @@
 {#snippet dryResult(r: DryRunResult, title: string)}
 	<div class="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
 		<span class="caps text-accent"
-			>{r.kind === 'restart_notice' ? 'Next cycle' : 'Dry run'} · {title}</span
+			>{r.kind === 'restart_notice'
+				? 'Next cycle'
+				: r.kind === 'rotation_shuffle'
+					? 'Next shuffle'
+					: r.kind === 'restart_skip'
+						? 'Next restart'
+						: 'Dry run'} · {title}</span
 		>
 		{#if r.kind === 'restart_notice'}
 			<span
@@ -1315,12 +1652,43 @@
 					? ''
 					: 's'}</span
 			>
+		{:else if r.kind === 'rotation_shuffle'}
+			<span
+				><b class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b> shuffle{r.fires === 1
+					? ''
+					: 's'} before the next restart</span
+			>
+		{:else if r.kind === 'restart_skip'}
+			<span>The map is checked at the first look after the restart</span>
 		{:else if r.kind === 'name_filter'}
 			<span
 				>Everyone who has played here: would have matched <b
 					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
 				>
 				name{r.fires === 1 ? '' : 's'}</span
+			>
+		{:else if r.kind === 'afk_watch'}
+			<span>Nothing to replay</span>
+		{:else if r.kind === 'death_whisper'}
+			<span
+				>Replayed the last 24 h on this server: would have whispered <b
+					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
+				>
+				time{r.fires === 1 ? '' : 's'}</span
+			>
+		{:else if r.kind === 'weather_cycle'}
+			<span
+				>Replayed the last 24 h on this server: would have changed the weather <b
+					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
+				>
+				time{r.fires === 1 ? '' : 's'}</span
+			>
+		{:else if r.kind === 'bounty'}
+			<span
+				>Replayed the last 24 h on this server: would have set <b
+					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
+				>
+				bount{r.fires === 1 ? 'y' : 'ies'}</span
 			>
 		{:else}
 			<span
@@ -1354,18 +1722,32 @@
 	{#each r.notes as n (n)}<p class="note">{n}</p>{/each}
 {/snippet}
 
+{#if picking}
+	<RulePicker rules={data.triggers} lacks={short} onpick={pick} onclose={() => (picking = false)} />
+{/if}
+
 {#if form}
 	{@const f = form}
 	<Modal
 		title="{f.id ? 'Edit' : 'New'} · {label(f.kind)}"
 		wide={f.kind === 'empty_reset' || f.kind === 'name_filter'}
+		back={fromPicker
+			? {
+					label: 'All rules',
+					onclick: () => {
+						form = null;
+						picking = true;
+					}
+				}
+			: undefined}
 		onclose={() => (form = null)}
 	>
 		<form
 			class="space-y-3"
 			bind:this={formEl}
 			onfocusin={(e) => {
-				if (isText(e.target) && e.target.name !== 'name' && !e.target.dataset.plain)
+				// a bare data-plain is an empty string in the dataset, so look for the attribute itself
+				if (isText(e.target) && e.target.name !== 'name' && !e.target.hasAttribute('data-plain'))
 					lastField = e.target;
 			}}
 			onsubmit={(e) => {
@@ -1420,6 +1802,66 @@
 					<p class="note">
 						Fires when a player moves from one faction to another, not on their first pick after
 						joining.
+					</p>
+				{:else if f.kind === 'death_whisper'}
+					<fieldset class="space-y-2">
+						<legend class="field-label">Whispers, one per line, one picked at random</legend>
+						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
+						{@render placeholders('death_whisper', [f.messages])}
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">When</legend>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+							At most once every
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="1"
+								max="1440"
+								bind:value={f.cooldownMinutes}
+								aria-label="At most once every, minutes"
+								required
+							/>
+							min to each player
+						</div>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+							while at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="0"
+								max="1000"
+								bind:value={f.minPlayers}
+								aria-label="While at least, players"
+							/>
+							players are on
+						</div>
+					</fieldset>
+					<fieldset class="space-y-2 text-[13px]">
+						<legend class="field-label">Never whisper</legend>
+						<label class="flex items-center gap-2"
+							><input type="checkbox" bind:checked={f.spareReserved} /> players with a reserved slot</label
+						>
+						<label class="block space-y-1.5 border-t border-black pt-2"
+							><span class="block">these players <span class="text-mist-600">(optional)</span></span
+							>
+							<textarea
+								class="input font-mono text-[12.5px]"
+								rows="3"
+								data-plain
+								bind:value={f.exempt}
+								placeholder="SteamID64, one per line"></textarea></label
+						>
+						<p class="text-[12px] text-mist-600">Your staff, say. Up to 100.</p>
+					</fieldset>
+					<p class="note">
+						The kill feed says who died about two seconds after it happens, and a whisper that
+						cannot go within 30 seconds is dropped, so it reaches players while they wait to
+						respawn. A message naming {'{killer}'}, {'{weapon}'} or {'{distance}'} goes only to deaths
+						that have them (a fall has no killer) while another message fits. A name is the player's to
+						choose: a link in a killer's name reaches the whisper through {'{killer}'}, and the Name
+						filter keeps such names off. Whispers that go are under Recent actions; the audit trail
+						keeps those that fail.
 					</p>
 				{:else if f.kind === 'broadcast'}
 					<fieldset class="space-y-2">
@@ -1501,6 +1943,270 @@
 						mode. With a rotation the target is set as next and the match ended; without one the map
 						is requested directly.
 					</p>
+				{:else if f.kind === 'rotation_shuffle'}
+					<div>
+						<span class="field-label">Map order</span>
+						<ol class="border-t border-white/6">
+							{#each f.mapOrder as m, i (m)}
+								{@const name = mapLabel(data.catalog, m)}
+								<li class="flex items-center gap-2.5 border-b border-white/6 py-2 pr-2 pl-1">
+									<span class="w-4 shrink-0 text-right text-[12px] text-mist-600 tabular"
+										>{i + 1}</span
+									>
+									<span class="min-w-0 grow truncate text-[13px]">{name}</span>
+									<span class="inline-flex shrink-0 gap-1">
+										<button
+											type="button"
+											class="btn w-9 px-0 pointer-coarse:size-11"
+											aria-label="Move {name} up"
+											disabled={i === 0}
+											onclick={() => moveMap(f, i, -1)}
+											><svg
+												width="16"
+												height="16"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="2"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg
+											></button
+										>
+										<button
+											type="button"
+											class="btn w-9 px-0 pointer-coarse:size-11"
+											aria-label="Move {name} down"
+											disabled={i === f.mapOrder.length - 1}
+											onclick={() => moveMap(f, i, 1)}
+											><svg
+												width="16"
+												height="16"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="2"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7" /></svg
+											></button
+										>
+									</span>
+								</li>
+							{/each}
+						</ol>
+						<p class="note">
+							Every match a different map, in this order. Each map's control zones take turns too,
+							and its times of day come in a new order every day.
+						</p>
+					</div>
+					<div class="space-y-1.5 text-[13px]">
+						<span class="field-label">When</span>
+						<p>
+							Once when you save it, then once a day: in the last round before the scheduled
+							restart, so the server comes back up on a new order, or straight after a restart it
+							could not see coming.
+						</p>
+					</div>
+					<p class="note">
+						The rotation is set to Ordered, since a Random one would play the entries in any order.
+						Only the rotation in the config document is written, as Apply on the Map rotation tab
+						does. The new order is turned so the map that follows the one on comes next. One rule
+						per server.
+					</p>
+				{:else if f.kind === 'weather_cycle'}
+					{@const ticked = f.lightOrder.filter((l) => f.lightOn.includes(l))}
+					<fieldset>
+						<legend class="field-label">Lightings</legend>
+						{#if f.lightOrder.length}
+							<ol class="border-t border-white/6">
+								{#each f.lightOrder as l (l)}
+									{@const name = lightingLabel(data.catalog, l)}
+									{@const turn = ticked.indexOf(l)}
+									<!-- as tall with the arrows as without, so ticking one moves no row -->
+									<li
+										class="flex min-h-13 items-center gap-2.5 border-b border-white/6 py-2 pr-2 pl-1 pointer-coarse:min-h-15"
+									>
+										<span class="w-4 shrink-0 text-right text-[12px] text-mist-600 tabular"
+											>{!f.random && turn >= 0 ? turn + 1 : ''}</span
+										>
+										<label class="flex min-w-0 grow items-center gap-2 text-[13px]"
+											><input type="checkbox" value={l} bind:group={f.lightOn} />
+											<span class="truncate">{name}</span>
+											{#if !data.catalog.lightings.some((x) => x.id === l)}<span
+													class="shrink-0 text-[12px] text-warn">not on this server's list</span
+												>{/if}</label
+										>
+										{#if !f.random && turn >= 0}
+											<span class="inline-flex shrink-0 gap-1">
+												<button
+													type="button"
+													class="btn w-9 px-0 pointer-coarse:size-11"
+													aria-label="Move {name} up"
+													disabled={turn === 0}
+													onclick={() => moveLight(f, l, -1)}
+													><svg
+														width="16"
+														height="16"
+														viewBox="0 0 24 24"
+														fill="none"
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg
+													></button
+												>
+												<button
+													type="button"
+													class="btn w-9 px-0 pointer-coarse:size-11"
+													aria-label="Move {name} down"
+													disabled={turn === ticked.length - 1}
+													onclick={() => moveLight(f, l, 1)}
+													><svg
+														width="16"
+														height="16"
+														viewBox="0 0 24 24"
+														fill="none"
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7" /></svg
+													></button
+												>
+											</span>
+										{/if}
+									</li>
+								{/each}
+							</ol>
+						{:else}
+							<p class="note mb-0 text-warn">
+								This server's lightings could not be read, so there is nothing to pick from. Try
+								again once the server answers.
+							</p>
+						{/if}
+						<p class="note">
+							Tick two or more. The list is the server's own: rain, say, is there only where the
+							server allows it.
+						</p>
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Order</legend>
+						<label class="flex items-center gap-2"
+							><input type="radio" value={false} bind:group={f.random} /> In this order, round and round</label
+						>
+						<label class="flex flex-wrap items-center gap-2"
+							><input type="radio" value={true} bind:group={f.random} /> At random
+							<span class="text-mist-600">(never the lighting already on)</span></label
+						>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">When</legend>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[13px]">
+							Every
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="5"
+								max="1440"
+								bind:value={f.everyMinutes}
+								aria-label="Every, minutes"
+								required
+							/>
+							min, with at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="0"
+								max="1000"
+								bind:value={f.minPlayers}
+								aria-label="At least, players"
+							/>
+							players on
+						</div>
+					</fieldset>
+					<p class="note">
+						Changes the time of day and weather of the match being played, with no map change or
+						restart; the first change comes at once. The next map comes up on its rotation entry's
+						own lighting, and the rule changes that at its next turn. A change in order passes over
+						the lighting already on. Every change is under Recent actions and in the audit trail;
+						Discord hears only of the ones that fail. One rule per server.
+					</p>
+				{:else if f.kind === 'restart_skip'}
+					<div class="space-y-1.5 text-[13px]">
+						<span class="field-label">When</span>
+						<p>
+							At the panel's first look after each restart, from the next restart on. A restarted
+							server comes up on a map of the game's own choosing and only then moves on to its
+							rotation. When the rotation does not have that map and its modes, the rule ends the
+							match, so the rotation's next map comes up at once.
+						</p>
+					</div>
+					<p class="note">
+						Left alone: a map the rotation has, a rotation that is off, and a match the panel first
+						sees more than ten minutes after the restart with a side already scoring. To skip the
+						map the server is on now, use Force end match on the Overview. One rule per server.
+					</p>
+				{:else if f.kind === 'live_name'}
+					<label class="block"
+						><span class="field-label">Server name</span><input
+							class="input"
+							type="text"
+							name="base"
+							maxlength="100"
+							spellcheck="false"
+							required
+							data-plain
+							bind:value={f.liveBase}
+						/></label
+					>
+					<p class="note">The server's name now. It goes back to this when the rule is off.</p>
+					<label class="block"
+						><span class="field-label">Append</span><input
+							class="input font-mono text-[12.5px] pointer-coarse:text-[16px]"
+							type="text"
+							name="append"
+							maxlength="60"
+							spellcheck="false"
+							required
+							bind:value={f.liveAppend}
+						/></label
+					>
+					<div class="space-y-1 text-[12px] text-mist-600">
+						{#each [['Rule', LIVE_NAME_PLACEHOLDERS.slice(0, 1)], ['Server', LIVE_NAME_PLACEHOLDERS.slice(1)]] as const as [row, names] (row)}
+							<div class="flex items-baseline gap-1">
+								<span class="w-16 shrink-0">{row}</span>
+								<div class="flex flex-wrap gap-1">
+									{#each names as n (n)}
+										<button
+											type="button"
+											class="chip cursor-pointer text-mist-100 transition hover:bg-white/12"
+											title="Insert {'{' + n + '}'} at the caret"
+											onclick={() => insert(n)}>{'{' + n + '}'}</button
+										>
+									{/each}
+								</div>
+							</div>
+						{/each}
+					</div>
+					<p class="note">
+						{'{scoreline}'} is each faction's score in the order the game lists them{#if liveStatus?.scores.length}:
+							{liveStatus.scores.map((s) => `${s.name} ${s.score}`).join(', ')} now{/if}. It reads
+						0-0-0 as a new match starts.
+					</p>
+					<div class="space-y-1.5 text-[13px]">
+						<span class="field-label">When</span>
+						<p>
+							Whenever the name it fills in changes, at most once a minute. The browser listing
+							follows on the server's next heartbeat.
+						</p>
+					</div>
+					<p class="note">
+						Only ServerName in the config document is written, as Apply on the Config tab does.
+						Switched off or deleted, the rule writes the name back without the appended part. One
+						rule per server.
+					</p>
 				{:else if f.kind === 'restart_notice'}
 					<fieldset class="space-y-2">
 						<legend class="field-label">Heads-up, before the window opens</legend>
@@ -1564,7 +2270,7 @@
 					</fieldset>
 					{@render placeholders('restart_notice', [f.leadMessage, f.message])}
 					<p class="note">
-						The game restarts 24 hours after it started, once the round then in progress ends.
+						{restartNote} See Game restart on the Settings tab.
 					</p>
 				{:else if f.kind === 'match_broadcast'}
 					<fieldset class="space-y-2">
@@ -1689,11 +2395,24 @@
 							or more, as the players table shows it (0 is off)</label
 						>
 					</fieldset>
-					<fieldset class="space-y-1.5 text-[13px]">
+					<fieldset class="space-y-2 text-[13px]">
 						<legend class="field-label">Never kick</legend>
 						<label class="flex items-center gap-2"
 							><input type="checkbox" bind:checked={f.spareReserved} /> players with a reserved slot</label
 						>
+						<label class="block space-y-1.5 border-t border-black pt-2"
+							><span class="block">these players <span class="text-mist-600">(optional)</span></span
+							>
+							<textarea
+								class="input font-mono text-[12.5px]"
+								rows="3"
+								data-plain
+								bind:value={f.exempt}
+								placeholder="SteamID64, one per line"></textarea></label
+						>
+						<p class="text-[12px] text-mist-600">
+							Whatever the rules above find on them: a regular with an old VAC ban, say. Up to 100.
+						</p>
 					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">Kick reason, shown to the player</legend>
@@ -1760,6 +2479,20 @@
 									><input type="checkbox" bind:checked={f.spareReserved} /> Never players with a reserved
 									slot</label
 								>
+							</fieldset>
+							<fieldset class="space-y-2 text-[13px]">
+								<legend class="field-label">Never these players (optional)</legend>
+								<textarea
+									class="input font-mono text-[12.5px]"
+									rows="3"
+									data-plain
+									bind:value={f.exempt}
+									aria-label="SteamIDs the rule never acts on, one per line"
+									placeholder="SteamID64, one per line"></textarea>
+								<p class="text-[12px] text-mist-600">
+									To keep your clan tag to your staff, block it as a word (abc for [ABC]) and list
+									them here.
+								</p>
 							</fieldset>
 						</div>
 						<div class="space-y-3 sm:border-l sm:border-black sm:pl-6">
@@ -1898,6 +2631,12 @@
 							seconds
 						</div>
 					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Never kick</legend>
+						<label class="flex items-center gap-2"
+							><input type="checkbox" bind:checked={f.spareReserved} /> players with a reserved slot</label
+						>
+					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">Kick reason, shown to the player</legend>
 						<input class="input" type="text" bind:value={f.reason} maxlength="200" />
@@ -1907,6 +2646,108 @@
 						The timer starts on the first high-ping sample. It resets when ping drops to the limit
 						or below, is unavailable, the player leaves, or the player list cannot be sampled on
 						time.
+					</p>
+				{:else if f.kind === 'afk_watch'}
+					<fieldset class="space-y-2">
+						<legend class="field-label">Idle</legend>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[13px]">
+							No kill, death or cash earned for
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="5"
+								max="120"
+								bind:value={f.minutes}
+								aria-label="Idle for, minutes"
+								required
+							/>
+							minutes of a live match
+						</div>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[13px]">
+							Counted while at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="1"
+								max="1000"
+								bind:value={f.minPlayers}
+								aria-label="Counted while at least, players on"
+								required
+							/>
+							players are on
+						</div>
+						<p class="text-[12px] text-mist-600">
+							A live match is one a side has scored in, so pre-match and seeding never count. Cash
+							is earned with every kill, capture, delivery and spot: someone playing rarely goes
+							long without it. Cash spent does not count, since a macro can buy things.
+						</p>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Whisper a warning</legend>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[13px]">
+							At
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="0"
+								max="119"
+								bind:value={f.warnMinutes}
+								aria-label="Warn at, minutes idle"
+							/>
+							minutes idle <span class="text-mist-600">(0 turns it off)</span>
+						</div>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.warnMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Warning"
+							disabled={!Number(f.warnMinutes)}
+						/>
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Then</legend>
+						<label class="flex items-center gap-2"
+							><input type="radio" value="kick" bind:group={f.nameAction} /> Kick the player</label
+						>
+						<label class="flex flex-wrap items-center gap-2"
+							><input type="radio" value="alert" bind:group={f.nameAction} /> Alert only
+							<span class="text-mist-600">(audit trail and Discord, nobody is kicked)</span></label
+						>
+					</fieldset>
+					<fieldset class="space-y-2 text-[13px]">
+						<legend class="field-label">Never act on</legend>
+						<label class="flex items-center gap-2"
+							><input type="checkbox" bind:checked={f.spareReserved} /> players with a reserved slot</label
+						>
+						<label class="block space-y-1.5 border-t border-black pt-2"
+							><span class="block">these players <span class="text-mist-600">(optional)</span></span
+							>
+							<textarea
+								class="input font-mono text-[12.5px]"
+								rows="3"
+								data-plain
+								bind:value={f.exempt}
+								placeholder="SteamID64, one per line"></textarea></label
+						>
+						<p class="text-[12px] text-mist-600">
+							Staff who sit in spawn on purpose, say. Up to 100.
+						</p>
+					</fieldset>
+					{#if f.nameAction === 'kick'}
+						<fieldset class="space-y-2">
+							<legend class="field-label">Kick reason, shown to the player</legend>
+							<input class="input" type="text" bind:value={f.reason} maxlength="200" />
+						</fieldset>
+					{/if}
+					{@render placeholders('afk_watch', [f.warnMessage, f.reason])}
+					<p class="note">
+						The game's own idle kick goes by input, which a macro fakes; the panel goes by the
+						player list. A player's time starts again with any kill, death or cash earned, at a
+						match end, when they leave, and when the panel loses sight of the server. A warning or
+						kick for someone who plays again before it goes is dropped. While nobody on the server
+						earns cash for that long (a host may not report it), the rule holds and says so on its
+						row.
 					</p>
 				{:else if f.kind === 'two_teams'}
 					<fieldset class="space-y-2 text-[13px]">
@@ -2473,11 +3314,165 @@
 						others at their next sync. Either lapses on its own and can be earned again. Players who
 						already hold a reserved slot here are skipped.
 					</p>
+				{:else if f.kind === 'bounty'}
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Who gets a bounty</legend>
+						<div class="flex flex-wrap items-center gap-2">
+							A player who gets
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="3"
+								max="200"
+								bind:value={f.streak}
+								aria-label="Kills in a row without dying"
+								required
+							/>
+							kills in a row without dying in one match,
+						</div>
+						<div class="flex flex-wrap items-center gap-2">
+							while at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="0"
+								max="1000"
+								bind:value={f.minPlayers}
+								aria-label="At least, players on"
+							/>
+							players are on
+						</div>
+						<p class="text-[12px] text-mist-600">
+							Team kills do not add to a run; any death ends it. One bounty at a time: the next goes
+							to whoever is on a run once this one ends.
+						</p>
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Reward for the first to kill them</legend>
+						<div class="flex flex-wrap items-center gap-2">
+							<label
+								class="flex items-center gap-2 {canSlotHere || canSlotOrg ? '' : 'text-mist-600'}"
+								><input
+									type="radio"
+									bind:group={f.bountyReward}
+									value="slot"
+									disabled={!canSlotHere && !canSlotOrg}
+									onchange={() => swapBounty(f)}
+								/> A reserved slot for</label
+							>
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="1"
+								max="365"
+								bind:value={f.slotDays}
+								aria-label="Reserved slot lasts, days"
+								disabled={f.bountyReward !== 'slot'}
+							/>
+							days
+						</div>
+						<div class="flex flex-wrap gap-x-4 gap-y-1 pl-5">
+							<label
+								class="flex items-center gap-2 {canSlotHere && f.bountyReward === 'slot'
+									? ''
+									: 'text-mist-600'}"
+								><input
+									type="radio"
+									bind:group={f.slotScope}
+									value="server"
+									disabled={!canSlotHere || f.bountyReward !== 'slot'}
+								/> on this server only</label
+							>
+							<label
+								class="flex items-center gap-2 {canSlotOrg && f.bountyReward === 'slot'
+									? ''
+									: 'text-mist-600'}"
+								><input
+									type="radio"
+									bind:group={f.slotScope}
+									value="org"
+									disabled={!canSlotOrg || f.bountyReward !== 'slot'}
+								/> on every server in the organisation</label
+							>
+						</div>
+						<label class="flex items-center gap-2"
+							><input
+								type="radio"
+								bind:group={f.bountyReward}
+								value="none"
+								onchange={() => swapBounty(f)}
+							/> Nothing but the announcement</label
+						>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Announce the bounty</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.setMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Announce the bounty"
+							required
+						/>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Announce the claim, blank for none</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.claimMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Announce the claim"
+						/>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Whisper the claimer, blank for none</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.whisper}
+							maxlength={MAX_CHAT}
+							aria-label="Whisper the claimer"
+						/>
+					</fieldset>
+					{@render placeholders('bounty', [f.setMessage, f.claimMessage, f.whisper])}
+					<p class="note">
+						{'{name}'} is the marked player when the bounty is set and the claimer after;
+						{'{target}'} is always the marked player, {'{streak}'} their run{#if f.bountyReward === 'slot'},
+							{'{reward}'} “a reserved slot for {Number(f.slotDays)}
+							day{Number(f.slotDays) === 1 ? '' : 's'}”{/if}. The bounty and the claim are broadcast
+						to the whole server.
+					</p>
+					<p class="note">
+						The first enemy to kill the marked player claims it. Team kills, suicides and deaths to
+						the environment never end a bounty, so nobody can clear their own or have a friend do
+						it. It lapses if the player leaves or the match ends, and saving the rule calls off one
+						in progress. A claimer who already holds a slot keeps whichever lasts longer. Kills come
+						from the game's kill feed.
+					</p>
 				{/if}
 
 				<div class="rounded-ctl border border-black bg-ink-950 px-3 py-2 text-[13px]">
-					<span class="mr-2 caps text-accent">Reads as</span>
-					<span class="text-mist-100">{describe(f.kind, config(f))}</span>
+					{#if f.kind === 'live_name'}
+						{@const base = f.liveBase.trim()}
+						{@const name = liveStatus
+							? liveName({ base: f.liveBase, append: f.liveAppend }, liveStatus)
+							: `${base} ${f.liveAppend.trim()}`}
+						<div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+							<span class="caps text-accent">Reads as</span>
+							<span class="min-w-0 font-mono text-[12.5px] break-all"
+								><span class="text-mist-400">{name.slice(0, base.length)}</span><span
+									class="text-mist-100">{name.slice(base.length)}</span
+								></span
+							>
+							<span class="ml-auto text-[12px] text-mist-600 tabular"
+								>{Array.from(name).length} characters</span
+							>
+						</div>
+					{:else}
+						<span class="mr-2 caps text-accent">Reads as</span>
+						<span class="text-mist-100">{describe(f.kind, config(f))}</span>
+					{/if}
 				</div>
 			</div>
 
@@ -2488,18 +3483,21 @@
 			{/if}
 
 			<div class="flex flex-wrap justify-end gap-2 pt-2">
-				<button
-					type="button"
-					class="mr-auto btn"
-					disabled={dryBusy}
-					onclick={() =>
-						dry && dryFor === 'form' ? (dry = null) : dryRun(f.kind, config(f), 'form', f.name)}
-					>{dryBusy
-						? 'Working…'
-						: dry && dryFor === 'form'
-							? 'Back to the form'
-							: dryLabel(f.kind)}</button
-				>
+				<!-- A Live server name rule has its preview above, from what the server shows now. -->
+				{#if f.kind !== 'live_name'}
+					<button
+						type="button"
+						class="mr-auto btn"
+						disabled={dryBusy}
+						onclick={() =>
+							dry && dryFor === 'form' ? (dry = null) : dryRun(f.kind, config(f), 'form', f.name)}
+						>{dryBusy
+							? 'Working…'
+							: dry && dryFor === 'form'
+								? 'Back to the form'
+								: dryLabel(f.kind)}</button
+					>
+				{/if}
 				<button type="button" class="btn" data-close onclick={() => (form = null)}>Cancel</button>
 				<button type="submit" class="btn btn-primary" disabled={busy}
 					>{f.id ? 'Save' : 'Add rule'}</button
@@ -2513,7 +3511,11 @@
 	<div class="mt-4 scroll-mt-4 panel" bind:this={actionsPanel}>
 		<div class="mb-3 flex flex-wrap items-center gap-2">
 			<span class="label-sm mb-0">Recent actions</span>
-			<span class="text-[12.5px] text-mist-600">what the rules did, newest first</span>
+			<span class="text-[12.5px] text-mist-600"
+				>{ruleRows
+					? 'what this rule did in the last 7 days, newest first'
+					: 'what the rules did, newest first'}</span
+			>
 			<div class="flex w-full flex-wrap gap-2 sm:ml-auto sm:w-auto">
 				<select
 					class="input w-auto pr-[30px] {ruleFilter ? 'border-accent' : ''}"
@@ -2578,7 +3580,13 @@
 					{:else}
 						<tr
 							><td colspan="6" class="py-6 text-center text-mist-600"
-								>{deliveries.length ? 'Nothing matches.' : 'No actions yet.'}</td
+								>{ruleRows
+									? ruleRows.length
+										? 'Nothing matches.'
+										: 'Nothing from this rule in the last 7 days.'
+									: deliveries.length
+										? 'Nothing matches.'
+										: 'No actions yet.'}</td
 							></tr
 						>
 					{/each}

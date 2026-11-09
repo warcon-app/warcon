@@ -1,5 +1,5 @@
-// A server's stats purge: what the game recorded about play on it (its kills, matches and match
-// rows) deleted for good by an org owner, audited with the counts. Sessions stay: they are
+// A server's stats purge: what the game recorded about play on it (its kills, matches, match
+// rows and the feed's match events) deleted for good by an org owner, audited with the counts. Sessions stay: they are
 // presence (who was on, playtime, seed time, first visits), not stats. The worker needs no nudge:
 // it re-reads the open match row on every status look and opens a new one when none is, so a
 // match in progress is recorded from the purge onward as a fresh row, and the feed's next batch
@@ -15,6 +15,7 @@ export interface PurgeCounts {
 	kills: number;
 	matches: number;
 	matchPlayers: number;
+	matchEvents: number;
 }
 
 export async function purgeServerStats(
@@ -27,7 +28,7 @@ export async function purgeServerStats(
 		// The deletes recount the server's totals (migration 0038): the totals lock first, as the
 		// worker takes it before it closes a session or ends a match (totals.ts).
 		await lockTotals(tx, server.id);
-		const del = async (table: 'kills' | 'match_players' | 'matches') => {
+		const del = async (table: 'kills' | 'match_players' | 'matches' | 'match_events') => {
 			const [row] = await tx.execute<{ n: string }>(sql`
 				WITH d AS (DELETE FROM ${sql.raw(table)} WHERE server_id = ${server.id} RETURNING 1)
 				SELECT COUNT(*) AS n FROM d`);
@@ -36,7 +37,8 @@ export async function purgeServerStats(
 		const kills = await del('kills');
 		const matchPlayers = await del('match_players');
 		const matches = await del('matches');
-		return { kills, matches, matchPlayers };
+		const matchEvents = await del('match_events');
+		return { kills, matches, matchPlayers, matchEvents };
 	});
 	// The boards this web process keeps for a minute would show the purged numbers until then.
 	forgetBoards(server.id);
@@ -49,7 +51,7 @@ export async function purgeServerStats(
 		outcome: 'ok',
 		target: server.name,
 		detail: counts,
-		message: `${counts.kills} kills, ${counts.matches} matches and ${counts.matchPlayers} match rows deleted.`
+		message: `${counts.kills} kills, ${counts.matches} matches, ${counts.matchPlayers} match rows and ${counts.matchEvents} match events deleted.`
 	});
 	return counts;
 }

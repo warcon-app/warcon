@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
 	getScalar,
+	hideSecretValues,
 	parseIni,
 	quoteIfNeeded,
 	redactSecrets,
@@ -150,5 +151,51 @@ describe('credentials', () => {
 		expect(restoreSecrets('[WDServerFeed]\nToken=(hidden)\n', live)).toBe(
 			'[WDServerFeed]\nToken=t1\n'
 		);
+	});
+
+	// CL-516586 reads the kill feed from the RCON block, a list the game itself writes this way.
+	const FEED = [
+		'[/Script/WDRCON.WDRCONSettings]',
+		'bEnabled=true',
+		'Password=hunter2',
+		'bEventFeedEnabled=True',
+		'!EventFeedEndpoints=ClearArray',
+		'.EventFeedEndpoints=(Url="https://console.example",Token="wkf_first")',
+		'.EventFeedEndpoints=(Url="https://bot.example/hook",Token=wkf_second)',
+		'EventFeedServerName="EU #1"',
+		'',
+		'[/Script/WDGame.WDServerMapRotationSettings]',
+		'!RotationEntries=ClearArray',
+		'.RotationEntries=(Map="Kavkazi",Experiences="Bakurani_KOTH_01",Lighting="DayClear")',
+		''
+	].join('\n');
+
+	test('each feed endpoint is hidden whole, its token and its address', () => {
+		const out = redactSecrets(FEED);
+		for (const s of ['wkf_first', 'wkf_second', 'console.example', 'bot.example'])
+			expect(out).not.toContain(s);
+		expect(out).toContain('\n.EventFeedEndpoints=(hidden)\n.EventFeedEndpoints=(hidden)\n');
+	});
+	test('the feed switch, its name and the list commands stay readable', () => {
+		const out = redactSecrets(FEED);
+		expect(out).toContain('\nbEventFeedEnabled=True\n');
+		expect(out).toContain('\n!EventFeedEndpoints=ClearArray\n');
+		expect(out).toContain('\nEventFeedServerName="EU #1"\n');
+		expect(out).toContain('\n!RotationEntries=ClearArray\n');
+		expect(out).toContain('\n.RotationEntries=(Map="Kavkazi",');
+	});
+	test("an endpoint's token quoted alone in the game's answer is hidden, and nothing else", () => {
+		const answer = { errors: ['Token wkf_second was refused', '!RotationEntries=ClearArray'] };
+		expect(hideSecretValues(answer, FEED)).toEqual({
+			errors: ['Token (hidden) was refused', '!RotationEntries=ClearArray']
+		});
+	});
+	test('both endpoints go back in their places', () => {
+		expect(restoreSecrets(redactSecrets(FEED), FEED)).toBe(FEED);
+	});
+	test('a token among the fields of any other struct is a credential too', () => {
+		const live = '[x]\n+WebhookTargets=(Url="https://h.example",token="s3cret")\n';
+		expect(redactSecrets(live)).toBe('[x]\n+WebhookTargets=(hidden)\n');
+		expect(restoreSecrets(redactSecrets(live), live)).toBe(live);
 	});
 });

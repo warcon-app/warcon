@@ -1,11 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { validateWebhookUrl } from './webhooks';
+import { RULE_KINDS } from '../rule-kinds';
+import { MAX_CHAT } from '../chat';
 import {
 	buildEmbed,
 	buildTeamKillEmbed,
 	buildWatchedJoinEmbed,
 	classify,
-	dossierUrl
+	dossierUrl,
+	nextBatch,
+	takesRule,
+	type Embed
 } from './webhook-delivery';
 
 const token = 'a'.repeat(68);
@@ -50,6 +55,15 @@ describe('classify', () => {
 	});
 });
 
+describe('takesRule', () => {
+	test('every kind of rule when the webhook names none, else only the kinds it names', () => {
+		expect(takesRule({ triggerKinds: null }, 'trigger.welcome')).toBe(true);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.team_kill')).toBe(true);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.welcome')).toBe(false);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.team_kill_x')).toBe(false);
+	});
+});
+
 describe('buildEmbed', () => {
 	const row = {
 		id: 1,
@@ -78,6 +92,15 @@ describe('buildEmbed', () => {
 		expect(e.color).toBe(0x7bc462);
 		expect(e.timestamp).toBe('2026-09-09T12:00:00.000Z');
 	});
+	test('a rule posts under the name the webhook dialog gives its kind', () => {
+		for (const { kind, label } of RULE_KINDS) {
+			const e = buildEmbed('Warcon', { ...row, category: 'trigger', action: `trigger.${kind}` });
+			expect({ kind, title: e.title.toLowerCase() }).toEqual({
+				kind,
+				title: `trigger · ${label.toLowerCase()}`
+			});
+		}
+	});
 	test('failures are red and say so', () => {
 		const e = buildEmbed('Warcon', {
 			...row,
@@ -87,6 +110,92 @@ describe('buildEmbed', () => {
 		});
 		expect(e.description).toContain('Outcome: **denied** (403)');
 		expect(e.color).toBe(0x8a8a90);
+	});
+	const whisper = {
+		...row,
+		action: 'rcon.whisper',
+		detail: { steamId: '76561198000000001', message: 'Stop camping our main' },
+		message: 'OK: message delivered to Nomad.'
+	};
+	test("a whisper by hand says what it said, before the game's answer", () => {
+		expect(buildEmbed('Warcon', whisper).description).toBe(
+			'**james** → `76561198000000001`\nServer: EU #1\nMessage: Stop camping our main\nOK: message delivered to Nomad.'
+		);
+		const group = buildEmbed('Warcon', {
+			...whisper,
+			action: 'rcon.whisperMany',
+			target: 'Valkyra',
+			detail: { faction: 'Valkyra', message: 'Push B' },
+			message: 'Whispered 12 players on Valkyra.'
+		});
+		expect(group.title).toBe('Group whisper');
+		expect(group.description).toEndWith(
+			'→ `Valkyra`\nServer: EU #1\nMessage: Push B\nWhispered 12 players on Valkyra.'
+		);
+		// a game that refused it: the words, then what went wrong
+		const failed = buildEmbed('Warcon', {
+			...whisper,
+			outcome: 'error',
+			status: 404,
+			message: 'Error: no player matching it'
+		});
+		expect(failed.description).toEndWith(
+			'\nMessage: Stop camping our main\nOutcome: **error** (404)\nError: no player matching it'
+		);
+	});
+	test('the words are what the game was sent: cut where the action cut them, on one line', () => {
+		const long = buildEmbed('Warcon', { ...whisper, detail: { message: ` ${'w'.repeat(300)} ` } });
+		expect(long.description).toContain(`\nMessage: ${'w'.repeat(MAX_CHAT)}\n`);
+		// spaces count toward the cut as the game counted them, so no word past it shows
+		const spaced = buildEmbed('Warcon', {
+			...whisper,
+			detail: { message: `${'w'.repeat(MAX_CHAT - 6)}${' '.repeat(6)}unsent` }
+		});
+		expect(spaced.description).toContain(`\nMessage: ${'w'.repeat(MAX_CHAT - 6)}\n`);
+		expect(spaced.description).not.toContain('uns');
+		// the game was sent half an emoji: the card shows the replacement character, never half a pair
+		const emoji = buildEmbed('Warcon', {
+			...whisper,
+			detail: { message: `${'w'.repeat(MAX_CHAT - 1)}😀` }
+		});
+		expect(emoji.description).toContain(`\nMessage: ${'w'.repeat(MAX_CHAT - 1)}\uFFFD\n`);
+		expect(emoji.description.isWellFormed()).toBe(true);
+		const lines = buildEmbed('Warcon', { ...whisper, detail: { message: 'one\ntwo\r\n\nthree' } });
+		expect(lines.description).toContain('\nMessage: one two three\n');
+	});
+	test('no message line when nothing was said, for a refused whisper, or for anything else', () => {
+		for (const detail of [{}, { message: '' }, { message: '   ' }, { message: 7 }, null])
+			expect(buildEmbed('Warcon', { ...whisper, detail }).description).not.toContain('Message:');
+		// someone without Chat: what they typed stays in the trail
+		const denied = buildEmbed('Warcon', {
+			...whisper,
+			outcome: 'denied',
+			status: 403,
+			detail: { steamId: '76561198000000001', message: 'typed by a viewer' },
+			message: "Needs 'chat.send', role 'viewer' lacks it"
+		});
+		expect(denied.description).not.toContain('typed by a viewer');
+		// a rule's whisper says what became of it in the panel's words, never what it told the player
+		for (const action of ['trigger.welcome', 'trigger.faction_change', 'trigger.team_kill']) {
+			const rule = buildEmbed('Warcon', {
+				...whisper,
+				category: 'trigger',
+				action,
+				detail: { message: 'what the rule told the player' },
+				message: 'Whispered Nomad.'
+			});
+			expect(rule.description).not.toContain('what the rule told the player');
+		}
+		// a broadcast's words are its target, said once
+		const broadcast = buildEmbed('Warcon', {
+			...whisper,
+			action: 'rcon.broadcast',
+			target: 'Restart in 5 minutes',
+			detail: { message: 'Restart in 5 minutes' },
+			message: 'OK'
+		});
+		expect(broadcast.description).not.toContain('Message:');
+		expect(broadcast.description.split('Restart in 5 minutes')).toHaveLength(2);
 	});
 	test('a server added, refused or deleted never says where RCON listens', () => {
 		for (const action of ['server.create', 'server.update', 'server.delete']) {
@@ -149,6 +258,28 @@ describe('names a player chose, in a staff channel', () => {
 			message: '# Free admin at https://evil.example'
 		});
 		expect(heading.description).toContain('\n\\# Free admin at https:\u200B//evil.example');
+	});
+	test('a whisper carries its words as text', () => {
+		const e = buildEmbed('Warcon', {
+			id: 1,
+			ts: new Date('2026-09-28T12:00:00Z'),
+			actorId: 'u1',
+			actorName: 'james',
+			serverId: 's1',
+			serverName: 'EU #1',
+			orgId: 'o1',
+			category: 'rcon',
+			action: 'rcon.whisper',
+			target: '76561198000000001',
+			detail: { steamId: '76561198000000001', message: name },
+			outcome: 'ok',
+			status: 200,
+			message: 'OK: message delivered to Nomad.',
+			userAgent: 'curl',
+			durationMs: 12
+		});
+		intact(e.description);
+		expect(e.description).toContain(`\nMessage: ${shown}\nOK: message delivered to Nomad.`);
 	});
 	test('a team kill and a watched join carry the names as text', () => {
 		intact(
@@ -227,5 +358,46 @@ describe('watched join and dossier links', () => {
 		expect(
 			buildWatchedJoinEmbed('Warcon', 'x', { steamId: '1', name: 'a', reason: '' }, 't').url
 		).toBeUndefined();
+	});
+});
+
+describe('nextBatch', () => {
+	/** a card of `chars` characters as Discord counts them: title, description and footer */
+	const card = (chars: number, title = 'Ban'): Embed => ({
+		title,
+		description: 'x'.repeat(chars - title.length - 'Warcon'.length),
+		color: 0,
+		timestamp: '2026-10-24T00:00:00.000Z',
+		footer: { text: 'Warcon' }
+	});
+	/** the messages a queue goes out as, by the number of cards in each */
+	const messages = (queue: Embed[]) => {
+		const out: Embed[][] = [];
+		// a few rounds at most, so a batch that takes nothing fails the test rather than spinning
+		for (let i = 0; queue.length && i < 20; i++) out.push(nextBatch(queue));
+		return out;
+	};
+
+	test('ten short cards go as one message, the eleventh as the next', () => {
+		expect(messages(Array.from({ length: 11 }, () => card(150))).map((m) => m.length)).toEqual([
+			10, 1
+		]);
+		expect(nextBatch([])).toEqual([]);
+	});
+
+	test('no message holds more than the 6,000 characters Discord takes, and every card goes, in order', () => {
+		const queue = Array.from({ length: 10 }, (_, i) => card(650, `Ban ${i}`));
+		const sent = messages([...queue]);
+		expect(sent.map((m) => m.length)).toEqual([9, 1]);
+		expect(sent.flat()).toEqual(queue);
+		// to the character: 6,000 is taken, one more goes in the next message
+		const full = [card(1500), card(1500), card(1500), card(1500), card(10)];
+		expect(messages(full).map((m) => m.length)).toEqual([4, 1]);
+		const over = [card(1500), card(1500), card(1500), card(1501)];
+		expect(messages(over).map((m) => m.length)).toEqual([3, 1]);
+	});
+
+	test('a card longer than Discord takes goes alone, so the queue moves on', () => {
+		expect(messages([card(100), card(7000), card(100)]).map((m) => m.length)).toEqual([1, 1, 1]);
 	});
 });

@@ -9,7 +9,7 @@ export const GET = route(async (event) => {
 	return apiJson({ ok: true, webhooks: await listWebhooks(env, org.id) });
 });
 
-/** {label, url, events[], serverIds[]|null, enabled} */
+/** {label, url, events[], triggerKinds[]|null, serverIds[]|null, enabled} */
 export const POST = route(async (event) => {
 	const env = getEnv();
 	const { org, user } = await requireOrgRole(env, event.locals, param(event, 'id'), 'owner');

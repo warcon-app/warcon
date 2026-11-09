@@ -2,7 +2,7 @@
 // port, a shared bearer secret, and one server-sent event stream the web keeps open. The same
 // routes served by the worker (worker/runtime.ts) and called by gateway-remote.ts.
 import { GameError } from './rcon';
-import { ApiError } from './http';
+import { ApiError, forLog } from './http';
 
 export const RELAY_PREFIX = '/relay';
 
@@ -26,5 +26,8 @@ export function serializeError(err: unknown): RelayError {
 		};
 	if (err instanceof ApiError)
 		return { kind: 'api', status: err.status, message: err.message, code: err.code };
-	return { kind: 'other', status: 500, message: err instanceof Error ? err.message : String(err) };
+	// The worker's own failure: the web shows this to whoever clicked, and a failed query's message
+	// lists its parameters, so the error stays in the worker's log and a fixed phrase crosses.
+	console.error('[warcon] relay', forLog(err));
+	return { kind: 'other', status: 500, message: 'Internal error.' };
 }

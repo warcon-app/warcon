@@ -1,12 +1,15 @@
 # Warcon: Bun + SvelteKit; the database is Postgres/TimescaleDB (see docker-compose.yml).
-FROM oven/bun:1 AS build
+# Bun is pinned to a release, the same in both stages, so every build runs the Bun named here and an
+# upgrade is a commit. 1.4.4 is the first with the Brotli decoder fix (CVE-2026-111497): fetch()
+# asks game servers for Brotli and decodes the answer in the worker, next to every RCON password.
+FROM oven/bun:1.4.4 AS build
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY . .
 RUN bun run build
 
-FROM oven/bun:1-slim
+FROM oven/bun:1.4.4-slim
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0
 COPY package.json bun.lock ./

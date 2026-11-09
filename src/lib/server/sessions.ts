@@ -7,6 +7,7 @@
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { DbOrTx } from './db';
 import { playerSessions } from './db/schema';
+import { jsonParam as json } from './db/storable';
 import type { Player } from '$lib/types';
 
 export interface OpenSession {
@@ -162,8 +163,6 @@ export function diffPresence(
 	);
 	return { joined, left, stayed, factioned, renamed, returned };
 }
-
-const json = (v: unknown) => sql`(${JSON.stringify(v)}::text)::jsonb`;
 
 /**
  * The name each of these SteamIDs last played under on these servers (none for one never seen

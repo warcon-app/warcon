@@ -4,6 +4,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import type { SessionUser } from '$lib/server/access';
 import { setGateway, type Gateway } from '$lib/server/gateway';
+import type { MatchFeed } from '$lib/server/match-feed';
 import { resetRates } from '$lib/server/ratelimit';
 
 export interface Outcome {
@@ -18,6 +19,8 @@ export interface CallInput {
 	params?: Record<string, string>;
 	query?: string;
 	body?: unknown;
+	/** the body's text as sent, for one JSON.stringify cannot build (nested past its stack) */
+	raw?: string;
 }
 
 function eventFor(user: SessionUser | null, input: CallInput): RequestEvent {
@@ -26,7 +29,7 @@ function eventFor(user: SessionUser | null, input: CallInput): RequestEvent {
 	const request = new Request(url, {
 		method,
 		headers: { 'content-type': 'application/json', 'x-requested-with': 'warcon' },
-		body: method === 'GET' ? undefined : JSON.stringify(input.body ?? {})
+		body: method === 'GET' ? undefined : (input.raw ?? JSON.stringify(input.body ?? {}))
 	});
 	return {
 		locals: { user, session: null, apiKey: user?.apiKey ?? null },
@@ -106,8 +109,11 @@ export async function callLoad(
 /** The worker, answering nothing (or `answer`): permission tests stop at "the request got as far as the game". */
 export function stubGateway(answer: unknown = {}): {
 	runs: { server: string; action: string }[];
+	/** what the kill feed handed the worker about matches */
+	fed: { server: string; feed: MatchFeed }[];
 } {
 	const runs: { server: string; action: string }[] = [];
+	const fed: { server: string; feed: MatchFeed }[] = [];
 	const g: Gateway = {
 		run: async (_env, server, action) => {
 			runs.push({ server: server.id, action });
@@ -124,9 +130,12 @@ export function stubGateway(answer: unknown = {}): {
 		identityChanged: () => {},
 		statusChanged: () => {},
 		killsIngested: () => {},
+		matchFeed: (_env, server, feed) => {
+			fed.push({ server, feed });
+		},
 		subscribe: () => () => {},
 		health: async () => ({}) as never
 	};
 	setGateway(g);
-	return { runs };
+	return { runs, fed };
 }

@@ -6,9 +6,15 @@ export const health = $state<Record<string, boolean>>({});
 /** Servers whose listener asked the panel to slow down (429 with Retry-After), and until when. */
 export const throttled = $state<Record<string, string | null>>({});
 /** What the worker knows about each server's build, as the live stream reports it. */
-export const identity = $state<
-	Record<string, { build: string; gameServerId: string; startedAt: string | null }>
->({});
+export interface Identity {
+	build: string;
+	gameServerId: string;
+	startedAt: string | null;
+	/** RestartTimeUtc in effect and in the config document (LiveView) */
+	restartTimeUtc: string | null;
+	restartTimeUtcFile: string | null;
+}
+export const identity = $state<Record<string, Identity>>({});
 
 export interface Occupancy {
 	players: number;
@@ -49,16 +55,14 @@ export function noteLive(v: LiveView) {
 		occupancy[v.serverId] = occ;
 	if (v.build || v.gameServerId || v.startedAt) {
 		const cur = untrack(() => identity[v.serverId]);
-		if (
-			!cur ||
-			cur.build !== v.build ||
-			cur.gameServerId !== v.gameServerId ||
-			cur.startedAt !== v.startedAt
-		)
-			identity[v.serverId] = {
-				build: v.build,
-				gameServerId: v.gameServerId,
-				startedAt: v.startedAt
-			};
+		const next: Identity = {
+			build: v.build,
+			gameServerId: v.gameServerId,
+			startedAt: v.startedAt,
+			restartTimeUtc: v.restartTimeUtc ?? null,
+			restartTimeUtcFile: v.restartTimeUtcFile ?? null
+		};
+		if (!cur || (Object.keys(next) as (keyof Identity)[]).some((k) => cur[k] !== next[k]))
+			identity[v.serverId] = next;
 	}
 }

@@ -1,18 +1,29 @@
 <script lang="ts">
-	import { rconGet, rconPost, errorMessage } from '$lib/api';
+	import { api, rconGet, rconPost, errorMessage } from '$lib/api';
 	import { expLabel, expSetLabel, isMod, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
 	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import {
+		mapsInOrder,
 		rotationFromText,
 		rotationIntoText,
 		setModifierOnAll,
+		shuffleFor,
 		type RotationDoc
 	} from '$lib/rotation-doc';
+	import {
+		cleanMapSetName,
+		mapSetNamed,
+		mapSetOf,
+		MAX_MAP_SET_NAME,
+		MAX_MAP_SETS,
+		type MapSet
+	} from '$lib/map-sets';
 	import Badge from '$lib/components/Badge.svelte';
 	import MapPicker from '$lib/components/MapPicker.svelte';
 	import MapArt from '$lib/components/MapArt.svelte';
+	import Modal from '$lib/components/Modal.svelte';
 	import type {
 		CatalogItem,
 		ConfigDoc,
@@ -29,7 +40,9 @@
 	let matchControl = $derived(can(data.server.caps, 'match.control'));
 	let rotationSave = $derived(can(data.server.caps, 'rotation.save'));
 	let configApply = $derived(can(data.server.caps, 'config.apply'));
+	let automation = $derived(can(data.server.caps, 'automation.manage'));
 	let configHref = $derived(`/server/${encodeURIComponent(id)}/config`);
+	let automationHref = $derived(`/server/${encodeURIComponent(id)}/automation`);
 
 	// Live build CL-499480 serves none of the rotation edit routes. On such a build this tab edits
 	// the rotation section of the config document instead: the same table and buttons, staged
@@ -97,7 +110,10 @@
 	}
 	$effect(() => {
 		void refresh();
-		if (viaDoc) void loadDoc();
+		if (viaDoc) {
+			void loadDoc();
+			void loadMapSets();
+		}
 	});
 
 	// The rows shown: the live rotation, or the staged document. Now/next badges come from the
@@ -247,9 +263,119 @@
 				: ` Left on ${n(out.skipped)}: nothing else is set on ${one ? 'it' : 'them'}.`;
 		toast(msg, out.changed ? 'ok' : 'err');
 	}
+	// The staged entries in a new order: the maps in turn, in the order the rotation first has them,
+	// each map's control zones in turn, starting with the map after the one on and the entry on last
+	// (see shuffleFor). Played in order, so the mode goes to Ordered.
+	function shuffle() {
+		const on = rotation?.entries[rotation.nowIndex] ?? null;
+		staged.entries = shuffleFor(staged.entries, mapsInOrder(staged.entries), on);
+		selected = -1;
+		const twice = staged.entries.filter(
+			(e, i) => i > 0 && e.map.toLowerCase() === staged.entries[i - 1].map.toLowerCase()
+		).length;
+		const was = staged.mode;
+		staged.mode = 'ordered';
+		toast(
+			`Shuffled ${staged.entries.length} entries: ${
+				twice
+					? 'one map has over half of them, so it still comes twice in a row in places'
+					: 'no map plays twice in a row'
+			}.${was === 'random' ? ' Set to Ordered, so the server plays them in this order.' : ''}`,
+			twice ? '' : 'ok'
+		);
+	}
 	function discard() {
 		staged = clone(base);
 		selected = -1;
+	}
+
+	// ---- map sets ----
+	// The organisation's saved rotations (its Map sets tab). Loading one puts its entries in the
+	// staged rotation, to apply like any other edit; the org's owners keep the staged rotation as a
+	// set, a new one or in place of the one of that name.
+	let mapSets = $state<MapSet[] | null>(null);
+	let manager = $derived(data.server.manager);
+	let orgSetsPath = $derived(`/api/orgs/${encodeURIComponent(data.server.orgId)}/map-sets`);
+	let mapSetsHref = $derived(`/orgs/${encodeURIComponent(data.server.orgId)}/map-sets`);
+	async function loadMapSets() {
+		try {
+			mapSets = (
+				await api<{ mapSets: MapSet[] }>('GET', `/api/servers/${encodeURIComponent(id)}/map-sets`)
+			).mapSets;
+		} catch {
+			mapSets = null;
+		}
+	}
+	/** the set the staged rotation is, if any: in the set's order, or in another */
+	let stagedSet = $derived(mapSets ? mapSetOf(mapSets, staged.entries) : null);
+	let setPick = $state('');
+	let pickedSet = $derived(
+		mapSets?.find((s) => s.id === setPick) ?? stagedSet?.set ?? mapSets?.[0] ?? null
+	);
+	async function loadSet() {
+		const set = pickedSet;
+		if (!set) return;
+		if (stagedSet?.set.id === set.id && !stagedSet.reordered) {
+			toast(`The staged rotation is ${set.name} already.`);
+			return;
+		}
+		// Only the entries are replaced, and edits to them kept in a set are not lost.
+		const edited = JSON.stringify(staged.entries) !== JSON.stringify(base.entries);
+		if (
+			edited &&
+			!(stagedSet && !stagedSet.reordered) &&
+			!(await confirmDialog(
+				`Load ${set.name} in place of the staged entries? Your unapplied changes to them are dropped.`,
+				{ okLabel: 'Load' }
+			))
+		)
+			return;
+		staged.entries = set.entries.map((e) => ({ ...e, experiences: [...e.experiences] }));
+		selected = -1;
+		const n = set.entries.length;
+		toast(
+			`${set.name} loaded: ${n} ${n === 1 ? 'entry' : 'entries'} staged. Nothing is sent until you press Apply to server.`,
+			'ok'
+		);
+	}
+
+	let savingAs = $state<{ name: string } | null>(null);
+	/** the set Save as replaces: the one with the name typed */
+	let replacing = $derived(savingAs && mapSets ? mapSetNamed(mapSets, savingAs.name) : undefined);
+	let setsFull = $derived((mapSets?.length ?? 0) >= MAX_MAP_SETS);
+	async function saveAs() {
+		if (!savingAs || !mapSets || busy) return;
+		const name = cleanMapSetName(savingAs.name);
+		if (!name) {
+			toast('Give the map set a name.', 'err');
+			return;
+		}
+		const over = mapSetNamed(mapSets, name);
+		const n = staged.entries.length;
+		busy = true;
+		try {
+			if (over)
+				await api('PATCH', `${orgSetsPath}/${encodeURIComponent(over.id)}`, {
+					entries: staged.entries
+				});
+			else await api('POST', orgSetsPath, { name, entries: staged.entries });
+			toast(
+				over
+					? `${over.name} saved: it now holds these ${n} ${n === 1 ? 'entry' : 'entries'}.`
+					: `Saved as the map set ${name}.`,
+				'ok'
+			);
+			savingAs = null;
+			setPick = '';
+			await loadMapSets();
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+			// Another owner may have saved or deleted a set since the list was read: with it read
+			// again, the next press replaces the set of that name, or makes the one that went.
+			await loadMapSets();
+		} finally {
+			busy = false;
+		}
 	}
 	async function applyDoc() {
 		if (!doc || !dirty) return;
@@ -332,6 +458,36 @@
 		</div>
 	{/if}
 	<div class="mb-3 flex flex-wrap items-end gap-x-4 gap-y-3">
+		{#if viaDoc && mapSets && (mapSets.length || manager)}
+			<div class="field-group">
+				<span class="field-label">Map set</span>
+				<div class="join join-wrap w-full">
+					<select
+						class="input sm:w-48"
+						aria-label="Map set"
+						value={pickedSet?.id ?? ''}
+						disabled={!mapSets.length || busy}
+						onchange={(e) => (setPick = e.currentTarget.value)}
+					>
+						{#each mapSets as s (s.id)}
+							<option value={s.id}>{s.name} ({s.entries.length})</option>
+						{:else}
+							<option value="">None saved yet</option>
+						{/each}
+					</select>
+					<button class="btn" disabled={!canEdit || busy || !pickedSet} onclick={loadSet}
+						>Load</button
+					>
+					{#if manager}
+						<button
+							class="btn"
+							disabled={busy || !rows.length}
+							onclick={() => (savingAs = { name: stagedSet?.set.name ?? '' })}>Save as…</button
+						>
+					{/if}
+				</div>
+			</div>
+		{/if}
 		<div class="field-group">
 			<span class="field-label">Selected entry</span>
 			<div class="join join-stack w-full">
@@ -348,7 +504,10 @@
 				{#if !viaDoc}
 					<button
 						class="btn"
-						disabled={!matchControl}
+						disabled={!matchControl || !data.features.rotationEdit}
+						title={data.features.rotationEdit
+							? ''
+							: 'This server build serves no rotation edit routes, so a next map cannot be queued.'}
 						onclick={() =>
 							withSel((i) => act('setNextMap', entryToSelection(rows[i]), { after: refresh }))}
 						>Play next</button
@@ -386,6 +545,16 @@
 			</div>
 		{/if}
 		{#if viaDoc}
+			<div class="field-group">
+				<span class="field-label">Order</span>
+				<div class="join w-full">
+					<button
+						class="btn w-full"
+						disabled={!canEdit || busy || rows.length < 2}
+						onclick={shuffle}>Shuffle</button
+					>
+				</div>
+			</div>
 			<div class="join join-stack w-full sm:ml-auto sm:w-auto">
 				<button class="btn" disabled={!dirty || busy} onclick={discard}>Discard</button>
 				<button class="btn btn-primary" disabled={!dirty || !canApply || busy} onclick={applyDoc}
@@ -451,11 +620,24 @@
 			{#if dirty}Unapplied edits: {staged.entries.length} entries staged against the server's {base
 					.entries.length}. Nothing is sent until you press Apply.{:else}Matches the config document
 				(revision {doc?.revision || '—'}).{/if}
+			{#if stagedSet}{dirty ? 'The staged entries are' : 'It is'} the map set {stagedSet.set
+					.name}{stagedSet.reordered ? ', in another order' : ''}.{/if}
 		{:else}
 			Edits apply to the running server's rotation immediately. Save rotation writes them to the
 			config so a restart keeps them (needs the server launched with -StandaloneConfig).
 		{/if}
 	</p>
+	{#if viaDoc && canApply}
+		<p class="note">
+			Shuffle deals the maps out in turn, so the same map never plays twice in a row.
+			{#if automation}For a new order every day, add a
+				<a class="link" href={automationHref}>Rotation shuffle</a> rule on the Automation tab.{/if}
+			{#if mapSets && (mapSets.length || manager)}Map set puts one of {data.server.orgName}'s saved
+				rotations in place of this one, to apply like any other edit{#if manager}; Save as… keeps
+					this one as a set, and the organisation's <a class="link" href={mapSetsHref}>Map sets</a> tab
+					lists them{/if}.{/if}
+		</p>
+	{/if}
 </div>
 
 <div class="mt-4 panel">
@@ -467,3 +649,50 @@
 		>
 	</div>
 </div>
+
+{#if savingAs}
+	<Modal title="Save as map set" onclose={() => (savingAs = null)}>
+		<form
+			class="space-y-3"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void saveAs();
+			}}
+		>
+			<p class="text-[13.5px] leading-relaxed">
+				Keeps the {staged.entries.length}
+				{staged.entries.length === 1 ? 'entry' : 'entries'} in the table{dirty
+					? ', unapplied edits included,'
+					: ''} as a rotation any of {data.server.orgName}'s servers can load.
+			</p>
+			<label class="block"
+				><span class="field-label">Name</span><input
+					class="input"
+					type="text"
+					list="map-set-names"
+					bind:value={savingAs.name}
+					maxlength={MAX_MAP_SET_NAME}
+					placeholder="Infantry"
+					required
+				/></label
+			>
+			<datalist id="map-set-names">
+				{#each mapSets ?? [] as s (s.id)}<option value={s.name}></option>{/each}
+			</datalist>
+			<p class="note mt-0 {!replacing && setsFull ? 'text-danger' : ''}">
+				{#if replacing}Replaces the entries of the map set {replacing.name}, which holds {replacing
+						.entries.length} now.{:else if setsFull}{data.server.orgName} keeps {MAX_MAP_SETS} map sets,
+					the most it can: name one of them to replace it.{:else}A new map set. Name one that exists
+					to replace its entries.{/if}
+			</p>
+			<div class="flex justify-end gap-2 pt-2">
+				<button type="button" class="btn" data-close onclick={() => (savingAs = null)}
+					>Cancel</button
+				>
+				<button type="submit" class="btn btn-primary" disabled={busy || (!replacing && setsFull)}
+					>{replacing ? 'Replace' : 'Save'}</button
+				>
+			</div>
+		</form>
+	</Modal>
+{/if}

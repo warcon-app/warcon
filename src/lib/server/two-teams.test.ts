@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import {
-	clanTag,
 	emptyTwoTeamsState,
 	TWO_TEAMS_ASK_WINDOW_MS,
 	TWO_TEAMS_FORGET_MS,
@@ -72,6 +71,10 @@ describe('validateTwoTeams', () => {
 		expect(() => validateTwoTeams({ balance: true, exempt: '76561198000000001' })).toThrow(
 			'exempt must be a list'
 		);
+		// a JSON number that long arrives rounded: 76561198100000101 would leave 76561198100000100 alone
+		expect(() =>
+			validateTwoTeams({ balance: true, exempt: JSON.parse('[76561198100000101]') })
+		).toThrow('sent as strings');
 		const many = Array.from({ length: 101 }, (_, i) => String(76561198000000000n + BigInt(i)));
 		expect(() => validateTwoTeams({ balance: true, exempt: many })).toThrow('At most 100');
 	});
@@ -508,15 +511,6 @@ describe('twoTeamsStep balancing', () => {
 			withClans
 		);
 		expect(new Set(r.moves.map((m) => m.to)).size).toBe(1);
-	});
-
-	test('clanTag reads a short bracketed tag at the front, in one case', () => {
-		expect(clanTag('[ABC] Name')).toBe('abc');
-		expect(clanTag('  {Wolf}Name')).toBe('wolf');
-		expect(clanTag('(TAG) x')).toBe('tag');
-		expect(clanTag('Name [ABC]')).toBeNull();
-		expect(clanTag('[] Name')).toBeNull();
-		expect(clanTag('[a tag far too long to be one] Name')).toBeNull();
 	});
 
 	test('a move a person made from the panel is kept, not put back', () => {

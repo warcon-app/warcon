@@ -220,7 +220,7 @@ describe.skipIf(!hasTestDb)("a server's own bans", () => {
 				failed: 1,
 				pending: false,
 				error: '',
-				observed: { bans: [ORG_BANNED], reserved: [] },
+				observed: { bans: [ORG_BANNED], reserved: [], configured: ['76561198000000081'] },
 				refusedBans: [{ steamId: ORG_BANNED, reason: 'org reason', listId: 'x' }]
 			})
 		});
@@ -240,6 +240,7 @@ describe.skipIf(!hasTestDb)("a server's own bans", () => {
 			expect(a.status).toBeLessThan(300);
 			expect(JSON.stringify(a.body)).not.toContain('org reason');
 			expect(JSON.stringify(a.body)).not.toContain('observed');
+			expect(JSON.stringify(a.body)).not.toContain('76561198000000081');
 		}
 		stubGateway();
 	});

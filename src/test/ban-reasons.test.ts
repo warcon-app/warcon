@@ -138,9 +138,10 @@ describe.skipIf(!hasTestDb)("an org's quick reasons", () => {
 	};
 	const reasonsIn = (answer: { body: unknown }) =>
 		(answer.body as { banReasons?: BanReason[] | null }).banReasons;
-	const dossierReasons = (answer: { body: unknown }) =>
-		(answer.body as { dossier: { orgLists: { banReasons: BanReason[] | null } } }).dossier.orgLists
-			.banReasons;
+	const dossierDialog = (answer: { body: unknown }) =>
+		(answer.body as { dossier: { banDialog: { reasons: BanReason[]; message: string } | null } })
+			.dossier.banDialog;
+	const dossierReasons = (answer: { body: unknown }) => dossierDialog(answer)?.reasons ?? null;
 
 	beforeAll(async () => {
 		env = await testEnv();
@@ -288,7 +289,7 @@ describe.skipIf(!hasTestDb)("an org's quick reasons", () => {
 		] as PrincipalName[])
 			expect({ who, refused: (await orgLists(who)).status >= 400 }).toEqual({ who, refused: true });
 
-		// a dossier, whose Ban org-wide places the ban on the org's list
+		// a dossier, whose ban dialog bans on this server's own list (Bans) or the org's, as the tab
 		for (const who of ['owner', 'site', 'admin', 'orgBans', 'keyAll', 'keyBans'] as PrincipalName[])
 			expect({ who, reasons: dossierReasons(await dossier(who)) }).toEqual({ who, reasons: LIST });
 		for (const who of ['viewer', 'operator', 'orgSlots', 'keyView'] as PrincipalName[])
@@ -310,7 +311,8 @@ describe.skipIf(!hasTestDb)("an org's quick reasons", () => {
 		expect(reasonsIn(here)).toEqual(LIST);
 		expect(here.body).toMatchObject({ canEditOrgBans: false, banMessage: '{reason}' });
 		expect((await orgLists(bansOnly)).status).toBe(404);
-		expect(dossierReasons(await dossier(bansOnly))).toBeNull();
+		// and so does the dossier's ban dialog, which bans onto the same list
+		expect(dossierDialog(await dossier(bansOnly))).toEqual({ reasons: LIST, message: '{reason}' });
 		expect((await patch(bansOnly, [])).status).toBe(403);
 		expect(await stored()).toEqual(LIST);
 	});

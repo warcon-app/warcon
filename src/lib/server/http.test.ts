@@ -46,3 +46,25 @@ test('a failed query is logged without its parameters: for the servers table the
 	expect(logged).not.toContain('lines');
 	expect(forLog('plain')).toBe('plain');
 });
+
+test('a parameter with a line like a stack frame does not end the cut early', () => {
+	for (const note of [
+		'first line\n   at the base, SECRET-REST-OF-PARAMS',
+		'first line\n    at fake (file.ts:1:1)\nSECRET-REST-OF-PARAMS'
+	]) {
+		const failed = new DrizzleQueryError(
+			'update "players" set "note" = $1',
+			[note],
+			new Error('canceling statement due to user request')
+		);
+		for (const logged of [String(forLog(failed)), String(forLog(failed.message))]) {
+			expect(logged).not.toContain('SECRET-REST-OF-PARAMS');
+			expect(logged).not.toContain('first line');
+			expect(logged).toContain('update "players" set "note" = $1\nparams: (not logged)');
+		}
+		const logged = String(forLog(failed));
+		// the frames are still there, and the cause
+		expect(logged).toMatch(/\n\s+at .*http\.test\.ts/);
+		expect(logged).toContain('cause: canceling statement due to user request');
+	}
+});

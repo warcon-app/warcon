@@ -65,4 +65,29 @@ describe('the risk kick rule', () => {
 		const ev = await evaluateTriggers({} as Env, tick([A], []), [row]);
 		expect(ev).toEqual({ intents: [], updates: [] });
 	});
+
+	test('never kicks a player on its own list, whatever it finds and with no reserved slot', async () => {
+		const listed = {
+			...row,
+			id: 'listed',
+			config: validateConfig('risk_kick', {
+				watchlist: true,
+				spareReserved: false,
+				exempt: [A.steamId, B.steamId],
+				reason: 'no'
+			})
+		} as unknown as TriggerRow;
+		// a joiner, a player back and a sweep's: only the one not listed goes
+		const ev = await evaluateTriggers({} as Env, tick([A], [A, B, C]), [listed]);
+		expect(ev.intents.map((i) => [i.action, i.target])).toEqual([['kick', C.steamId]]);
+		expect(ev.updates[0].lastResult).toBe(`Kicking ${C.name}: on the watchlist (x)`);
+		// nobody else due: nothing done and nothing said
+		expect(await evaluateTriggers({} as Env, tick([A], [A, B]), [listed])).toEqual({
+			intents: [],
+			updates: []
+		});
+		// the list is the rule's own: another rule on the server still kicks them
+		const both = await evaluateTriggers({} as Env, tick([], [A]), [listed, row]);
+		expect(both.intents.map((i) => [i.trigger.id, i.target])).toEqual([['rule', A.steamId]]);
+	});
 });

@@ -57,6 +57,30 @@ export const steamIdRefusal = (v: unknown): string =>
 		? 'steamId must be sent as a string: a number that long loses its last digits.'
 		: 'steamId must be a 17-digit SteamID64.';
 
+/**
+ * A rule's players it leaves alone, as SteamID64s: trimmed, blanks dropped, each once; absent is
+ * none, anything but a list is a 400. Strings only, for the reason requireSteamId gives.
+ */
+export function steamIdList(v: unknown, max: number): string[] {
+	if (v === undefined) return [];
+	if (!Array.isArray(v)) throw new ApiError(400, 'exempt must be a list of SteamID64s.');
+	const ids = new Set<string>();
+	for (const item of v) {
+		if (typeof item === 'number')
+			throw new ApiError(
+				400,
+				'SteamIDs must be sent as strings: a number that long loses its last digits.'
+			);
+		const id = str(item, 32);
+		if (!id) continue;
+		if (!isSteamId(id))
+			throw new ApiError(400, `"${str(item, 20)}" is not a SteamID64 (17 digits).`);
+		ids.add(id);
+	}
+	if (ids.size > max) throw new ApiError(400, `At most ${max} players can be left alone.`);
+	return [...ids];
+}
+
 /** After Steam answers 429 or 5xx, nothing is asked again until this passes. */
 let backoffUntil = 0;
 
@@ -322,7 +346,7 @@ export async function getProfiles(
 			for (const row of await fetchSteam(env, stale)) map.set(row.steamId, row);
 		} catch (err) {
 			if (opts.refresh) throw err;
-			console.warn('[warcon] steam lookup', err instanceof Error ? err.message : err);
+			console.warn('[warcon] steam lookup', forLog(err));
 		}
 	// The friends lists are looked at behind the answer, so nothing that reads a profile waits on
 	// a call per player; only a refresh someone asked for waits for them.

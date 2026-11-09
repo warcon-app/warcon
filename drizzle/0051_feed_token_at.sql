@@ -1,0 +1,1 @@
+ALTER TABLE "servers" ADD COLUMN "feed_token_at" timestamp with time zone;
