@@ -125,6 +125,11 @@ What is in the box:
 - **Weather that changes mid-match**: a [Weather cycle](#automation-triggers) rule changes the
   time of day and weather every so many minutes, in turn or at random, with no map change or
   restart; rain only where the server allows it, and on Sabatulo only the lightings it takes.
+- **In-game chat, live**: on Season 3 servers a **Chat** tab shows what players type as they type
+  it: the channel, the side, the name the others saw (the hidden name of a player in anonymous
+  mode), and where the game's chat filter changed a line, what was typed. It is for those an
+  organisation's owners give _Read chat_, once an owner has accepted the game's chat terms for the
+  server on that tab, and nothing of it is stored. See [In-game chat](#in-game-chat).
 - **Group whispers**: one message to everyone on a faction, from the Overview's message box, or to
   the players ticked on the Players tab. The game has no route for it, so Warcon whispers each of
   them in turn and says who got it.
@@ -349,6 +354,7 @@ site owner hold every capability on every server in scope.
 | Capability         | Unlocks                                                                                                                                                                                                    | viewer | operator | admin |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----- |
 | View               | what is happening on the server: status, players, kills, rotation, who is banned and who holds a reserved slot, analytics, leaderboards, player stats. Every role has it.                                  | ✓      | ✓        | ✓     |
+| Read chat          | the in-game chat on the server's Chat tab (Season 3), live, once an owner has accepted the game's chat terms; nothing of it is kept. No built-in role starts with it, and an API key cannot hold it        |        |          |       |
 | Chat               | broadcast; whisper one player, several, or everyone on a faction; pick from the organisation's saved messages                                                                                              |        | ✓        | ✓     |
 | Kick               | kick a player; the rules that kick or flag players                                                                                                                                                         |        | ✓        | ✓     |
 | Kill               | kill a player's character; AFK protection, and a Kill distance watch that kills                                                                                                                            |        | ✓        | ✓     |
@@ -365,7 +371,11 @@ site owner hold every capability on every server in scope.
 | Config & settings  | read, validate and apply the config document; score tick, sponsor image, connection test, the game's raw status                                                                                            |        |          | ✓     |
 | Automation         | see the triggers and what they did; create, edit, dry-run and delete them; a player's Seeding reward progress                                                                                              |        |          | ✓     |
 | Audit trail        | everyone's actions on the server in the audit log, not just your own; the game server's own RCON log                                                                                                       |        |          | ✓     |
-| Raw RCON           | any /v1 route on the game server directly, except the config document                                                                                                                                      |        |          | ✓     |
+| Raw RCON           | any /v1 route on the game server directly, except the config document and the chat                                                                                                                         |        |          | ✓     |
+
+_Read chat_ is the one capability no built-in role starts with, `admin` included, and the one an
+API key can never hold: what players type is shown to the people an organisation's owners choose,
+under the game's own chat terms (see [In-game chat](#in-game-chat)).
 
 View is what is happening on the server and nothing about how it is run. The config document, the
 triggers, staff notes on players and the game's RCON log each need the capability that manages
@@ -381,7 +391,8 @@ to change the value. A copied or downloaded document carries the placeholder too
 backup of those lines. Raw RCON does not serve `/v1/config`;
 the `config`, `configValidate` and `configApply` actions are the way to the document. Nor does it
 serve `/v1/audit`: the `serverLog` action does, with the peers' addresses blank for everyone but
-the site owner, API keys included.
+the site owner, API keys included. Nor `/v1/chat` and its terms: the server's Chat tab is the way
+to those, for those who hold _Read chat_.
 
 Beyond server roles, an **org owner** adds, edits and removes the org's servers, manages members,
 roles, per-server grants and invite links and Discord webhooks, writes the
@@ -429,10 +440,11 @@ things up again. New accounts start with a passkey or a provider (the password f
 link). Existing accounts keep working: a banner asks for the missing pieces. How hard the panel
 pushes is the site owner's **Settings → Sign-in rules** choice: _Advise only_ (the default: the
 banner and nothing more), _Require for privileged accounts_ (site owners, organisation owners and
-anyone whose server role can ban, change config, run automation or use raw RCON must comply;
-guests and viewers are left alone), or _Require for everyone_. Where required, an account that
-still falls short after its grace period (14 days for owners, 30 for members, both editable,
-counted from the first sign-in after this release) is limited to its account page until it does.
+anyone whose server role can ban, change config, run automation, use raw RCON or read the in-game
+chat must comply; guests and viewers are left alone), or _Require for everyone_. Where required,
+an account that still falls short after its grace period (14 days for owners, 30 for members,
+both editable, counted from the first sign-in after this release) is limited to its account page
+until it does.
 
 When every method is gone, whoever runs the box resets the account from a shell (the container
 image has it too):
@@ -835,6 +847,41 @@ words under Recent actions, in the audit trail and on Discord (`Whispered [ABC] 
 `Refused: the player is not on the server.`), never the game's, so what it tells a player reaches
 that player alone. A dry run shows `…` for the stats and for whatever else it does not replay.
 
+### In-game chat
+
+Season 3 servers (build CL-533689 on) serve the in-game chat over RCON, and Warcon shows it on the
+server's **Chat** tab: each line as it is typed, newest first, with its time, its channel (Team,
+Global, Squad, Proximity, Vehicle), the side and the name the other players saw. A player in the
+game's anonymous mode shows under their hidden name with an _anon_ mark; a line the game's chat
+filter changed is marked _filtered_; a ping callout ("Attack here") is marked _ping_. Click a line
+for the rest: the player's own name with a link to their page, their hidden name, their SteamID
+where the game gives one, and what they typed beside what was shown. The lines can be filtered by
+channel, and by name, text or SteamID.
+
+**The game's chat terms come first.** A server shows its chat only once its chat terms have been
+accepted for it, and until then it holds back its event feed as well: no kills reach the panel, so
+the [kill feed](#kill-feed) and the rules that go by it stand still (the Config tab's Kill feed
+card says so). The Chat tab shows the terms as the server sends them, and an owner of the
+organisation accepts them there, for the version shown. That is the organisation's own agreement,
+so it is for its owners, in person (and for the site owner, who can do anything on any server): no
+role can be given it and no API key can do it. The audit trail records who accepted which version,
+and each refused attempt by a person or key that can see the server. Whether a server keeps an
+acceptance across a restart has not been seen yet.
+
+**Who reads it.** _Read chat_ is a capability of its own. An organisation's owners hold it, as
+they hold every capability (so does the site owner, on every server), and give it to a role on the
+**Roles** tab; no built-in role starts with it, `admin` included, and an API key cannot hold it.
+The Chat tab is there for those who hold it, on servers whose build serves the chat. Taken from a
+role again, it closes that role's open Chat tabs at their next read. Where the site's sign-in
+rules are _Require for privileged accounts_, an account that reads chat is one of those.
+
+**Nothing is kept.** The lines are read from the game through the panel every four seconds while
+a Chat tab is open and showing (a request to the game per tab each time, a few when many lines are
+waiting; they take their turn behind commands and rules, and the tab waits longer between tries
+while reads fail) and live in that browser tab alone. The panel writes them to no table, puts
+nothing of them in the audit trail or on Discord, and they are gone when the tab closes. The game
+itself keeps only the last lines of the map being played. Raw RCON does not serve the chat routes.
+
 ### Kill feed
 
 WARDOGS can push every kill to an HTTP endpoint: with `[WDServerFeed] Url` and `Token` set in
@@ -891,8 +938,9 @@ the file, lists no endpoint, lists only other services, gets no answer at all, o
 another server's token (the panel accepts the posts while nothing comes in for this server).
 
 From Season 3 the report also says when the game itself is holding the feed back: a server sends
-no events at all, kills included, until its chat terms have been accepted, which whoever runs the
-server does in the official RCON console, under Chat. A silent feed's warning then says so rather
+no events at all, kills included, until its chat terms have been accepted, which an owner of the
+organisation does on the server's Chat tab (see [In-game chat](#in-game-chat)). A silent feed's
+warning then says so rather
 than faulting the lines in the file (a feed switched off in the file is still told first), and
 **What the game reports** shows the feed as held back whatever the panel's own verdict is.
 
@@ -1232,8 +1280,9 @@ organisation; they are allowed for every organisation unless closed there.
 
 A Discord bot or a script talks to the same `/api` routes as the panel, with an organisation
 **API key** instead of a session. An org owner mints one on the org page under **API keys**: a
-label, the capabilities it carries (the same list roles use, see [Roles](#roles)), which servers it
-may touch (or every server the org has, now and later), and an optional expiry. The token is shown
+label, the capabilities it carries (the same list roles use, see [Roles](#roles), but for _Read
+chat_, which is for people), which servers it may touch (or every server the org has, now and
+later), and an optional expiry. The token is shown
 once; only its hash is stored. Everything a key changes is audited under `<label> (API key)`, and
 so is every game action it is refused (game reads too, where `AUDIT_LOG_READS` is on). Revoking a
 key on the org page ends it at once; a suspended organisation's keys stop working with it.
@@ -1969,7 +2018,10 @@ experiences alternators catalog rotation bans reserved sponsor` (View) ·
 changeMap setWeather setNextMap` (Match control) · `rotationAdd rotationRemove rotationMove
 rotationReorder` (Live rotation) · `ban unban` (Bans) · `reservedAdd reservedRemove` (Reserved
 slots) · `rotationSave rotationSettings` (Save rotation) · `config feed settings configValidate configApply` (Config &
-settings) · `serverLog` (Audit trail) · `raw` (Raw RCON).
+settings) · `serverLog` (Audit trail) · `raw` (Raw RCON). `chatTerms` and `chat` need _Read chat_,
+which a key cannot hold, and `chatTermsAccept` is for an owner of the organisation, in person
+(`owner: true` in `GET /api/actions`): the three serve the panel's Chat tab (see
+[In-game chat](#in-game-chat)) and answer a key 403.
 
 ## Notes and limits
 
