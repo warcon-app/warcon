@@ -7,7 +7,11 @@ export const GET = route(async ({ locals }) => {
 	return apiJson({
 		ok: true,
 		actions: Object.fromEntries(
-			Object.entries(ACTIONS).map(([k, v]) => [k, { cap: v.cap, mutating: v.mutating }])
+			Object.entries(ACTIONS).map(([k, v]) => [
+				k,
+				// `owner`: only an owner of the server's organisation, in person (never a key)
+				{ cap: v.cap, mutating: v.mutating, ...(v.manager ? { owner: true } : {}) }
+			])
 		)
 	});
 });

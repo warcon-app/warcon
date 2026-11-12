@@ -11,7 +11,8 @@ import { callApi, stubGateway } from './call';
 import { expected, outcomeOf } from './policy';
 import { PRINCIPALS, seedWorld, type World } from './world';
 
-const ACTION_CAPS: Record<string, Capability> = {
+/** `manager`: an owner of the server's organisation (or the site owner), in person; never a key. */
+const ACTION_CAPS: Record<string, Capability | 'manager'> = {
 	capabilities: 'server.view',
 	status: 'server.view',
 	health: 'server.view',
@@ -26,6 +27,10 @@ const ACTION_CAPS: Record<string, Capability> = {
 	bans: 'server.view',
 	reserved: 'server.view',
 	sponsor: 'server.view',
+
+	chatTerms: 'chat.read',
+	chat: 'chat.read',
+	chatTermsAccept: 'manager',
 
 	broadcast: 'chat.send',
 	whisper: 'chat.send',
@@ -64,6 +69,14 @@ test('every action has a line in the table', () => {
 	expect(Object.keys(ACTION_CAPS).sort()).toEqual(Object.keys(ACTIONS).sort());
 });
 
+test('the table says of each action what the registry does', () => {
+	for (const [name, cap] of Object.entries(ACTION_CAPS)) {
+		const def = ACTIONS[name];
+		expect([name, !!def.manager]).toEqual([name, cap === 'manager']);
+		if (cap !== 'manager') expect([name, def.cap]).toEqual([name, cap]);
+	}
+});
+
 describe.skipIf(!hasTestDb)('game action permission matrix', () => {
 	let env: Env;
 	let world: World;
@@ -75,14 +88,14 @@ describe.skipIf(!hasTestDb)('game action permission matrix', () => {
 	});
 
 	for (const [action, cap] of Object.entries(ACTION_CAPS)) {
-		test(`${action} needs ${cap}`, async () => {
+		test(`${action} needs ${cap === 'manager' ? 'an owner of the organisation' : cap}`, async () => {
 			gateway = stubGateway();
 			const { POST } = await import('../routes/api/servers/[id]/rcon/[action]/+server');
 			const got: Record<string, unknown> = {};
 			const want: Record<string, unknown> = {};
 			const reached: string[] = [];
 			for (const who of PRINCIPALS) {
-				want[who] = expected(`cap:${cap}`, who);
+				want[who] = expected(cap === 'manager' ? 'manager' : `cap:${cap}`, who);
 				const before = gateway.runs.length;
 				const answer = await callApi(POST, world.users[who], {
 					method: 'POST',

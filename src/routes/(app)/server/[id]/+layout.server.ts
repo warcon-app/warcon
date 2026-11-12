@@ -34,7 +34,8 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 		rotationEdit: true,
 		rotationSave: true,
 		liveSettings: true,
-		serverId: false
+		serverId: false,
+		chat: false
 	};
 	let reachable = true;
 	let problem = '';

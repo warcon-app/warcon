@@ -63,6 +63,19 @@ describe('keys', () => {
 		).toBeNull();
 	});
 
+	test('a principal never carries what only a person may hold, whatever the row lists', () => {
+		const p = principalOf({
+			id: 'k1',
+			orgId: 'o1',
+			label: 'bot',
+			capabilities: ['server.view', 'chat.read', 'chat.send'],
+			serverIds: null,
+			expiresAt: null,
+			revokedAt: null
+		});
+		expect(p.capabilities).toEqual(['server.view', 'chat.send']);
+	});
+
 	test('a key covers its org servers, narrowed by the allowlist, never another org', () => {
 		const all = { orgId: 'o1', serverIds: null };
 		const some = { orgId: 'o1', serverIds: ['s1'] };

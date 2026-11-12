@@ -96,6 +96,8 @@ export interface Features {
 	liveSettings: boolean;
 	/** GET /v1/server-id: the join code the WARDOGS backend issued the server (CL-501228+) */
 	serverId: boolean;
+	/** GET /v1/chat and GET, POST /v1/chat/terms: the in-game chat and its terms (Season 3) */
+	chat: boolean;
 }
 
 export interface FactionScore {

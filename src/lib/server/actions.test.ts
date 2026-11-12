@@ -110,7 +110,8 @@ test('capabilities reads the live build CL-499480 route list into feature flags'
 		rotationEdit: false,
 		rotationSave: false,
 		liveSettings: false,
-		serverId: false
+		serverId: false,
+		chat: false
 	});
 });
 
@@ -156,11 +157,21 @@ test('capabilities keeps every flag on for a build that serves the full console 
 		'POST /v1/rotation/entries/{index}/move',
 		'POST /v1/rotation/save',
 		'PATCH /v1/settings',
-		'GET /v1/server-id'
+		'GET /v1/server-id',
+		'GET /v1/chat',
+		'GET /v1/chat/terms',
+		'POST /v1/chat/terms'
 	];
 	const client: any = { json: async () => ({ routes: full, config: { writable: true } }) };
 	const r: any = await ACTIONS.capabilities.run(client, {});
 	expect(Object.values(r.features).every(Boolean)).toBe(true);
+	// Season 3's chat counts only with all three of its routes
+	for (const gone of ['GET /v1/chat', 'GET /v1/chat/terms', 'POST /v1/chat/terms']) {
+		const part: any = {
+			json: async () => ({ routes: full.filter((x) => x !== gone), config: { writable: true } })
+		};
+		expect(((await ACTIONS.capabilities.run(part, {})) as any).features.chat).toBe(false);
+	}
 });
 
 // Reserved slots: the live route when the build serves it, the DefaultReservedPlayerIds array of
@@ -646,6 +657,83 @@ test('raw does not serve the config document, however the path is spelt', async 
 	await ACTIONS.raw.run(client, { method: 'GET', path: '/v1/status' });
 	await ACTIONS.raw.run(client, { method: 'GET', path: '/v1/players?name=a%20b' });
 	expect(calls).toEqual(['GET /v1/configuration', 'GET /v1/status', 'GET /v1/players?name=a%20b']);
+});
+
+test('accepting the chat terms names a version, and passes on the game’s word that it is pending', async () => {
+	const calls: unknown[] = [];
+	const client = (answer: unknown): any => ({
+		json: async (method: string, path: string, body: unknown) => {
+			calls.push([method, path, body]);
+			return answer;
+		}
+	});
+	const run = ACTIONS.chatTermsAccept.run;
+	expect(await run(client({ ok: true, pending: false, message: 'OK' }), { version: 3 })).toEqual({
+		message: 'Chat terms version 3 accepted.',
+		pending: false
+	});
+	expect(await run(client({ ok: true, pending: true }), { version: '4' })).toEqual({
+		message: 'Chat terms version 4 accepted.',
+		pending: true
+	});
+	// an answer with nothing in it is not a pending one
+	expect(((await run(client(null), { version: 1 })) as any).pending).toBe(false);
+	expect(calls).toEqual([
+		['POST', '/v1/chat/terms', { version: 3 }],
+		['POST', '/v1/chat/terms', { version: 4 }],
+		['POST', '/v1/chat/terms', { version: 1 }]
+	]);
+	// no version, or one that is not a number: refused before the game is asked
+	calls.length = 0;
+	for (const params of [{}, { version: 0 }, { version: 'one' }, { version: -2 }])
+		await expect(run(client({}), params)).rejects.toMatchObject({
+			status: 400,
+			code: 'missing_version'
+		});
+	expect(calls).toEqual([]);
+});
+
+test('raw does not serve the chat or its terms, however the path is spelt', async () => {
+	const calls: string[] = [];
+	const client: any = {
+		raw: async (method: string, path: string) => {
+			calls.push(`${method} ${path}`);
+			return { status: 200, statusText: 'OK', headers: {}, text: '{}' };
+		}
+	};
+	for (const [method, path] of [
+		['GET', '/v1/chat'],
+		['GET', '/v1/chat?after=0&limit=500'],
+		['GET', '/v1/Chat'],
+		['GET', '/v1/chat.'],
+		['GET', '/v1/chat/'],
+		['GET', '/v1/chat/terms'],
+		['POST', '/v1/chat/terms'],
+		['POST', '/v1/CHAT/Terms/'],
+		['GET', '/v1/./chat'],
+		['GET', '/v1/status/../chat']
+	])
+		await expect(ACTIONS.raw.run(client, { method, path })).rejects.toMatchObject({
+			status: 403,
+			code: 'use_chat'
+		});
+	// spelt with an escape, an empty segment or a ';', the route is not sent at all
+	for (const path of [
+		'/v1/%63hat',
+		'/v1/chat%2Fterms',
+		'/v1/chat%3Fx',
+		'/v1/chat%20',
+		'/v1/chat;x',
+		'/v1//chat',
+		'/v1/%2563hat'
+	])
+		await expect(ACTIONS.raw.run(client, { method: 'GET', path })).rejects.toMatchObject({
+			status: 400
+		});
+	expect(calls).toEqual([]);
+	// another route that only starts with the same letters is not chat
+	await ACTIONS.raw.run(client, { method: 'GET', path: '/v1/chatter' });
+	expect(calls).toEqual(['GET /v1/chatter']);
 });
 
 test('raw passes on the documented headers only: a proxy in front of the listener names the RCON address in the others', async () => {

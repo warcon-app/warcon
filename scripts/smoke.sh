@@ -119,6 +119,17 @@ check config-apply-conflict '"conflict":true' "$(req $J1 POST /api/servers/$SID/
 CFG=$(req $J1 GET /api/servers/$SID/rcon/config); REV=$(echo "$CFG" | sed -E 's/.*"revision":"([^"]+)".*/\1/')
 BODY="{\"text\":\"[/Script/WDGame.WDGameSession]\\r\\nServerName=Renamed\\r\\n\",\"revision\":\"$REV\"}"
 check config-apply-ok '"ok":true' "$(req $J1 POST /api/servers/$SID/rcon/configApply "$BODY")"
+# Season 3's chat: no lines until an owner accepts the game's chat terms, and raw is no way round
+if [ "$LIVE" = 1 ]; then
+  check chat-no-route 'does not serve' "$(req $J1 GET /api/servers/$SID/rcon/chatTerms)"
+else
+  check chat-terms '"accepted":false' "$(req $J1 GET /api/servers/$SID/rcon/chatTerms)"
+  check chat-locked 'chat_terms_not_accepted' "$(req $J1 GET /api/servers/$SID/rcon/chat)"
+  check chat-accept-wrong 'terms_version_mismatch' "$(req $J1 POST /api/servers/$SID/rcon/chatTermsAccept '{"version":9}')"
+  check chat-accept 'Chat terms version 1 accepted' "$(req $J1 POST /api/servers/$SID/rcon/chatTermsAccept '{"version":1}')"
+  check chat-read '"lines":[{"seq"' "$(req $J1 GET /api/servers/$SID/rcon/chat)"
+fi
+check raw-no-chat 'use_chat' "$(req $J1 POST /api/servers/$SID/rcon/raw '{"method":"GET","path":"/v1/chat"}')"
 check raw-blocked-path 'must start with /v1/' "$(req $J1 POST /api/servers/$SID/rcon/raw '{"method":"GET","path":"/etc/passwd"}')"
 check raw-ok '"status":200' "$(req $J1 POST /api/servers/$SID/rcon/raw '{"method":"GET","path":"/v1/status"}')"
 
@@ -140,6 +151,8 @@ check bob-sees-server '"roleName":"viewer"' "$(req $J3 GET /api/servers)"
 check bob-org-member '"username":"bob"' "$(req $J1 GET /api/orgs/$ORG/members)"
 check bob-status-ok '"scores"' "$(req $J3 GET /api/servers/$SID/rcon/status)"
 check bob-kick-denied "your role 'viewer' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/kick '{"steamId":"76561198100000103"}')"
+check bob-chat-denied "your role 'viewer' does not include it" "$(req $J3 GET /api/servers/$SID/rcon/chat)"
+check bob-chat-accept-denied 'Only an owner of the organisation' "$(req $J3 POST /api/servers/$SID/rcon/chatTermsAccept '{"version":1}')"
 check bob-group-whisper-denied "your role 'viewer' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/whisperMany '{"faction":"Valkyra","message":"hi"}')"
 check bob-org-broadcast-denied "This needs 'Chat'" "$(req $J3 POST /api/orgs/$ORG/broadcast '{"message":"hi","serverIds":null}')"
 # saved messages: the org's owners write them, whoever may chat on a server reads them

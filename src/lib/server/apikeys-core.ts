@@ -2,7 +2,7 @@
 // No db, no SvelteKit, so it is unit tested with plain objects and shared by the hook (which
 // resolves bearers) and access.ts (which answers "may this key do X here?").
 import { createHash, randomBytes } from 'node:crypto';
-import { knownCapabilities, type Capability } from '../capabilities';
+import { knownCapabilities, PEOPLE_ONLY, type Capability } from '../capabilities';
 
 export const TOKEN_PREFIX = 'wck_';
 /** 32 random bytes, base64url: 43 characters after the prefix. */
@@ -63,7 +63,9 @@ export const principalOf = (key: KeyLike): ApiKeyPrincipal => ({
 	id: key.id,
 	orgId: key.orgId,
 	label: key.label,
-	capabilities: knownCapabilities(key.capabilities),
+	// what the row lists, less what only a person may hold (players' chat): a key is never given
+	// that (apikeys.ts), and a row that lists it all the same grants nothing by it
+	capabilities: knownCapabilities(key.capabilities).filter((c) => !PEOPLE_ONLY.includes(c)),
 	serverIds: Array.isArray(key.serverIds)
 		? key.serverIds.filter((v): v is string => typeof v === 'string')
 		: null
