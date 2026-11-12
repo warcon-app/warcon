@@ -849,6 +849,8 @@ export interface ServerListsState {
 	banReasons: BanReason[] | null;
 	bans: Record<string, BanState>;
 	reserved: Record<string, ReservedSlotState>;
+	/** Panel roles for linked Steam accounts on this server. */
+	roles?: Record<string, string>;
 	sync: {
 		syncedAt: string | null;
 		lastError: string;
