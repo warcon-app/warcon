@@ -1,23 +1,30 @@
 <script lang="ts">
 	// Checkboxes for one capability set, grouped the way the role editor and the API-key form
 	// both show them. `locked` capabilities render checked and cannot be cleared (a role must keep
-	// 'View'); pass none for an API key, which may be narrower than any role.
+	// 'View'); pass none for an API key, which may be narrower than any role. `without` leaves
+	// capabilities out altogether: an API key is never offered what only a person may hold.
 	import { CAPABILITY_INFO, capabilitiesByGroup, type Capability } from '$lib/capabilities';
 
 	let {
 		value = $bindable([]),
 		locked = [],
+		without = [],
 		disabled = false,
 		compact = false
 	}: {
 		value: Capability[];
 		locked?: Capability[];
+		without?: readonly Capability[];
 		disabled?: boolean;
 		/** labels only, no hints: for a dense grid */
 		compact?: boolean;
 	} = $props();
 
-	const groups = capabilitiesByGroup();
+	let groups = $derived(
+		capabilitiesByGroup()
+			.map((g) => ({ ...g, caps: g.caps.filter((c) => !without.includes(c)) }))
+			.filter((g) => g.caps.length)
+	);
 	const has = (c: Capability) => value.includes(c);
 	function toggle(c: Capability, on: boolean) {
 		if (locked.includes(c)) return;

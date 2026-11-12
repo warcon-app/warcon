@@ -18,6 +18,7 @@
 		['', 'Overview'],
 		['/players', 'Players'],
 		['/kills', 'Kills'],
+		['/chat', 'Chat', 'chat.read'],
 		['/matches', 'Matches'],
 		['/bans', 'Bans'],
 		['/slots', 'Reserved slots'],
@@ -29,8 +30,12 @@
 		['/log', 'Server log', 'audit.read']
 	];
 	// Discord channels and the public pages are an org owner's to manage, so Settings shows for them alone.
+	// Chat is there on builds that serve it (Season 3), for those who may read it.
 	let visibleTabs = $derived([
-		...TABS.filter(([, , cap]) => !cap || can(data.server.caps, cap)),
+		...TABS.filter(
+			([path, , cap]) =>
+				(!cap || can(data.server.caps, cap)) && (path !== '/chat' || data.features.chat)
+		),
 		...(data.server.manager ? [['/settings', 'Settings'] as const] : [])
 	]);
 	let base = $derived(`/server/${encodeURIComponent(data.server.id)}`);

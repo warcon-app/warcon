@@ -210,7 +210,7 @@
 		],
 		terms: () => [
 			'The game is holding the feed back until the chat terms are accepted.',
-			"From Season 3 a server sends no events, kills included, until its chat terms have been accepted. Whoever runs the server reads and accepts them in the official RCON console, under Chat; nothing in the server's file needs changing."
+			`From Season 3 a server sends no events, kills included, until its chat terms have been accepted. An owner of ${data.server.orgName} reads and accepts them on this server's Chat tab; nothing in the server's file needs changing.`
 		],
 		empty: () => [
 			'The feed is on, but lists no endpoint.',
