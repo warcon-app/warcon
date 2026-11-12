@@ -330,6 +330,7 @@
 				{@const { p, s } = row}
 				{@const m = s.marks[p.steamId]}
 				{@const r = s.lists?.reserved[p.steamId]}
+				{@const playerRole = s.lists?.roles?.[p.steamId]}
 				{@const steam = steamNameBeside(p.name, m?.steamName)}
 				{@const chat = chatOn(s)}
 				<tr class={picked.has(row.key) ? 'selected' : ''}>
@@ -348,6 +349,7 @@
 							class="font-medium text-mist-100 underline decoration-mist-600 underline-offset-[3px] hover:text-accent hover:decoration-accent"
 							>{p.name}</a
 						>
+						{#if playerRole}<Badge tone={playerRole === 'owner' ? 'accent' : 'info'}>{playerRole}</Badge>{/if}
 						<span class="font-mono text-[12px] text-mist-600">{p.steamId}</span>
 						{#if steam}<span class="block text-[12.5px] text-mist-400"
 								>Steam · <span class="text-mist-100">{steam}</span></span

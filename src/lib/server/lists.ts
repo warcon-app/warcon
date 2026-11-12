@@ -24,6 +24,10 @@ import {
 import type { Db, Tx } from './db';
 import {
 	listEntries,
+	orgMembers,
+	orgRoles,
+	serverGrants,
+	user as userTable,
 	lists,
 	organizations,
 	serverBans,
@@ -1348,5 +1352,25 @@ export async function serverListsState(
 			if (e.listId === own.id) s.scope = 'server';
 		}
 	}
+	// Site owners and organisation owners have all server permissions. Other members
+	// display only roles granted for this server, never grants from another server.
+	const linkedSteamId = sql<string | null>`coalesce((select a.account_id from account a where a.user_id=${userTable.id} and a.provider_id='steam' and a.account_id ~ '^[0-9]{17}$' order by a.created_at desc limit 1), ${userTable.steamId})`;
+	const owners = await env.db.select({ steamId: linkedSteamId }).from(userTable)
+		.leftJoin(orgMembers, and(eq(orgMembers.userId, userTable.id), eq(orgMembers.orgId, server.orgId)))
+		.where(and(or(eq(userTable.role, 'owner'), eq(orgMembers.role, 'owner')), sql`coalesce(${userTable.banned}, false) = false`, sql`${linkedSteamId} is not null`));
+	const grants = await env.db.select({ steamId: linkedSteamId, name: orgRoles.name }).from(serverGrants)
+		.innerJoin(userTable, eq(userTable.id, serverGrants.userId))
+		.innerJoin(orgRoles, eq(orgRoles.id, serverGrants.roleId))
+		.innerJoin(orgMembers, and(eq(orgMembers.userId, userTable.id), eq(orgMembers.orgId, server.orgId)))
+		.where(and(eq(serverGrants.serverId, server.id), eq(orgRoles.orgId, server.orgId), sql`coalesce(${userTable.banned}, false) = false`, sql`${linkedSteamId} is not null`))
+		.orderBy(orgRoles.sortOrder, orgRoles.name);
+	const roles = new Map<string, string[]>();
+	for (const grant of grants) if (grant.steamId) {
+		const names = roles.get(grant.steamId) ?? [];
+		if (!names.includes(grant.name)) names.push(grant.name);
+		roles.set(grant.steamId, names);
+	}
+	for (const owner of owners) if (owner.steamId) roles.set(owner.steamId, ['owner']);
+	out.roles = Object.fromEntries([...roles].map(([id, names]) => [id, names.join(' / ')]));
 	return out;
 }
