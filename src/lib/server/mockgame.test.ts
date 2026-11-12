@@ -6,6 +6,9 @@ import { drainMockFeed, mockHandle, MOCK_PASSWORD } from './mockgame';
 import { parseBatch } from './feed-core';
 import { isMod, takesLighting } from '../format';
 import { rotationFromText, rotationIntoText } from '../rotation-doc';
+import { S_STATE } from '../config-fields';
+import { WELCOME_KEYS, welcomeLinesFromText, welcomeLinesIntoText } from '../welcome-doc';
+import { WELCOME_LIMITS, welcomeLimitsOf } from '../welcome-text';
 
 const auth = { authorization: `Bearer ${MOCK_PASSWORD}` };
 const call = (key: string, method: string, path: string, body?: unknown) =>
@@ -175,5 +178,115 @@ describe('the demo game on Season 3', () => {
 		}
 		expect(seen.length).toBeGreaterThan(0);
 		expect([...new Set(seen)]).toEqual(['DayLateRain']);
+	});
+});
+
+// Season 3: the game's own welcome popup, four keys of the config document read at a match's start.
+describe("the demo game's welcome popup", () => {
+	const json = (key: string, method: string, path: string, body?: string, revision?: string) => {
+		const res = mockHandle(
+			key,
+			method,
+			path,
+			revision ? { ...auth, 'if-match': `"${revision}"` } : auth,
+			body
+		);
+		return { status: res.status, ...JSON.parse(res.text) };
+	};
+	const schema = (key: string) =>
+		(
+			json(key, 'GET', '/v1/config').sections as {
+				section: string;
+				allowedKeys: string[];
+				keyOverrides: { key: string; appliesWhen: string }[];
+			}[]
+		).find((s) => s.section === S_STATE)!;
+
+	test('its status reports the limits, its schema the four keys, its file a popup', () => {
+		const key = randomUUID();
+		expect(welcomeLimitsOf(json(key, 'GET', '/v1/status').welcomeMessage)).toEqual(WELCOME_LIMITS);
+		const state = schema(key);
+		for (const k of WELCOME_KEYS) {
+			expect(state.allowedKeys).toContain(k);
+			expect(state.keyOverrides).toContainEqual(
+				expect.objectContaining({ key: k, appliesWhen: 'next-match' })
+			);
+		}
+		// the fourth line is quoted in the file, for the // in its address
+		expect(welcomeLinesFromText(json(key, 'GET', '/v1/config').text)).toEqual([
+			'<Header>Welcome to the demo server</>',
+			'Be kind, play the objective and have fun.',
+			'',
+			'<text color="#7FD6FF">https://warcon.example</>'
+		]);
+	});
+
+	test('a popup within the limits is written, and read back as it went in', () => {
+		const key = randomUUID();
+		const doc = json(key, 'GET', '/v1/config');
+		const lines = [
+			'<text size="20" fontface="Bold" color="#FF4D4D">SERVER RULES</>',
+			'',
+			'Keep chat in <text color="#7FD6FF">English</> | be respectful',
+			'x'.repeat(128)
+		];
+		const put = json(key, 'PUT', '/v1/config', welcomeLinesIntoText(doc.text, lines), doc.revision);
+		expect(put.status).toBe(200);
+		expect(put.revision).not.toBe(doc.revision);
+		expect(welcomeLinesFromText(json(key, 'GET', '/v1/config').text)).toEqual(lines);
+	});
+
+	test('a line over a limit, or a tag the popup would not keep, is refused with the line named', () => {
+		const key = randomUUID();
+		const doc = json(key, 'GET', '/v1/config');
+		const bad = welcomeLinesIntoText(doc.text, [
+			'fine',
+			'x'.repeat(129),
+			'<a href="https://x.example">a link</>'
+		]);
+		for (const [method, path] of [
+			['POST', '/v1/config/validate'],
+			['PUT', '/v1/config']
+		]) {
+			const answer = json(key, method, path, bad, doc.revision);
+			expect(answer.status).toBe(400);
+			expect(answer.ok).toBe(false);
+			expect(answer.error.code).toBe('config_invalid');
+			expect(answer.errors).toEqual([
+				{
+					section: S_STATE,
+					key: 'ServerWelcomeMessageLines',
+					message: 'Line 2 has 129 visible characters, and the popup takes 128.'
+				},
+				{
+					section: S_STATE,
+					key: 'ServerWelcomeMessageLines',
+					message: 'Line 3: <a> is not a tag the popup takes; only <text> has attributes.'
+				}
+			]);
+		}
+		// nothing was written
+		const after = json(key, 'GET', '/v1/config');
+		expect(after.revision).toBe(doc.revision);
+		expect(after.text).toBe(doc.text);
+		// what the game takes and shows as typed is not refused
+		const typed = welcomeLinesIntoText(doc.text, ['<Bold>No cheating</Bold>']);
+		expect(json(key, 'POST', '/v1/config/validate', typed).status).toBe(200);
+	});
+
+	test('the build from before Season 3 has none of it', () => {
+		const before = process.env.MOCK_LIVE_BUILD;
+		process.env.MOCK_LIVE_BUILD = 'true';
+		try {
+			const key = randomUUID();
+			expect(json(key, 'GET', '/v1/status').welcomeMessage).toBeUndefined();
+			const state = schema(key);
+			for (const k of WELCOME_KEYS) expect(state.allowedKeys).not.toContain(k);
+			expect(state.keyOverrides).toEqual([]);
+			expect(welcomeLinesFromText(json(key, 'GET', '/v1/config').text)).toBeNull();
+		} finally {
+			if (before === undefined) delete process.env.MOCK_LIVE_BUILD;
+			else process.env.MOCK_LIVE_BUILD = before;
+		}
 	});
 });
