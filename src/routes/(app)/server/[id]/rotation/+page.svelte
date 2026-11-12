@@ -722,7 +722,7 @@
 
 <div class="mt-4 panel">
 	<span class="label-sm">Add rotation entry</span>
-	<MapPicker bind:this={picker} serverId={id} catalog={data.catalog} disabled={!canEdit} />
+	<MapPicker bind:this={picker} serverId={id} catalog={data.catalog} disabled={!canEdit} canManageTeams={automation} />
 	<div class="mt-4">
 		<button class="btn btn-primary" disabled={!canEdit || busy} onclick={add}
 			>Add to rotation</button
