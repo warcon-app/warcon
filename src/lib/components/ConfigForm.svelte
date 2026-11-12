@@ -7,6 +7,8 @@
 		APPLY_BADGES,
 		FIELDS,
 		GROUPS,
+		WELCOME_GROUP,
+		WELCOME_TEXT,
 		appliesFor,
 		lockedFor,
 		fromIniValue,
@@ -15,7 +17,10 @@
 		type FieldValue
 	} from '$lib/config-fields';
 	import type { ConfigResult, ConfigSection } from '$lib/types';
+	import { knowsWelcome, sameLines, welcomeLinesOf } from '$lib/welcome-doc';
+	import { WELCOME_LIMITS, type WelcomeLimits } from '$lib/welcome-text';
 	import TickReward from './TickReward.svelte';
+	import WelcomeEditor from './WelcomeEditor.svelte';
 
 	let {
 		text = $bindable(),
@@ -25,7 +30,8 @@
 		disabled = false,
 		tickRange = null,
 		liveRoutes = true,
-		nameRule = null
+		nameRule = null,
+		welcomeLimits = null
 	}: {
 		text: string;
 		/** the document as last loaded from (or applied to) the server, for change marks */
@@ -39,6 +45,8 @@
 		liveRoutes?: boolean;
 		/** the Automation tab, when a Live server name rule keeps the server name (shown read-only) */
 		nameRule?: string | null;
+		/** the welcome popup's limits as the server's status reports them; null when it reports none */
+		welcomeLimits?: WelcomeLimits | null;
 	} = $props();
 
 	let parsed = $derived(parseIni(text));
@@ -52,9 +60,27 @@
 	function set(f: ConfigField, v: FieldValue) {
 		text = setScalarInText(text, f.section, f.ini, toIniValue(f, v));
 	}
+	// The welcome popup (Season 3): its limits are the server's own where it reports them, else the
+	// ones the WARDOGS team gave. A server that shows no sign of the popup gets a note saying what
+	// an older build does with these keys; the fields stay open, since the signs are not proof.
+	let popupLimits = $derived(welcomeLimits ?? WELCOME_LIMITS);
+	let popupKnown = $derived(knowsWelcome(sections, parsed, !!welcomeLimits));
+	let popupModified = $derived(
+		!sameLines(welcomeLinesOf(parsed) ?? [], welcomeLinesOf(serverParsed) ?? [])
+	);
+	const fieldOf = (key: string) => FIELDS.find((f) => f.key === key)!;
+	let popupOn = $derived(!!shown(fieldOf('welcomeEnabled')));
+	let popupDelay = $derived(Number(shown(fieldOf('welcomeCloseDelay'))) || 0);
+	const maxOf = (f: ConfigField) =>
+		f.key === 'welcomeCloseDelay' ? popupLimits.maxCloseDelaySeconds : f.max;
 	const num = (e: Event, f: ConfigField) => {
 		const n = Number((e.currentTarget as HTMLInputElement).value);
-		set(f, Number.isFinite(n) ? Math.max(f.min ?? -Infinity, n) : (f.def as number));
+		set(
+			f,
+			Number.isFinite(n)
+				? Math.min(maxOf(f) ?? Infinity, Math.max(f.min ?? -Infinity, n))
+				: (f.def as number)
+		);
 	};
 
 	let shadowMap = $derived(
@@ -115,6 +141,14 @@
 <div class="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">
 	{#each groups as g (g.name)}
 		<div class="border-b border-black pb-1 caps text-mist-400 md:col-span-2">{g.name}</div>
+		{#if g.name === WELCOME_GROUP && !popupKnown}
+			<p class="note mt-0 md:col-span-2">
+				This server shows no sign of the welcome popup: its status reports no limits for one, and
+				its config names none of the popup's keys. The popup came with Season 3 (12 November 2026).
+				A server still on an older build drops these keys when the file is applied, so what is set
+				here would be gone at the next reload.
+			</p>
+		{/if}
 		{#each g.rows as row (row.id)}
 			{@const first = row.fields[0]}
 			{@const b = badge(first)}
@@ -178,11 +212,13 @@
 								type="number"
 								class="input max-w-[140px] font-mono tabular"
 								min={f.min}
+								max={maxOf(f)}
 								step="1"
 								value={Number(v)}
 								disabled={disabled || locked(f)}
 								onchange={(e) => num(e, f)}
 							/>
+							{#if f.unit}<span class="text-mist-400">{f.unit}</span>{/if}
 						{:else}
 							<input
 								type="text"
@@ -208,5 +244,32 @@
 				</p>
 			</div>
 		{/each}
+		{#if g.name === WELCOME_GROUP}
+			{@const b = badge(WELCOME_TEXT)}
+			<div class="md:col-span-2">
+				<div class="mb-2 flex flex-wrap items-center gap-2">
+					<span class="caps text-mist-400">Text</span>
+					{#if b}<span class="pip {b.cls}" title={b.title}>{b.label}</span>{/if}
+					{#if popupModified}<span class="pip bg-accent/15 text-accent">modified</span>{/if}
+					{#if !welcomeLinesOf(parsed)}<span
+							class="text-[11px] text-mist-600"
+							title="The file does not set this key, so the popup has no text. Typing adds it."
+							>not in file</span
+						>{/if}
+					{#if !welcomeLimits}<span
+							class="text-[11px] text-mist-600"
+							title="This server's status does not report the popup's limits, so the ones the WARDOGS team announced are used: {WELCOME_LIMITS.maxLines} lines of {WELCOME_LIMITS.maxLineLength} visible characters, font sizes {WELCOME_LIMITS.minFontSize} to {WELCOME_LIMITS.maxFontSize}."
+							>limits as announced</span
+						>{/if}
+				</div>
+				<WelcomeEditor
+					bind:text
+					limits={popupLimits}
+					disabled={disabled || !!lockedFor(WELCOME_TEXT, sections)}
+					on={popupOn}
+					closeDelay={popupDelay}
+				/>
+			</div>
+		{/if}
 	{/each}
 </div>
