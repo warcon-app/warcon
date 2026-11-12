@@ -313,7 +313,16 @@ const CHAT_SCRIPT: [string, string, string, boolean][] = [
 	['Global', 'gg that was close', 'gg that was close', false],
 	['Proximity', 'over here, behind the wall', 'over here, behind the wall', false],
 	['Vehicle', 'hold on, taking the hill', 'hold on, taking the hill', false],
-	['Team', 'Attack here', 'Attack here', true]
+	['Team', 'Attack here', 'Attack here', true],
+	// what players type to the server: a Chat command and a Staff call rule answer these two, and
+	// on a server with neither they are chat like any other line
+	['Team', '!rules', '!rules', false],
+	[
+		'Global',
+		'!admin the tank at the north point is team killing',
+		'!admin the tank at the north point is team killing',
+		false
+	]
 ];
 const HIDDEN_NAMES = ['Amber Falcon', 'Quiet Badger', 'Copper Heron', 'Jade Otter', 'Dusty Weasel'];
 const FACTION_LABELS = ['RED', 'BLU', 'GRN'];
@@ -348,6 +357,39 @@ function chatUpTo(s: State, now: number): void {
 		});
 	}
 	if (c.lines.length > CHAT_KEEP) c.lines.splice(0, c.lines.length - CHAT_KEEP);
+}
+
+/**
+ * One of the demo's players typing a line in its chat, for tests: `steamId` says who (the first on
+ * the list when it names nobody on). Nothing before the chat terms are accepted, as on a real
+ * server. Returns the line's number, 0 when no line was added.
+ */
+export function mockSay(
+	key: string,
+	text: string,
+	opts: { steamId?: string; channel?: string; typed?: string; anonymous?: boolean } = {}
+): number {
+	const s = stateFor(key);
+	const c = s.chat;
+	const who = s.players.find((p) => p.steamId === opts.steamId) ?? s.players[0];
+	if (c.accepted < CHAT_TERMS_VERSION || !who) return 0;
+	const side = s.factions.findIndex((f) => f.name === who.faction);
+	c.seq++;
+	c.lines.push({
+		seq: c.seq,
+		sentUtc: new Date().toISOString(),
+		channel: opts.channel ?? 'Team',
+		faction: FACTION_LABELS[side] ?? null,
+		steamId: who.steamId || null,
+		realName: who.name,
+		hiddenName: HIDDEN_NAMES[c.seq % HIDDEN_NAMES.length],
+		anonymous: !!opts.anonymous,
+		text,
+		rawText: opts.typed ?? text,
+		ping: false
+	});
+	if (c.lines.length > CHAT_KEEP) c.lines.splice(0, c.lines.length - CHAT_KEEP);
+	return c.seq;
 }
 
 // The schema live build CL-501228 reports from GET /v1/config (captured 2026-09-14; CL-499480's

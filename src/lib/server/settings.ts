@@ -94,6 +94,15 @@ export const SETTINGS = {
 		max: 120_000,
 		group: 'observation'
 	},
+	chatMs: {
+		label: 'Chat rules: chat',
+		help: 'How often the in-game chat is read on a server that has a chat rule on and players on it: how soon a typed command is answered. It is read with the worker’s looks, so never more often than they come, and each read is one more request to that game server.',
+		unit: 'ms',
+		default: 2000,
+		min: 1000,
+		max: 30_000,
+		group: 'observation'
+	},
 	concurrency: {
 		label: 'Observations in flight',
 		help: 'Servers the worker may be talking to at once. A guard for the process, not a cadence; keep under 256.',

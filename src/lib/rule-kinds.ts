@@ -3,9 +3,11 @@
 // server's own list is TRIGGER_KINDS (trigger-rules.ts); rule-kinds.test.ts holds the two together.
 import type { TriggerKind } from './types';
 
-export type RuleGroup = 'Messages' | 'On join' | 'In play' | 'Seeding and rewards' | 'Server';
+export type RuleGroup =
+	'Messages' | 'Chat commands' | 'On join' | 'In play' | 'Seeding and rewards' | 'Server';
 export const RULE_GROUPS: RuleGroup[] = [
 	'Messages',
+	'Chat commands',
 	'On join',
 	'In play',
 	'Seeding and rewards',
@@ -49,6 +51,20 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 		group: 'Messages',
 		label: 'Match broadcast',
 		blurb: 'Announce who won when a match ends, and the map as the next one starts.'
+	},
+	{
+		kind: 'chat_command',
+		group: 'Chat commands',
+		label: 'Chat command',
+		blurb:
+			'Answer a word players type in chat, such as !rules or !discord, with your own text: to that player, or to everyone.'
+	},
+	{
+		kind: 'staff_call',
+		group: 'Chat commands',
+		label: 'Staff call',
+		blurb:
+			'Send what a player types in chat after !admin or !report to your Discord, and tell them it is on its way.'
 	},
 	{
 		kind: 'risk_kick',
@@ -165,8 +181,8 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
  * kill everyone twice a round, two Bounty rules would mark two players at once, two Rotation shuffle
  * rules would each undo the other's order, two Live server name rules would each write their own
  * name over the other's, two Skip map after restart rules would end the match twice, two Weather
- * cycle rules would each change the weather on a clock of their own. The picker opens the one a
- * server has.
+ * cycle rules would each change the weather on a clock of their own, two Staff call rules would
+ * split one server's words for calling staff between them. The picker opens the one a server has.
  */
 export const ONE_PER_SERVER: TriggerKind[] = [
 	'seed_reward',
@@ -176,7 +192,8 @@ export const ONE_PER_SERVER: TriggerKind[] = [
 	'rotation_shuffle',
 	'live_name',
 	'restart_skip',
-	'weather_cycle'
+	'weather_cycle',
+	'staff_call'
 ];
 
 /**
@@ -214,7 +231,16 @@ export const FEED_KINDS: TriggerKind[] = [
 ];
 
 /**
- * Rules that queue no actions, so a Discord webhook has nothing of theirs to carry: the Live server
- * name rule writes the name at the worker's look (live-name.ts). The webhook editor leaves them out.
+ * Rules that act on what players type in the in-game chat (Season 3; chat-look.ts): the worker
+ * reads the chat for a server that has one switched on, and for no other. Saving one needs Read
+ * chat, which no API key holds.
  */
-export const NO_ACTIONS: TriggerKind[] = ['live_name'];
+export const CHAT_KINDS: TriggerKind[] = ['chat_command', 'staff_call'];
+
+/**
+ * Rules that queue no actions, so a Discord webhook has nothing of theirs to carry: the Live server
+ * name rule writes the name at the worker's look (live-name.ts), and the chat rules answer in the
+ * look that read the line, recorded nowhere (a Staff call's own Discord box carries its cards).
+ * The webhook editor leaves them out.
+ */
+export const NO_ACTIONS: TriggerKind[] = ['live_name', ...CHAT_KINDS];

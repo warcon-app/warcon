@@ -3,9 +3,10 @@
 // An observation reads status and/or the player list (whichever is due), diffs the players
 // against the open sessions, evaluates the server's triggers, and commits all of it in a single
 // fenced transaction: session rows, trigger intents (the outbox), the live snapshot and, when
-// something changed or the heartbeat is due, an analytics sample. Nothing is sent to the game
-// from here; outbox.ts does that afterwards. Then the slower housekeeping runs, each part on its
-// own: match bookkeeping, ban-list snapshot, org-list sync, Steam warm-up.
+// something changed or the heartbeat is due, an analytics sample. What the rules decided is not
+// sent from here; outbox.ts does that afterwards. Then the slower housekeeping runs, each part on
+// its own: match bookkeeping, ban-list snapshot, org-list sync, the Live server name, the chat
+// rules' read of the chat (which answers in the look: chat-look.ts), Steam warm-up.
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { Env } from './env';
 import { forLog, publicMessage } from './http';
@@ -77,6 +78,7 @@ import { notifyWatchedJoins } from './webhook-delivery';
 import { nextDue, withHold } from './poller-schedule';
 import { cashByFaction } from '$lib/cash';
 import { keepName } from './live-name-write';
+import { keepChat } from './chat-look';
 import type { NameMemory } from './live-name';
 import { takeFeedEnd, withFeedEnd, type ClosedMatch, type FeedEnd } from './match-feed';
 import { matchStateOf } from '$lib/match-state';
@@ -848,6 +850,27 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	const nameRule = rows.find((r) => r.kind === 'live_name');
 	if (isOwner() && m.status && (nameRule || m.liveName))
 		await stage('name', m, () => keepName(env, m, client, nameRule, started, period));
+	// The chat rules: the chat is read for a server that has one on and for no other, and what it
+	// brings is answered here, in the look (chat-look.ts). The game asking the panel to slow down
+	// holds the server, as at any request.
+	if (isOwner() && m.status)
+		await stage('chat', m, async () => {
+			// a look comes as often as the sooner of the tier's two cadences
+			const cadence = cadenceOf(m.tier, m.failures);
+			const { retryAfterMs } = await keepChat(env, {
+				server,
+				status: m.status,
+				players: m.players,
+				startedAt: m.startedAt,
+				features: m.identity.features,
+				rows,
+				suspended: !!m.org.suspendedAt,
+				everyMs: Math.min(cadence.players, cadence.status),
+				client,
+				now: Date.now()
+			});
+			if (retryAfterMs) m.holdUntil = Math.max(m.holdUntil, Date.now() + retryAfterMs);
+		});
 	if (diff.joined.length && steamEnabled(env))
 		void getProfiles(
 			env,

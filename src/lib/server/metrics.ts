@@ -42,6 +42,18 @@ export const deliveries = new Counter({
 	labelNames: ['outcome'] as const,
 	registers: [registry]
 });
+export const chatReads = new Counter({
+	name: 'warcon_chat_reads_total',
+	help: 'Reads of a game server’s chat for its chat rules, by outcome.',
+	labelNames: ['outcome'] as const,
+	registers: [registry]
+});
+export const chatAnswers = new Counter({
+	name: 'warcon_chat_answers_total',
+	help: 'Commands typed in chat that a chat rule answered, by kind of rule.',
+	labelNames: ['kind'] as const,
+	registers: [registry]
+});
 export const serversByTier = new Gauge({
 	name: 'warcon_servers',
 	help: 'Servers on the worker roster, by observation tier.',

@@ -251,7 +251,9 @@ describe('the catalogue and the rules’ settings', () => {
 		kill_distance: { causes: ['Id.Item.Defibrillator.Standard'], action: 'kick', reason: 'a' },
 		seed_reward: { minutes: 30, message: 'a' },
 		afk_protection: { message: 'a', doneMessage: 'b' },
-		name_change: { action: 'kick', reason: 'a' }
+		name_change: { action: 'kick', reason: 'a' },
+		chat_command: { command: 'rules', replies: ['a'] },
+		staff_call: { commands: 'admin', ack: 'a', usage: 'b', wait: 'c' }
 	};
 	test('every message field the catalogue names is a text the rule keeps', () => {
 		for (const [kind, rule] of Object.entries(MESSAGE_RULES)) {

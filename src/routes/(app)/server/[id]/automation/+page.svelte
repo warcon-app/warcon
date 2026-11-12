@@ -33,7 +33,17 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
 	import { watchLive } from '$lib/live';
-	import { FEED_KINDS, RULE_KINDS } from '$lib/rule-kinds';
+	import { CHAT_KINDS, FEED_KINDS, RULE_KINDS } from '$lib/rule-kinds';
+	import {
+		COMMAND_PREFIX,
+		commandWord,
+		MAX_COMMAND_ALIASES,
+		MAX_COMMAND_REPLIES,
+		MAX_COMMAND_WORD,
+		MAX_STAFF_WORDS,
+		NOT_ANSWERED,
+		STAFF_CALL_DEFAULTS
+	} from '$lib/chat-commands';
 	import RulePicker from '$lib/components/RulePicker.svelte';
 	import { identity } from '$lib/health.svelte';
 	import { restartScheduleOf } from '$lib/uptime';
@@ -267,6 +277,15 @@
 					: !canChat
 						? 'Saving needs the Chat capability as well as Automation: the rule whispers players.'
 						: '';
+			case 'chat_command':
+			case 'staff_call':
+				return !data.features.chat
+					? 'Needs a server that serves the in-game chat (WARDOGS Season 3 on): this one’s build does not.'
+					: !canReadChat
+						? 'Saving needs the Read chat capability as well as Automation: the rule has the panel read what players type. An owner of the organisation gives it to a role on the Roles tab.'
+						: !canChat
+							? 'Saving needs the Chat capability as well as Automation: the rule messages players.'
+							: '';
 			case 'empty_reset':
 			case 'restart_skip':
 				return canMatch
@@ -300,6 +319,8 @@
 	 */
 	let canKick = $derived(can(data.server.caps, 'players.kick'));
 	let canChat = $derived(can(data.server.caps, 'chat.send'));
+	/** a chat rule has the panel read what players type, which is for those who may read it */
+	let canReadChat = $derived(can(data.server.caps, 'chat.read'));
 	let canKill = $derived(can(data.server.caps, 'players.kill'));
 	let canBanHere = $derived(can(data.server.caps, 'bans.manage'));
 	/** a Rotation shuffle rule rewrites the rotation in the config document */
@@ -389,15 +410,21 @@
 				? 'Needs the kill feed'
 				: kind === 'bounty' || kind === 'death_whisper'
 					? 'Needs Chat'
-					: kind === 'risk_kick'
-						? 'Needs a Steam key'
-						: kind === 'seed_reward'
-							? 'Needs Reserved slots'
-							: kind === 'rotation_shuffle' || kind === 'live_name'
-								? 'Needs Config & settings'
-								: kind === 'empty_reset' || kind === 'restart_skip' || kind === 'weather_cycle'
-									? 'Needs Match control'
-									: '';
+					: kind === 'chat_command' || kind === 'staff_call'
+						? !data.features.chat
+							? 'Needs Season 3 chat'
+							: !canReadChat
+								? 'Needs Read chat'
+								: 'Needs Chat'
+						: kind === 'risk_kick'
+							? 'Needs a Steam key'
+							: kind === 'seed_reward'
+								? 'Needs Reserved slots'
+								: kind === 'rotation_shuffle' || kind === 'live_name'
+									? 'Needs Config & settings'
+									: kind === 'empty_reset' || kind === 'restart_skip' || kind === 'weather_cycle'
+										? 'Needs Match control'
+										: '';
 	/** A Bounty rule's texts until they are written: a slot is named, an announcement-only rule asks. */
 	const bountyTexts = (reward: 'slot' | 'none') =>
 		reward === 'slot'
@@ -596,6 +623,18 @@
 		lightOrder: string[];
 		lightOn: string[];
 		random: boolean;
+		/** a Chat command's word, its other words (spaces between), its lines and whom they go to */
+		command: string;
+		aliases: string;
+		replies: string;
+		replyTo: 'player' | 'everyone';
+		cooldownSeconds: number;
+		/** a Staff call's words (spaces between) and what it whispers back */
+		staffWords: string;
+		reportWords: string;
+		ack: string;
+		usage: string;
+		wait: string;
 	}
 	/** WARDOGS' factions, offered for Team balance; a name the game adds later can still be typed. */
 	const FACTIONS = ['Lonestar', 'Valkyra', 'Manticore'];
@@ -880,8 +919,31 @@
 				data.catalog.lightings.map((l) => l.id)
 			),
 			lightOn: Array.isArray(c.lightings) ? [...(c.lightings as string[])] : weatherPicks(),
-			random: b('random', false)
+			random: b('random', false),
+			command: s('command', COMMAND_STARTERS[0].command),
+			aliases: Array.isArray(c.aliases) ? (c.aliases as string[]).join(' ') : '',
+			replies: Array.isArray(c.replies)
+				? (c.replies as string[]).join('\n')
+				: COMMAND_STARTERS[0].replies,
+			replyTo: c.to === 'everyone' ? 'everyone' : 'player',
+			cooldownSeconds: n(
+				'cooldownSeconds',
+				kind === 'staff_call' ? STAFF_CALL_DEFAULTS.cooldownSeconds : 10
+			),
+			staffWords: (Array.isArray(c.commands)
+				? (c.commands as string[])
+				: STAFF_CALL_DEFAULTS.commands
+			).join(' '),
+			reportWords: (Array.isArray(c.reports)
+				? (c.reports as string[])
+				: STAFF_CALL_DEFAULTS.reports
+			).join(' '),
+			ack: s('ack', STAFF_CALL_DEFAULTS.ack),
+			usage: s('usage', STAFF_CALL_DEFAULTS.usage),
+			wait: s('wait', STAFF_CALL_DEFAULTS.wait)
 		};
+		// a new Chat command is named after its word
+		if (kind === 'chat_command' && !t) form.name = COMMAND_PREFIX + form.command;
 		dry = null;
 		pendingSel =
 			kind === 'empty_reset' && t
@@ -905,7 +967,9 @@
 						? 'Dry run, past players'
 						: kind === 'ping_kick' || kind === 'afk_watch'
 							? 'Check dry-run limits'
-							: 'Dry run, last 24 h';
+							: kind === 'chat_command' || kind === 'staff_call'
+								? 'Preview what it sends'
+								: 'Dry run, last 24 h';
 	const lines = (text: string) =>
 		text
 			.split(/[\n,]/)
@@ -1096,7 +1160,101 @@
 					random: f.random,
 					minPlayers: Number(f.minPlayers)
 				};
+			case 'chat_command':
+				return {
+					command: f.command,
+					aliases: words(f.aliases),
+					replies: f.replies.split('\n'),
+					to: f.replyTo,
+					cooldownSeconds: Number(f.cooldownSeconds)
+				};
+			case 'staff_call':
+				return {
+					commands: words(f.staffWords),
+					reports: words(f.reportWords),
+					ack: f.ack,
+					usage: f.usage,
+					wait: f.wait,
+					cooldownSeconds: Number(f.cooldownSeconds)
+				};
 		}
+	}
+	/** Command words as typed in one field: spaces or commas between, a "!" in front or not. */
+	const words = (text: string) => text.split(/[\s,]+/).filter(Boolean);
+	/** The same as players type them, for a rule's one line: "!rules !r". */
+	const typedWords = (list: unknown): string =>
+		(Array.isArray(list) ? (list as unknown[]) : [])
+			.map((w) => COMMAND_PREFIX + (commandWord(w) || String(w).replace(/^!/, '')))
+			.join(' ');
+	/** A new Chat command starts from one of these: the word, what it answers and to whom. */
+	const COMMAND_STARTERS: {
+		label: string;
+		command: string;
+		aliases: string;
+		replies: string;
+		cooldown: number;
+	}[] = [
+		{
+			label: 'Rules',
+			command: 'rules',
+			aliases: '',
+			replies:
+				'No team killing, no cheating, respect the staff, {name}.\nThe full rules are on our Discord.',
+			cooldown: 10
+		},
+		{
+			label: 'Discord',
+			command: 'discord',
+			aliases: 'dc',
+			replies: 'Join our Discord for events and support: discord.gg/your-invite',
+			cooldown: 10
+		},
+		{
+			label: 'Help',
+			command: 'help',
+			aliases: 'commands',
+			replies: 'Commands on {server}: {commands}',
+			cooldown: 10
+		},
+		{
+			label: 'My stats',
+			command: 'me',
+			aliases: 'stats',
+			replies:
+				'{name}: {kills} kills, {deaths} deaths, K/D {kd}, {playtime} played here. Rank: {rank}.',
+			cooldown: 30
+		},
+		{
+			label: 'Next map',
+			command: 'next',
+			aliases: 'maps',
+			replies: 'Up next: {next_map}. In rotation: {rotation}',
+			cooldown: 10
+		},
+		{
+			label: 'Score',
+			command: 'score',
+			aliases: 'balance',
+			replies: 'Score: {scores}, first to {cap}. Players: {teams}',
+			cooldown: 10
+		},
+		{
+			label: 'Top players',
+			command: 'top',
+			aliases: '',
+			replies: 'Top of {server}: {top}',
+			cooldown: 30
+		}
+	];
+	/** Fills a Chat command's form from a starter; the name follows while it is still a word's. */
+	function startFrom(f: Form, st: (typeof COMMAND_STARTERS)[number]) {
+		if (f.name === COMMAND_PREFIX + f.command || !f.name.trim())
+			f.name = COMMAND_PREFIX + st.command;
+		f.command = st.command;
+		f.aliases = st.aliases;
+		f.replies = st.replies;
+		f.replyTo = 'player';
+		f.cooldownSeconds = st.cooldown;
 	}
 
 	async function run(fn: () => Promise<unknown>, done: string) {
@@ -1373,6 +1531,34 @@
 							: ls.map((l) => lightingLabel(data.catalog, l)).join(' → ');
 				return `${which} · every ${c.everyMinutes} min · at least ${c.minPlayers} on`;
 			}
+			case 'chat_command': {
+				const also = typedWords(c.aliases);
+				const n = Array.isArray(c.replies) ? c.replies.filter((r) => String(r).trim()).length : 0;
+				const secs = Number(c.cooldownSeconds) || 0;
+				return [
+					`${typedWords([c.command])}${also ? ` (also ${also})` : ''}`,
+					`${n} line${n === 1 ? '' : 's'} ${c.to === 'everyone' ? 'said to everyone' : 'whispered to the player'}`,
+					secs
+						? c.to === 'everyone'
+							? `at most once every ${secs} s`
+							: `each player at most every ${secs} s`
+						: ''
+				]
+					.filter(Boolean)
+					.join(' · ');
+			}
+			case 'staff_call': {
+				const calls = typedWords(c.commands);
+				const reports = typedWords(c.reports);
+				return [
+					calls ? `${calls} to Discord` : '',
+					reports ? `${reports} with the player named` : '',
+					`a player's calls at least ${c.cooldownSeconds} s apart`,
+					c.ack ? 'whispers back' : ''
+				]
+					.filter(Boolean)
+					.join(' · ');
+			}
 		}
 	}
 </script>
@@ -1380,7 +1566,9 @@
 <p class="mb-4 text-[13px] text-mist-400">
 	Rules act on {data.server.demo ? 'the demo server' : 'this server'} as things happen: a join, a kill,
 	a quiet hour. Every action is recorded below and in the audit trail as
-	<span class="chip">trigger</span>, but for a Death whisper that went, which is only below.
+	<span class="chip">trigger</span>, but for a Death whisper that went, which is only below, and
+	what the chat rules answer, which is recorded nowhere: the panel keeps nothing of what players
+	type.
 </p>
 
 <div class="mb-3 flex flex-wrap items-start gap-3">
@@ -1533,6 +1721,50 @@
 									· {needs(t.kind)}{/if}
 							{/if}
 						</div>
+					{:else if CHAT_KINDS.includes(t.kind)}
+						<!-- A chat rule queues no actions: its row says what it waits for, that its calls
+						     reach nobody, that its last answer did not go out, or how often it answered. Never
+						     who typed what. -->
+						{@const lost = t.kind === 'staff_call' && !data.staffHooks}
+						{@const unsent = t.lastResult.startsWith(NOT_ANSWERED)}
+						<div
+							class="mt-0.5 text-[12px] {t.enabled &&
+							(t.chatWait || lost || unsent || !data.features.chat)
+								? 'text-warn'
+								: 'text-mist-600'}"
+						>
+							{#if !t.enabled}
+								Off · {#if t.lastFiredAt}last answered <span title={fmtTime(t.lastFiredAt)}
+										>{fmtAgo(t.lastFiredAt, now)}</span
+									>{:else}never answered{/if}
+							{:else if !data.features.chat || t.chatWait === 'build'}
+								Waiting: this server's build does not serve the in-game chat
+							{:else if t.chatWait === 'terms'}
+								Waiting: the game's chat terms have not been accepted on this server{#if canReadChat}
+									·
+									<a class="text-accent underline" href="/server/{encodeURIComponent(id)}/chat"
+										>Chat tab</a
+									>{/if}
+							{:else if t.chatWait === 'failing'}
+								Waiting: the chat cannot be read right now · it answers again once it can
+							{:else if lost}
+								No working Discord webhook takes Staff calls for this server, so a call reaches
+								nobody · under Organisation → Webhooks an owner ticks the box on one, or mends the
+								one Discord refuses
+							{:else if unsent}
+								{t.lastResult}{#if t.lastFiredAt}
+									· last answered <span title={fmtTime(t.lastFiredAt)}
+										>{fmtAgo(t.lastFiredAt, now)}</span
+									>{/if}
+							{:else if t.lastFiredAt}
+								{t.kind === 'staff_call' ? 'Last call passed on' : 'Answered'}
+								<span title={fmtTime(t.lastFiredAt)}>{fmtAgo(t.lastFiredAt, now)}</span>
+								· {t.fireCount}
+								{t.kind === 'staff_call' ? 'call' : 'time'}{t.fireCount === 1 ? '' : 's'} so far
+							{:else}
+								Not used yet · nothing a player types is kept
+							{/if}
+						</div>
 					{:else}
 						<!-- One of five shapes, most urgent first: failing, off, waiting on a silent kill feed, fired, never fired. -->
 						<div
@@ -1630,10 +1862,10 @@
 	{/each}
 </div>
 
-{#snippet placeholders(kind: TriggerKind, texts: string[])}
-	{@const odd = unfilled(texts, kind)}
+{#snippet placeholders(kind: TriggerKind, texts: string[], said: boolean = false)}
+	{@const odd = unfilled(texts, kind, said)}
 	<div class="space-y-1 text-[12px] text-mist-600">
-		{#each placeholdersFor(kind) as g (g.key)}
+		{#each placeholdersFor(kind, said) as g (g.key)}
 			<div class="flex items-baseline gap-1">
 				<span class="w-16 shrink-0">{GROUP_LABELS[g.key]}</span>
 				<div class="flex flex-wrap gap-1">
@@ -1663,7 +1895,9 @@
 					? 'Next shuffle'
 					: r.kind === 'restart_skip'
 						? 'Next restart'
-						: 'Dry run'} · {title}</span
+						: r.kind === 'chat_command' || r.kind === 'staff_call'
+							? 'Preview'
+							: 'Dry run'} · {title}</span
 		>
 		{#if r.kind === 'restart_notice'}
 			<span
@@ -1688,6 +1922,8 @@
 			>
 		{:else if r.kind === 'afk_watch'}
 			<span>Nothing to replay</span>
+		{:else if r.kind === 'chat_command' || r.kind === 'staff_call'}
+			<span>What it would send</span>
 		{:else if r.kind === 'death_whisper'}
 			<span
 				>Replayed the last 24 h on this server: would have whispered <b
@@ -1776,6 +2012,13 @@
 		>
 			<p class="-mt-2 text-[13px] text-mist-400">{blurb(f.kind)}</p>
 			{#if needs(f.kind)}<p class="note mb-0 text-warn">{needs(f.kind)}</p>{/if}
+			{#if f.kind === 'staff_call' && !data.staffHooks}
+				<p class="note mb-0 text-warn">
+					No working Discord webhook takes Staff calls for this server, so a call would reach nobody
+					and the player is told nothing. Under Organisation → Webhooks an owner ticks
+					<b>Staff calls</b> on one, or mends the one Discord refuses (a test card there shows which).
+				</p>
+			{/if}
 			<!-- Hidden, not unmounted, while the dry run shows: the map picker keeps its choice. -->
 			<div class="space-y-3" class:hidden={dry && dryFor === 'form'}>
 				<div class="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
@@ -3471,6 +3714,209 @@
 						it. It lapses if the player leaves or the match ends, and saving the rule calls off one
 						in progress. A claimer who already holds a slot keeps whichever lasts longer. Kills come
 						from the game's kill feed.
+					</p>
+				{:else if f.kind === 'chat_command'}
+					{#if !f.id}
+						<div class="flex flex-wrap items-center gap-1.5 text-[12px] text-mist-600">
+							<span class="mr-1">Start from</span>
+							{#each COMMAND_STARTERS as st (st.command)}
+								<button
+									type="button"
+									class="chip cursor-pointer text-mist-100 transition hover:bg-white/12"
+									onclick={() => startFrom(f, st)}>{st.label}</button
+								>
+							{/each}
+						</div>
+					{/if}
+					<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+						<label class="block"
+							><span class="field-label">Players type</span>
+							<span class="flex items-center gap-1.5"
+								><span class="font-mono text-mist-400">{COMMAND_PREFIX}</span><input
+									class="input font-mono"
+									type="text"
+									data-plain
+									bind:value={f.command}
+									maxlength={MAX_COMMAND_WORD + 1}
+									placeholder="rules"
+									autocapitalize="off"
+									spellcheck="false"
+									aria-label="The word players type"
+									required
+								/></span
+							></label
+						>
+						<label class="block"
+							><span class="field-label"
+								>Also answers to <span class="text-mist-600">(optional)</span></span
+							><input
+								class="input font-mono"
+								type="text"
+								data-plain
+								bind:value={f.aliases}
+								placeholder="r regeln"
+								autocapitalize="off"
+								spellcheck="false"
+								aria-label="Other words, spaces between"
+							/></label
+						>
+					</div>
+					<fieldset class="space-y-2">
+						<legend class="field-label"
+							>Reply, up to {MAX_COMMAND_REPLIES} lines, each a message of its own</legend
+						>
+						<textarea class="min-h-[84px] input" bind:value={f.replies} required></textarea>
+						{@render placeholders('chat_command', [f.replies], f.replyTo === 'everyone')}
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Goes to</legend>
+						<label class="flex items-center gap-2"
+							><input
+								type="radio"
+								name="replyTo"
+								value="player"
+								bind:group={f.replyTo}
+								onchange={() => {
+									if (Number(f.cooldownSeconds) === 60) f.cooldownSeconds = 10;
+								}}
+							/> the player who typed it, as a whisper</label
+						>
+						<label class="flex items-center gap-2"
+							><input
+								type="radio"
+								name="replyTo"
+								value="everyone"
+								bind:group={f.replyTo}
+								onchange={() => {
+									if (Number(f.cooldownSeconds) < 60) f.cooldownSeconds = 60;
+								}}
+							/> everyone, as a broadcast</label
+						>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-1">
+							At most once every
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min={f.replyTo === 'everyone' ? 10 : 0}
+								max="3600"
+								bind:value={f.cooldownSeconds}
+								aria-label="At most once every, seconds"
+								required
+							/>
+							s {f.replyTo === 'everyone' ? 'for the whole server' : 'to each player'}
+						</div>
+					</fieldset>
+					<p class="note">
+						The panel reads the chat every couple of seconds while this server has a chat rule on,
+						and answers a line that is {COMMAND_PREFIX}{commandWord(f.command) || 'word'} in any channel;
+						a word is letters and digits, up to {MAX_COMMAND_WORD}, with up to
+						{MAX_COMMAND_ALIASES} others. Nothing after the word is repeated back, so a command cannot
+						make the server say a player's words. {'{commands}'} lists this server's words,
+						{'{teams}'} the players on each side, {'{next_map}'} and {'{rotation}'} come from the server's
+						rotation, {'{rank}'} and {'{top}'} from its all-time board by kills. Said to everyone, a player
+						in anonymous mode goes by the name the other players see, and their SteamID, ping, stats and
+						rank are left out. A name is one a player chose, said in the server's voice whenever they
+						ask, so leave {'{name}'} out of a broadcast or keep such names off with the Name filter. A
+						player gets six answers a minute at most.
+					</p>
+					<p class="note">
+						Nothing a player types is kept: not the lines that are no command, and not who used this
+						one. The rule's row only counts how often it answered.
+					</p>
+				{:else if f.kind === 'staff_call'}
+					<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+						<label class="block"
+							><span class="field-label">Words that call staff</span><input
+								class="input font-mono"
+								type="text"
+								data-plain
+								bind:value={f.staffWords}
+								placeholder="admin"
+								autocapitalize="off"
+								spellcheck="false"
+							/>
+							<span class="mt-1 block text-[12px] text-mist-600"
+								>{COMMAND_PREFIX}admin he is stuck under the map at B</span
+							></label
+						>
+						<label class="block"
+							><span class="field-label">Words that report a player</span><input
+								class="input font-mono"
+								type="text"
+								data-plain
+								bind:value={f.reportWords}
+								placeholder="report"
+								autocapitalize="off"
+								spellcheck="false"
+							/>
+							<span class="mt-1 block text-[12px] text-mist-600"
+								>{COMMAND_PREFIX}report owl shooting teammates at spawn</span
+							></label
+						>
+					</div>
+					<fieldset class="space-y-2">
+						<legend class="field-label"
+							>Whisper back once the call is on its way to Discord, blank for none</legend
+						>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.ack}
+							maxlength={MAX_CHAT}
+							aria-label="Whisper back once the call is on its way to Discord"
+						/>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">When nothing follows the word, blank for none</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.usage}
+							maxlength={MAX_CHAT}
+							aria-label="Whisper when nothing follows the word"
+						/>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">When they call again too soon, blank for none</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.wait}
+							maxlength={MAX_CHAT}
+							aria-label="Whisper when they call again too soon"
+						/>
+					</fieldset>
+					{@render placeholders('staff_call', [f.ack, f.usage, f.wait])}
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">How often</legend>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+							One player's calls at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="10"
+								max="3600"
+								bind:value={f.cooldownSeconds}
+								aria-label="One player's calls at least, seconds apart"
+								required
+							/>
+							s apart
+						</div>
+					</fieldset>
+					<p class="note">
+						What follows the word goes to your Discord as a card: who sent it, with their SteamID
+						and a link to their page, what they wrote, the server, map and chat channel. A report is
+						looked up among the players on: a SteamID or a whole name at its start names the player;
+						the start of a name, or part of one, is a guess and the card says so; nobody when more
+						than one fits. The whisper back says the call is on its way, not that anyone has read
+						it: a card Discord does not take is not sent again. Up to {MAX_STAFF_WORDS}
+						words in all, letters and digits. {'{command}'} is the word they typed, {'{seconds}'} what
+						is left of their wait.
+					</p>
+					<p class="note">
+						The card is the one thing typed in chat that the panel passes on, to your own staff
+						channel, because the player asked for it. The panel itself keeps none of it: no audit
+						row, nothing on the player's page.
 					</p>
 				{/if}
 

@@ -589,7 +589,9 @@ export type TriggerKind =
 	| 'live_name'
 	| 'restart_skip'
 	| 'weather_cycle'
-	| 'death_whisper';
+	| 'death_whisper'
+	| 'chat_command'
+	| 'staff_call';
 
 export interface TriggerView {
 	id: string;
@@ -616,6 +618,12 @@ export interface TriggerView {
 		since: string | null;
 		restored: boolean;
 	} | null;
+	/**
+	 * a chat rule's standing ($lib/rule-kinds CHAT_KINDS): what it waits for before it can read the
+	 * chat ('' when it reads it): the game's chat terms to be accepted, a build that serves the chat,
+	 * or a read that keeps failing to succeed; null until the worker has looked
+	 */
+	chatWait?: '' | 'terms' | 'build' | 'failing' | null;
 }
 
 export interface DryRunResult {

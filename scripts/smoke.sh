@@ -128,6 +128,11 @@ else
   check chat-accept-wrong 'terms_version_mismatch' "$(req $J1 POST /api/servers/$SID/rcon/chatTermsAccept '{"version":9}')"
   check chat-accept 'Chat terms version 1 accepted' "$(req $J1 POST /api/servers/$SID/rcon/chatTermsAccept '{"version":1}')"
   check chat-read '"lines":[{"seq"' "$(req $J1 GET /api/servers/$SID/rcon/chat)"
+  # A Chat command answers a word typed in chat. The worker reads the chat for it from now on (the
+  # demo's players type "!rules" every half minute); its answer is checked at the end.
+  R=$(req $J1 POST /api/servers/$SID/triggers '{"kind":"chat_command","name":"!rules","enabled":true,"config":{"command":"rules","replies":["Smoke rules for {name}"]}}'); check chat-command-create '"kind":"chat_command"' "$R"
+  check chat-command-word-taken 'already answered by the rule' "$(req $J1 POST /api/servers/$SID/triggers '{"kind":"staff_call","enabled":true,"config":{"commands":"rules"}}')"
+  check chat-command-preview '!rules → the player: Smoke rules for Player' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"chat_command","config":{"command":"rules","replies":["Smoke rules for {name}"]}}')"
 fi
 check raw-no-chat 'use_chat' "$(req $J1 POST /api/servers/$SID/rcon/raw '{"method":"GET","path":"/v1/chat"}')"
 check raw-blocked-path 'must start with /v1/' "$(req $J1 POST /api/servers/$SID/rcon/raw '{"method":"GET","path":"/etc/passwd"}')"
@@ -396,6 +401,14 @@ check analytics-page '200' "$(pagecode $J1 "/server/$SID/analytics")"
 for i in $(seq 1 30); do R=$(req $J1 GET '/api/audit?action=trigger.welcome&limit=5'); [[ "$R" == *'"action":"trigger.welcome"'* ]] && break; sleep 3; done
 check trigger-fired '"action":"trigger.welcome"' "$R"
 check trigger-firecount '"fireCount":' "$(req $J1 GET /api/servers/$SID/triggers | grep -o '"fireCount":[1-9]' | head -1)"
+if [ "$LIVE" != 1 ]; then
+  # The Chat command made above: the game was sent its reply as a whisper, in the look that read
+  # the "!rules", and nothing recorded who asked: no action under Recent actions, no audit row.
+  for i in $(seq 1 30); do R=$(req $J1 GET "/api/servers/$SID/rcon/serverLog?limit=500"); [[ "$R" == *'Smoke rules for '* ]] && break; sleep 3; done
+  check chat-command-answered 'Smoke rules for ' "$R"
+  check chat-command-no-action '0' "$(req $J1 GET /api/servers/$SID/outbox | grep -c 'chat_command')"
+  check chat-command-no-audit '0' "$(req $J1 GET '/api/audit?action=trigger.chat_command&limit=5' | grep -c '"action":"trigger.chat_command"')"
+fi
 req $J1 DELETE /api/servers/$SID/triggers/$TID2 >/dev/null; req $J1 DELETE /api/servers/$SID/triggers/$TID3 >/dev/null
 
 echo "== pages (owner)"
