@@ -17,13 +17,20 @@ const NOV = '2026-11-01T00:00:00.000Z';
 const at = (iso: string) => Date.parse(iso);
 
 describe('seasons', () => {
-	test('the official list starts with the release and Season 2 at its launch', () => {
-		expect(OFFICIAL_SEASONS.slice(0, 2)).toEqual([
+	test('the official list starts with the release, then Seasons 2 and 3 at their launches', () => {
+		expect(OFFICIAL_SEASONS.slice(0, 3)).toEqual([
 			{ key: 'wardogs-1', name: 'Season 1', startsAt: '2026-09-10T00:00:00.000Z' },
-			{ key: 'wardogs-2', name: 'Season 2', startsAt: '2026-10-15T16:00:00.000Z' }
+			{ key: 'wardogs-2', name: 'Season 2', startsAt: '2026-10-15T16:00:00.000Z' },
+			{ key: 'wardogs-3', name: 'Season 3', startsAt: '2026-11-12T08:00:00.000Z' }
 		]);
 		const chain = chainSeasons('official', OFFICIAL_SEASONS);
 		expect(chain[0].endsAt).toBe('2026-10-15T16:00:00.000Z');
+		expect(chain[1].endsAt).toBe('2026-11-12T08:00:00.000Z');
+		// Season 2 is the one running up to the millisecond Season 3 launches
+		const launch = at('2026-11-12T08:00:00.000Z');
+		expect(currentSeason(chain, 'official', launch - 1)?.key).toBe('wardogs-2');
+		expect(currentSeason(chain, 'official', launch)?.key).toBe('wardogs-3');
+		expect(isFinished(chain[1], launch)).toBe(true);
 	});
 
 	test('each season of a kind runs until the next one starts, in start order', () => {
@@ -76,6 +83,8 @@ describe('seasons', () => {
 		// the official Season 2 starts mid-day: its UTC day is the 15th
 		const s2 = chainSeasons('official', OFFICIAL_SEASONS)[1];
 		expect(seasonSpan(s2, at('2026-10-20T00:00:00.000Z'))).toBe('since 15 Oct 2026');
+		// and it ended mid-day too, when Season 3 launched
+		expect(seasonSpan(s2, at('2026-11-12T08:00:00.000Z'))).toBe('15 Oct – 12 Nov 2026');
 	});
 });
 
