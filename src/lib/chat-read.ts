@@ -2,7 +2,10 @@
 // (and on its event feed, which sends nothing until they are accepted) and the chat lines
 // themselves, each kept to the fields below. The lines are players' messages, shown to the people
 // who moderate a server under those terms. They go from the game to the reader's page and are kept
-// nowhere: no table, no audit detail, no webhook, no worker memory.
+// nowhere: no table, no audit detail, no webhook, no worker memory. The worker reads them as well,
+// on a server with a chat rule switched on, to answer the lines that are commands of that server
+// (server/chat-look.ts): it holds no line between two reads, and what a player sends staff through
+// a Staff call is the one thing passed on, to the organisation's own Discord.
 //
 // Shapes from the official console's Season 3 client and its field notes (2026-11-12); not yet seen
 // on a live server:

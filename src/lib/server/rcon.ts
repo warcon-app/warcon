@@ -115,11 +115,13 @@ export class WardogsClient {
 		return new WardogsClient(env, server, key, demo ? server.id : null, undefined, addresses);
 	}
 
+	/** `timeoutMs`: how long this one request may take, when it is to be less than the client's. */
 	async raw(
 		method: string,
 		path: string,
 		body?: string,
-		headers: Record<string, string> = {}
+		headers: Record<string, string> = {},
+		timeoutMs?: number
 	): Promise<GameResponse> {
 		const all = { Authorization: `Bearer ${this.key}`, ...headers };
 		if (this.demoKey) {
@@ -131,7 +133,7 @@ export class WardogsClient {
 				path,
 				headers: all,
 				body,
-				timeoutMs: this.timeoutMs,
+				timeoutMs: timeoutMs ? Math.min(timeoutMs, this.timeoutMs) : this.timeoutMs,
 				insecureTls: flag(this.env.GAME_TLS_INSECURE, false)
 			});
 		} catch (err) {
@@ -143,7 +145,12 @@ export class WardogsClient {
 	}
 
 	// JSON in, JSON out. Throws GameError with the server's message on non-2xx.
-	async json<T = any>(method: string, path: string, body?: unknown): Promise<T> {
+	async json<T = any>(
+		method: string,
+		path: string,
+		body?: unknown,
+		timeoutMs?: number
+	): Promise<T> {
 		const headers: Record<string, string> = {};
 		if (body !== undefined) {
 			headers['Content-Type'] = 'application/json';
@@ -152,7 +159,8 @@ export class WardogsClient {
 			method,
 			path,
 			body === undefined ? undefined : JSON.stringify(body),
-			headers
+			headers,
+			timeoutMs
 		);
 		const parsed = parseJson(res.text);
 		if (res.status < 200 || res.status >= 300) {

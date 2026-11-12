@@ -45,6 +45,7 @@ import {
 	forgetNameChange
 } from './feed-events';
 import { forgetBounties } from './bounty';
+import { forgetChat } from './chat-look';
 import { startAliasFill } from './aliases';
 import { forLog, publicMessage } from './http';
 import * as metrics from './metrics';
@@ -248,6 +249,7 @@ async function beat(env: Env): Promise<void> {
 			forgetKillDistance();
 			forgetNameChange();
 			forgetDeathWhispers();
+			forgetChat();
 		}
 		// Once, in the background: the names the kill feed showed before they were recorded (a fill
 		// that did not finish is tried again a while later).
@@ -302,6 +304,7 @@ async function refreshRoster(env: Env, s: Scheduler, now: number): Promise<void>
 			forgetNameChange(m.server.id);
 			forgetDeathWhispers(m.server.id);
 			forgetBounties(m.server.id);
+			forgetChat(m.server.id);
 		}
 	if (now - s.expiryAt >= EXPIRY_MS) {
 		s.expiryAt = now;

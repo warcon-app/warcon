@@ -55,7 +55,7 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
 	},
 	'chat.read': {
 		label: 'Read chat',
-		hint: "Read the in-game chat as players type it, to moderate the server, once an owner has accepted the game's chat terms. Nothing of it is kept.",
+		hint: "Read the in-game chat as players type it, to moderate the server, once an owner has accepted the game's chat terms; and save the rules that answer what players type. Nothing of it is kept.",
 		group: 'read'
 	},
 	'chat.send': {
@@ -177,7 +177,8 @@ const OPERATOR: Capability[] = [
 /**
  * Capabilities an API key never holds, whatever its row says. Players' chat is shown to the people
  * who moderate a server, under the game's chat terms (it is not to be recorded, stored or
- * exported), so it is not handed to a program.
+ * exported), so it is not handed to a program. Nor does a key save a rule that has the panel read
+ * the chat (a Chat command, a Staff call): saving one needs this capability (server/triggers.ts).
  */
 export const PEOPLE_ONLY: readonly Capability[] = ['chat.read'];
 

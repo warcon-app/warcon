@@ -27,7 +27,8 @@ export const WEBHOOK_EVENTS = [
 	'auth',
 	'teamkills',
 	'watched',
-	'bounties'
+	'bounties',
+	'staffcalls'
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
@@ -39,7 +40,9 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
 	auth: 'Sign-ins and sign-in failures',
 	teamkills: 'Team kills (from the kill feed)',
 	watched: 'Watched players joining',
-	bounties: "Bounties (set, claimed and lapsed, for a players' channel)"
+	bounties: "Bounties (set, claimed and lapsed, for a players' channel)",
+	staffcalls:
+		'Staff calls (what a player sends staff with !admin or !report, from a Staff call rule)'
 };
 
 /** Which event class an audit row belongs to. */
@@ -172,6 +175,10 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.live_name': 'Trigger · live server name',
 	'trigger.weather_cycle': 'Trigger · weather cycle',
 	'trigger.death_whisper': 'Trigger · death whisper',
+	// the chat rules queue no actions (their answers go out in the look), so no card carries these
+	// two; they are named as every kind is
+	'trigger.chat_command': 'Trigger · chat command',
+	'trigger.staff_call': 'Trigger · staff call',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',
@@ -189,7 +196,9 @@ const ACTION_TITLES: Record<string, string> = {
 	'login.failed': 'Sign-in failed'
 };
 
-const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+/** Cut to `n` characters, never through the middle of one: half an emoji is no text to Discord. */
+const clip = (s: string, n: number) =>
+	s.length > n ? s.slice(0, n - 1).replace(/[\uD800-\uDBFF]$/, '') + '…' : s;
 /** Text from outside (a player's name, a rule's result) as it reads: no link, markdown or mention,
  *  on one line so nothing it holds starts a heading or a quote, and no address Discord would make
  *  a link of (a zero-width space after the scheme's colon). */
@@ -360,6 +369,132 @@ export async function notifyBounty(
 	}
 }
 
+const STAFF_CALL_COLOR = 0xe07a3a;
+
+/**
+ * What a player sent staff through a Staff call rule ($lib/server/chat-rules): the one thing typed
+ * in the game's chat that the panel passes on, to the organisation's own staff channel, at the
+ * player's own asking. It is built here and posted, and kept nowhere in the panel.
+ */
+export interface StaffCallCard {
+	/** when the panel read it (ISO) */
+	at: string;
+	/** the word typed, without the "!": one of the rule's own, letters and digits */
+	word: string;
+	/** the word reports a player: `about` is who the text names, when someone on the server fits */
+	report: boolean;
+	/** what followed the word, as the other players saw it (as typed, where the game's filter
+	 *  left no command of the line) */
+	text: string;
+	/** the chat channel it was typed in */
+	channel: string;
+	caller: { steamId: string; name: string; hiddenName: string; anonymous: boolean };
+	/** `guess`: '' when the text names the player outright, else what they were guessed from */
+	about: { steamId: string; name: string; guess: string } | null;
+	/** the map's id, as the game names it */
+	map: string;
+	/** how many were on */
+	players: number;
+}
+
+/** One staff call as an embed: who sent it, what they wrote, whom a report names, and where. */
+export function buildStaffCallEmbed(
+	appName: string,
+	origin: string | undefined,
+	server: { id: string; name: string },
+	c: StaffCallCard
+): Embed {
+	// What a player typed or named themselves, straight from the game, beside a link of the card's
+	// own: text as `plain` has it, and no parenthesis of theirs either, so nothing they write ends
+	// the link or starts another; a stray half of a character pair (which Discord refuses the whole
+	// message for) becomes a mark.
+	const text = (s: string, n: number) =>
+		plain(s.replace(/\p{Cs}/gu, '\uFFFD'), n).replace(/[()]/g, '\\$&');
+	// a name is a link to the player's page where the panel knows its own address
+	const who = (p: { steamId: string; name: string }) => {
+		const url = dossierUrl(origin, server.id, p.steamId);
+		const name = `**${text(p.name || p.steamId, 60)}**`;
+		return `${url ? `[${name}](${url})` : name} ${code(p.steamId, 20)}`;
+	};
+	const anon = c.caller.anonymous
+		? ` · anonymous${c.caller.hiddenName ? `, shown as ${text(c.caller.hiddenName, 60)}` : ''}`
+		: '';
+	// a report's player: named outright, or a guess that says what it was guessed from
+	const about = !c.report
+		? ''
+		: !c.about
+			? 'About: no player on the server fits the name given'
+			: c.about.guess
+				? `Perhaps about: ${who(c.about)} · guessed from "${text(c.about.guess, 40)}"`
+				: `About: ${who(c.about)}`;
+	const lines = [
+		`${who(c.caller)}${anon}`,
+		c.text ? `> ${text(c.text, 500)}` : '',
+		about,
+		`Server: ${text(server.name, 80)}${c.map ? ` · ${text(mapName(c.map), 40)}` : ''} · ${c.players} on${c.channel ? ` · ${text(c.channel, 24)} chat` : ''}`
+	].filter(Boolean);
+	return {
+		// the word is the rule's own (letters and digits): safe in a title, which is not escaped
+		title: `${c.report ? 'Player report' : 'Staff call'} · !${c.word.replace(/[^a-z0-9]/gi, '')}`,
+		description: clip(lines.join('\n'), 2000),
+		color: STAFF_CALL_COLOR,
+		timestamp: c.at,
+		footer: { text: appName }
+	};
+}
+
+/**
+ * Discord's answers that say a webhook is gone (404) or its address no longer holds (401). Nothing
+ * sent to one arrives until an owner gives it a new address or a test card gets through. A 403 is
+ * not among them: it can be an answer to something else (an edit, a block in front of Discord),
+ * and a webhook wrongly counted out stays out until someone looks.
+ */
+const REFUSED_FOR_GOOD = new Set([401, 404]);
+
+/**
+ * The org's webhooks that take Staff calls for this server, less any Discord last refused for good:
+ * a call sent there reaches nobody, and the rule must not tell the player otherwise.
+ */
+async function staffCallHooksOf(
+	env: Env,
+	server: { id: string; orgId: string }
+): Promise<WebhookRow[]> {
+	return hooksFor(await enabledWebhooks(env, server.orgId), 'staffcalls', server.id).filter(
+		(hook) => !REFUSED_FOR_GOOD.has(hook.lastStatus ?? 0)
+	);
+}
+
+/** How many Discord webhooks would carry a staff call from this server: a Staff call rule says so. */
+export async function staffCallHooks(
+	env: Env,
+	server: { id: string; orgId: string }
+): Promise<number> {
+	return (await staffCallHooksOf(env, server)).length;
+}
+
+/**
+ * Queues a staff call for the org's webhooks with Staff calls ticked for the server, and says for
+ * how many (0: nobody will be told, and the rule does not tell the player otherwise). The card
+ * goes out a moment later, with the queue's next message; one Discord then refuses is not sent
+ * again, and a webhook it refuses for good counts as none from the next call on. Never throws.
+ */
+export async function notifyStaffCall(
+	env: Env,
+	server: { id: string; orgId: string; name: string },
+	card: StaffCallCard
+): Promise<number> {
+	try {
+		const hooks = await staffCallHooksOf(env, server);
+		if (!hooks.length) return 0;
+		const embed = buildStaffCallEmbed(env.APP_NAME || 'Warcon', env.ORIGIN, server, card);
+		for (const hook of hooks) enqueue(env, hook, embed);
+		return hooks.length;
+	} catch (err) {
+		console.error('[warcon] webhook staff calls', forLog(err));
+		return 0;
+	}
+}
+
 /** The player's page in the panel, for a staff post about one player; none without an origin. */
 export function dossierUrl(origin: string | undefined, serverId: string, steamId: string) {
 	if (!origin || !/^\d{17}$/.test(steamId)) return undefined;
@@ -464,6 +599,8 @@ async function flush(env: Env, hook: WebhookRow, q: Queue): Promise<void> {
 		const batch = nextBatch(q.embeds);
 		const result = await postDiscord(env, hook, { embeds: batch });
 		await recordResult(env, hook.id, result);
+		// gone for good: whoever counts on this webhook (a Staff call) reads its row again
+		if (REFUSED_FOR_GOOD.has(result.status)) invalidateWebhookCache(hook.orgId);
 		if (result.retryAfterMs) {
 			q.embeds.unshift(...batch);
 			await new Promise((r) => setTimeout(r, result.retryAfterMs));

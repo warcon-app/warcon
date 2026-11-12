@@ -65,6 +65,9 @@ interface MessageRule {
 	 *  said to the whole server (a Bounty's), so it has no org-wide stats: staff of this server may
 	 *  not see the organisation's other servers, and a player's are told to them alone */
 	kept?: boolean;
+	/** its messages are about something else than how the player plays (a Staff call's): it offers
+	 *  no stats, and none is read for it */
+	noStats?: boolean;
 }
 
 /** Every rule that sends a message or a kick reason. */
@@ -105,6 +108,20 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 		own: ['target', 'streak', 'reward', 'days', 'until'],
 		player: true,
 		kept: true
+	},
+	// a reply to a word a player typed in chat: this server's words, how many are on each side, the
+	// map up next and the maps in turn, the player's place on this server's board and its first three
+	chat_command: {
+		fields: ['replies'],
+		own: ['commands', 'teams', 'next_map', 'rotation', 'rank', 'top'],
+		player: true
+	},
+	// the word the player typed (one of the rule's own), and the seconds left before their next call
+	staff_call: {
+		fields: ['ack', 'usage', 'wait'],
+		own: ['command', 'seconds'],
+		player: true,
+		noStats: true
 	}
 };
 
@@ -115,8 +132,12 @@ export interface PlaceholderGroup {
 	names: string[];
 }
 
-/** What a rule's messages fill, in the groups the editor shows; a name appears once, in its first. */
-export function placeholdersFor(kind: TriggerKind): PlaceholderGroup[] {
+/**
+ * What a rule's messages fill, in the groups the editor shows; a name appears once, in its first.
+ * `said`: the text is said to the whole server (a Chat command's reply to everyone), so it has no
+ * org-wide stats, as a rule whose text is `kept` has none.
+ */
+export function placeholdersFor(kind: TriggerKind, said = false): PlaceholderGroup[] {
 	const r = MESSAGE_RULES[kind];
 	if (!r) return [];
 	const taken = new Set(r.own);
@@ -125,8 +146,8 @@ export function placeholdersFor(kind: TriggerKind): PlaceholderGroup[] {
 	if (r.player)
 		groups.push(
 			{ key: 'player', names: rest(PLAYER_PLACEHOLDERS) },
-			{ key: 'stats', names: rest(STATS_PLACEHOLDERS) },
-			{ key: 'org', names: r.kept ? [] : rest(ORG_STATS_PLACEHOLDERS) }
+			{ key: 'stats', names: r.noStats ? [] : rest(STATS_PLACEHOLDERS) },
+			{ key: 'org', names: r.kept || r.noStats || said ? [] : rest(ORG_STATS_PLACEHOLDERS) }
 		);
 	groups.push({ key: 'server', names: rest(SERVER_PLACEHOLDERS) });
 	return groups.filter((g) => g.names.length);
@@ -144,8 +165,8 @@ export const canonical = (name: string): string => {
 };
 
 /** The placeholders in these texts that the rule's messages do not fill, as typed, each once. */
-export function unfilled(texts: string[], kind: TriggerKind): string[] {
-	const filled = new Set(placeholdersFor(kind).flatMap((g) => g.names));
+export function unfilled(texts: string[], kind: TriggerKind, said = false): string[] {
+	const filled = new Set(placeholdersFor(kind, said).flatMap((g) => g.names));
 	const out = new Map<string, string>();
 	for (const text of texts)
 		for (const [token, name] of text.matchAll(TOKEN))
