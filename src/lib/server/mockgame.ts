@@ -85,22 +85,30 @@ interface State {
 	feedReport: Record<string, unknown> | null;
 }
 
+// Season 3 adds the map Sabatulo (id Russia, game mode Moscow_KOTH_01) and the modifier Limited
+// Gear, which every map offers. A real server lists them only once its hosting provider has put
+// them on its allow lists; the demo has them.
 const MAPS = [
 	{ id: 'Kavkazi', displayName: 'Bakurani' },
 	{ id: 'Europe', displayName: 'Ozeti' },
-	{ id: 'NorthAmerica', displayName: 'Zestafona' }
+	{ id: 'NorthAmerica', displayName: 'Zestafona' },
+	{ id: 'Russia', displayName: 'Sabatulo' }
 ];
 const EXPERIENCES = [
 	{ id: 'Bakurani_KOTH_01', displayName: 'King of the Hill' },
 	{ id: 'Madrid_KOTH_01', displayName: 'King of the Hill' },
 	{ id: 'Detroit_KOTH_01', displayName: 'King of the Hill' },
+	{ id: 'Moscow_KOTH_01', displayName: 'King of the Hill' },
 	{ id: 'KOTH_InfantryOnly', displayName: 'Infantry' },
-	{ id: 'KOTH_Hardcore', displayName: 'Hardcore' }
+	{ id: 'KOTH_Hardcore', displayName: 'Hardcore' },
+	{ id: 'KOTH_LimitedGear', displayName: 'Limited Gear' }
 ];
+const MODIFIERS = ['KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear'];
 const EXPERIENCES_BY_MAP: Record<string, string[]> = {
-	Kavkazi: ['Bakurani_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'],
-	Europe: ['Madrid_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'],
-	NorthAmerica: ['Detroit_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore']
+	Kavkazi: ['Bakurani_KOTH_01', ...MODIFIERS],
+	Europe: ['Madrid_KOTH_01', ...MODIFIERS],
+	NorthAmerica: ['Detroit_KOTH_01', ...MODIFIERS],
+	Russia: ['Moscow_KOTH_01', ...MODIFIERS]
 };
 const LIGHTINGS = [
 	'DayStartClear',
@@ -113,6 +121,22 @@ const LIGHTINGS = [
 	'DayEndClear',
 	'DayLateRain'
 ].map((id) => ({ id, displayName: id.replace(/([a-z])([A-Z])/g, '$1 $2') }));
+// Sabatulo takes four of the lightings (the Season 3 notes; no route says so). What a real server
+// answers when asked for another there has not been seen: the demo refuses it, and denies a
+// rotation entry that names one.
+const LIGHTINGS_BY_MAP: Record<string, string[]> = {
+	Russia: ['DayClear', 'DayLateClear', 'DayLateGray', 'DayLateRain']
+};
+const mapTakes = (map: string, lighting: string) =>
+	!LIGHTINGS_BY_MAP[map] || LIGHTINGS_BY_MAP[map].includes(lighting);
+/**
+ * Whether the server would skip a rotation entry: a map, game mode, modifier or lighting it does not
+ * list, or a lighting the entry's map does not take.
+ */
+const deniedEntry = (e: { map: string; experiences: string[]; lighting: string }) =>
+	!MAPS.some((x) => x.id === e.map) ||
+	e.experiences.some((id) => !EXPERIENCES.some((x) => x.id === id)) ||
+	(!!e.lighting && (!LIGHTINGS.some((x) => x.id === e.lighting) || !mapTakes(e.map, e.lighting)));
 const ALTERNATORS_BY_MAP: Record<string, { tag: string; displayName: string }[]> = {
 	Kavkazi: [
 		{ tag: 'ZoneAlternator.Factory.Circle', displayName: 'Bakurani Factory Circle' },
@@ -1059,10 +1083,17 @@ export function mockHandle(
 		if (!MAPS.some((x) => x.id === b.map)) {
 			return fail(400, `Unknown map '${b.map}'.`);
 		}
+		if (b.lighting && !mapTakes(b.map, b.lighting)) {
+			return fail(400, `Lighting '${b.lighting}' is not available on ${b.map}.`);
+		}
+		// no lighting asked for: the one on carries over where the new map takes it
+		const carried = mapTakes(b.map, s.current.lighting)
+			? s.current.lighting
+			: LIGHTINGS_BY_MAP[b.map][0];
 		applyEntry(s, {
 			map: b.map,
 			experiences: b.experiences?.length ? b.experiences : s.current.experiences,
-			lighting: b.lighting || s.current.lighting,
+			lighting: b.lighting || carried,
 			zoneAlternator: b.zoneAlternator || '',
 			denied: false
 		});
@@ -1088,6 +1119,9 @@ export function mockHandle(
 		if (!LIGHTINGS.some((x) => x.id === b.lighting)) {
 			return fail(400, `Unknown lighting '${b.lighting}'.`);
 		}
+		if (!mapTakes(s.current.map, b.lighting)) {
+			return fail(400, `Lighting '${b.lighting}' is not available on ${s.current.map}.`);
+		}
 		s.current.lighting = b.lighting;
 		log(s, 'COMMAND', `weather ${b.lighting}`);
 		return ok({ message: `Weather changed to ${b.lighting}.` });
@@ -1103,13 +1137,13 @@ export function mockHandle(
 		if (!MAPS.some((x) => x.id === b.map)) {
 			return fail(400, `Unknown map '${b.map}'.`);
 		}
-		s.rotation.entries.push({
+		const added = {
 			map: b.map,
 			experiences: b.experiences?.length ? b.experiences : ['KOTH_InfantryOnly'],
 			lighting: b.lighting || 'DayClear',
-			zoneAlternator: b.zoneAlternator || '',
-			denied: false
-		});
+			zoneAlternator: b.zoneAlternator || ''
+		};
+		s.rotation.entries.push({ ...added, denied: deniedEntry(added) });
 		if (s.rotation.entries.length === 2) {
 			s.rotation.nextIndex = 1;
 		}
@@ -1290,10 +1324,7 @@ export function mockHandle(
 			s.rotation.mode = rot.mode;
 			const was = s.rotation.nowIndex;
 			const playing = s.rotation.entries[was];
-			s.rotation.entries = rot.entries.map((e) => ({
-				...e,
-				denied: e.experiences.some((id) => !EXPERIENCES.some((x) => x.id === id))
-			}));
+			s.rotation.entries = rot.entries.map((e) => ({ ...e, denied: deniedEntry(e) }));
 			const keep = playing
 				? s.rotation.entries.findIndex(
 						(e) =>

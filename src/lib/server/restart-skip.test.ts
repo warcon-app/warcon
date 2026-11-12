@@ -124,6 +124,10 @@ describe('which map is which', () => {
 			selectionName(sel('Europe', ['Madrid_KOTH_01', 'KOTH_InfantryOnly'], 'DayEarlyFog'))
 		).toBe('Ozeti (Infantry Only, Day Early Fog)');
 		expect(selectionName(sel('NorthAmerica', []))).toBe('Zestafona');
+		// Season 3: the map the game calls Russia, and the Limited Gear modifier
+		expect(
+			selectionName(sel('Russia', ['Moscow_KOTH_01', 'KOTH_LimitedGear'], 'DayLateRain'))
+		).toBe('Sabatulo (Limited Gear, Day Late Rain)');
 	});
 });
 

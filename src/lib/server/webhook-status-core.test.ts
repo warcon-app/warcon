@@ -288,6 +288,13 @@ describe('helpers', () => {
 	test('modeLabel and escapeMarkdown', () => {
 		expect(modeLabel(['KOTH', 'KOTH_Infantry'])).toBe('King of the Hill + Infantry');
 		expect(modeLabel(['Conquest', 'Hardcore'])).toBe('Conquest + Hardcore');
+		// Season 3's modifier goes beside the others, after the game mode
+		expect(modeLabel(['Moscow_KOTH_01', 'KOTH_LimitedGear'])).toBe(
+			'King of the Hill + Limited Gear'
+		);
+		expect(modeLabel(['Madrid_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_LimitedGear'])).toBe(
+			'King of the Hill + Infantry Only + Limited Gear'
+		);
 		expect(modeLabel([])).toBe('');
 		expect(escapeMarkdown('a_b|c`d')).toBe('a\\_b\\|c\\`d');
 	});

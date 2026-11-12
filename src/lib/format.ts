@@ -79,6 +79,12 @@ export function prettify(id: string | null | undefined): string {
 		.trim();
 }
 
+/** "Day Clear, Day Late Gray and Day Late Rain": a list as a sentence has it. */
+export const andList = (items: string[]): string =>
+	items.length > 1
+		? `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+		: (items[0] ?? '');
+
 export const initials = (name: string): string =>
 	name
 		.split(/\s+/)
@@ -89,11 +95,19 @@ export const initials = (name: string): string =>
 
 // --- game labels ---------------------------------------------------------------
 
-export const MAP_DISPLAY: Record<string, string> = {
+/**
+ * Looked up with names the game and the config document give, so neither table below has a
+ * prototype: a map called `constructor` finds nothing in them rather than a function of Object's.
+ */
+const table = <T>(entries: Record<string, T>): Record<string, T> =>
+	Object.assign(Object.create(null), entries);
+
+export const MAP_DISPLAY: Record<string, string> = table({
 	Kavkazi: 'Bakurani',
 	Europe: 'Ozeti',
-	NorthAmerica: 'Zestafona'
-};
+	NorthAmerica: 'Zestafona',
+	Russia: 'Sabatulo'
+});
 /**
  * The catalog id of a map however it was named: the status route gives the id ("NorthAmerica"),
  * the kill feed has been seen giving the name players know ("Zestafona"). Unknown names pass.
@@ -103,7 +117,48 @@ export function mapId(name: string): string {
 	const shown = prettify(name).toLowerCase();
 	return Object.keys(MAP_DISPLAY).find((id) => MAP_DISPLAY[id].toLowerCase() === shown) ?? name;
 }
-export const isMod = (id: string) => /infantry|hardcore/i.test(id);
+/**
+ * Whether an experience is a modifier (Infantry Only, Hardcore, Limited Gear) and not a game mode.
+ * The game's lists do not say which an id is; the ids do: a game mode is named for its place
+ * (`Moscow_KOTH_01`), a modifier for the mode it changes (`KOTH_LimitedGear`), so a modifier the
+ * panel has not heard of is still told apart.
+ */
+export const isMod = (id: string) => /^KOTH_|infantry|hardcore|limitedgear/i.test(id);
+/**
+ * Whether a rotation entry's experiences name no game mode for a modifier that needs one. The
+ * season's notes say so of Limited Gear ("an entry with only KOTH_LimitedGear has no game mode"
+ * and starts no match). Whether Infantry Only or Hardcore alone is the same is not known (the
+ * official console's demo data has such an entry), so those are not held to it.
+ */
+export const lacksGameMode = (experiences: string[]): boolean =>
+	experiences.length > 0 &&
+	experiences.every(isMod) &&
+	experiences.some((id) => /limitedgear/i.test(id));
+
+/**
+ * The lightings a map takes, where it does not take them all, by the map's id in lower case.
+ * Sabatulo takes four (Season 3). The game gives one list of lightings for every map, so nothing a
+ * server sends says this: the official console carries the same table and has art for these four
+ * alone. The season's notes spell the third DayLateGrey; the game's id is DayLateGray.
+ */
+const MAP_LIGHTINGS: Record<string, string[]> = table({
+	russia: ['DayClear', 'DayLateClear', 'DayLateGray', 'DayLateRain']
+});
+const ownLightings = (map: string | null | undefined) =>
+	map ? MAP_LIGHTINGS[mapId(map).toLowerCase()] : undefined;
+/** Whether the map takes only some of the game's lightings. */
+export const limitsLightings = (map: string | null | undefined): boolean => !!ownLightings(map);
+/** Whether a map takes a lighting: every map takes every lighting, but for the maps named above. */
+export function takesLighting(map: string | null | undefined, lighting: string): boolean {
+	const own = ownLightings(map);
+	const id = lighting.trim().toLowerCase();
+	return !own || own.some((l) => l.toLowerCase() === id);
+}
+/** The lightings of a list that a map takes: none, should the list hold none of them. */
+export const lightingsOn = <T extends { id: string }>(
+	map: string | null | undefined,
+	all: T[]
+): T[] => all.filter((l) => takesLighting(map, l.id));
 
 export const mapLabel = (catalog: Catalog, id: string) =>
 	MAP_DISPLAY[id] || catalog.maps.find((m) => m.id === id)?.display || prettify(id) || '—';
@@ -115,7 +170,10 @@ export const lightingLabel = (catalog: Catalog, id: string) =>
 	catalog.lightings.find((l) => l.id === id)?.display || prettify(id) || '—';
 
 export const expLabel = (catalog: Catalog, id: string) => {
-	if (/koth/i.test(id)) return isMod(id) ? prettify(id.replace(/^KOTH_/i, '')) : 'King of the Hill';
+	// A modifier is named from its id, with or without the mode's prefix: a live Season 3 server
+	// lists `LimitedGear` beside `KOTH_LimitedGear`, each with its id for a display name.
+	if (isMod(id)) return prettify(id.replace(/^KOTH_/i, ''));
+	if (/koth/i.test(id)) return 'King of the Hill';
 	return catalog.experiences.find((e) => e.id === id)?.display || prettify(id);
 };
 

@@ -40,7 +40,7 @@ import { PANEL_BAN, type PanelBanParams } from './rule-ban';
 import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
 import { ROTATION_SHUFFLE, shuffleOnServer } from './rotation-shuffle';
 import { RESTART_SKIP, skipStartupMap } from './restart-skip';
-import { changeWeather, WEATHER_CYCLE } from './weather-cycle';
+import { changeWeather, lightingName, WEATHER_CYCLE } from './weather-cycle';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -53,6 +53,7 @@ import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
 import { DEATH_WHISPER_MAX_AGE_MS } from './death-whisper';
 import { TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
 import { MAX_CHAT } from '$lib/chat';
+import { mapName, takesLighting } from '$lib/format';
 import type { OutboxView } from '$lib/types';
 
 /** Actions delivered without a game request: they need no roster, only the server's row. */
@@ -329,6 +330,13 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 	// middle of play.
 	if (row.triggerKind === 'death_whisper' && age > DEATH_WHISPER_MAX_AGE_MS)
 		return `Stale (${Math.round(age / 1000)}s old).`;
+	// A Weather cycle change is decided for the map the server was on. If the worker has since seen
+	// it on a map that does not take the lighting (Sabatulo takes four), the change is not sent.
+	if (row.action === WEATHER_CYCLE && m.status?.map) {
+		const lighting = (row.params as { lighting?: unknown } | null)?.lighting;
+		if (typeof lighting === 'string' && !takesLighting(m.status.map, lighting))
+			return `${mapName(m.status.map)} does not take ${lightingName(lighting)}.`;
+	}
 	// An AFK protection round goes only while what the worker last saw still says the server seeds:
 	// a round in a live match kills everyone mid-fight. It goes soon or not at all.
 	if (row.action === AFK_ROUND) {
