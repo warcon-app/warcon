@@ -289,7 +289,31 @@ routes:
   holding the feed back, before any fault of the file's lines (a feed switched off in the file
   comes first).
 - **Players** gain `hiddenName` (the name other players see) and `anonymous` (anonymous mode: other
-  players see only the hidden name) in `GET /v1/players`.
+  players see only the hidden name) in `GET /v1/players`. Seen on a live server on 2026-11-12
+  (100 players): each row is `{ name, steamId, faction, hiddenName, anonymous, kills, deaths,
+  cash, pingMs }`; every player has a hidden name, one word of 3 to 9 letters, 96 different ones
+  among the hundred (they are not unique); one player was anonymous, with their own `name` and a
+  SteamID like anyone's. The event feed gives no sign of it: on five other servers each of the
+  422 players named in the last kills carried the same name as on the list, which points to the
+  feed naming a player by their own name whatever their mode (nobody anonymous was picked out
+  among them, so it is not proof).
+  What Warcon does with them (`src/lib/anonymous.ts`): the `players` action keeps `hiddenName` on
+  a row only while `anonymous` is true; staff see both names (the player lists, the past-players
+  search, the player page, a match's page) and each session and each player's line of a match
+  keep the hidden name they were played under (`player_sessions.hidden_name`,
+  `match_players.hidden_name`: the last one seen, kept when the player leaves the mode;
+  `player_sessions.anonymous` says whether the session's last look still saw them in it); what is
+  said to anyone else names the player by the hidden name, looked up by SteamID and never taken
+  from the feed: a rule's message about another player, the Discord status card and bounty
+  cards, the public status page, and the public page of a match they played any of hidden
+  (`publicMatch`: its lines, awards and kills, with a stand-in where their SteamID was). A public
+  career leaves such a match out of its last matches (`loadCareer`'s `publicView`) and such a
+  player out of its most killed and nemeses (`publicCombat`). The public leaderboards and a
+  career's totals count and name by SteamID as before, and that undoes the rest where
+  leaderboards are public: the board's rows seen in the last minute, less the roster's, are the
+  hidden players. A worker that has just started names hidden players from the live view the one
+  before it stored until its own first look (`killerVars().prime`). The demo server gives every
+  player a hidden name and puts every third player who drifts in into anonymous mode.
 - **Status** gains, beside the welcome popup's limits (above), `afk: { timeoutSeconds,
   minTimeoutSeconds, maxTimeoutSeconds }` (600, 300 and 1800 in the demo and on CL-533689).
 - **Config.** Beside the welcome popup's four keys (above), a new section
