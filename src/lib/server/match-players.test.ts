@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
 	closeTallies,
 	feedRecord,
+	linesToOthers,
 	tallyLook,
 	tallyRow,
 	type FeedKill,
@@ -25,6 +26,35 @@ const look = (t: Tallies, players: Player[], now: number, stayed: string[] = [])
 	tallyLook(t, players, { now, gapMs: now - prevNow, stayed: new Set(stayed), teams: TEAMS });
 	prevNow = now;
 };
+
+describe('a match as its players are told of it', () => {
+	test('each player goes by the name the others saw at their last look', () => {
+		const t: Tallies = new Map();
+		const anon = { ...player('a', 9, 1), hiddenName: 'Falcon' };
+		look(t, [anon, player('b', 4, 2), { ...player('c', 2, 2), hiddenName: 'Heron' }], 1000);
+		// c switches the mode off; a leaves the list still anonymous
+		look(t, [player('b', 5, 2), player('c', 3, 2)], 3000, ['b', 'c']);
+		const { rows } = closeTallies(t, 0);
+		// the rows are the staff's and the boards': each player's own name
+		expect(rows.map((r) => r.name).sort()).toEqual(['a', 'b', 'c']);
+		// and beside it the hidden name of whoever played any of the match hidden, c included:
+		// the match's public page goes by it
+		expect(rows.map((r) => [r.steamId, r.hiddenName]).sort()).toEqual([
+			['a', 'Falcon'],
+			['b', undefined],
+			['c', 'Heron']
+		]);
+		expect(linesToOthers(t, rows).sort((x, y) => y.kills - x.kills)).toEqual([
+			{ name: 'Falcon', kills: 9 },
+			{ name: 'b', kills: 5 },
+			{ name: 'c', kills: 3 }
+		]);
+		// a row with no tally behind it goes as it is
+		expect(linesToOthers(new Map(), rows)).toEqual(
+			rows.map((r) => ({ name: r.name, kills: r.kills }))
+		);
+	});
+});
 
 describe('a match tally', () => {
 	test('starts from the counters as they stand and follows them', () => {
@@ -104,6 +134,43 @@ describe('closing a match', () => {
 		expect(next.cashFirst).toBe(50);
 		expect(next.droppedAt).toBe(0);
 		expect(tallyRow(next)).toMatchObject({ kills: 1, deaths: 0, cashDelta: 0 });
+	});
+});
+
+describe('the hidden name a match row keeps', () => {
+	const anon = (steamId: string, kills: number, hiddenName: string): Player => ({
+		...player(steamId, kills, 0),
+		hiddenName
+	});
+
+	test('is the last one the player was seen under in the match, whatever they did after', () => {
+		const t: Tallies = new Map();
+		look(t, [player('a', 0, 0), anon('b', 0, 'Heron')], 1000);
+		// a goes into the mode mid-match, b changes hidden name and then leaves the mode
+		look(t, [anon('a', 1, 'Falcon'), anon('b', 1, 'Ibex')], 3000, ['a', 'b']);
+		look(t, [anon('a', 2, 'Falcon'), player('b', 2, 0)], 5000, ['a', 'b']);
+		expect(tallyRow(t.get('a')!).hiddenName).toBe('Falcon');
+		expect(tallyRow(t.get('b')!).hiddenName).toBe('Ibex');
+		// a player never seen in the mode has no such key on their row
+		look(t, [player('c', 0, 0)], 6000);
+		expect('hiddenName' in tallyRow(t.get('c')!)).toBe(false);
+	});
+
+	test('does not follow the player into the next match once they have left the mode', () => {
+		const t: Tallies = new Map();
+		look(t, [anon('a', 9, 'Falcon'), anon('b', 9, 'Heron')], 1000);
+		look(t, [player('a', 9, 0), anon('b', 9, 'Heron')], 5000, ['a', 'b']);
+		// the list at 7000 already shows the next match: both rows stop at the bank and carry
+		look(t, [player('a', 1, 0), anon('b', 1, 'Heron')], 7000, ['a', 'b']);
+		const { rows, carried } = closeTallies(t, 6000);
+		// the match that ended saw both of them hidden
+		expect(rows.map((r) => [r.steamId, r.hiddenName])).toEqual([
+			['a', 'Falcon'],
+			['b', 'Heron']
+		]);
+		// the next one has seen a under their own name only
+		expect('hiddenName' in tallyRow(carried.get('a')!)).toBe(false);
+		expect(tallyRow(carried.get('b')!).hiddenName).toBe('Heron');
 	});
 });
 

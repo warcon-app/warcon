@@ -1,7 +1,7 @@
 // The match rows the worker writes: an upsert that sets a player's line of a match, and the
 // feed pass that fills the feed columns of the rows that exist.
 import { beforeAll, describe, expect, test } from 'bun:test';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import { kills, matches, matchPlayers } from '$lib/server/db/schema';
 import { enrichMatchPlayers, writeMatchPlayers } from '$lib/server/match-players';
@@ -53,6 +53,35 @@ describe.skipIf(!hasTestDb)('match rows', () => {
 		);
 		expect(rows[0].serverId).toBe(serverId);
 		expect(rows[0].headshots).toBe(0);
+	});
+
+	test('a row keeps the hidden name it was written with when a later write has none', async () => {
+		const row = { faction: 'Red', seconds: 60, kills: 1, deaths: 0, cashDelta: 0 };
+		await writeMatchPlayers(env.db, serverId, matchId, [
+			{ steamId: C, name: 'c', hiddenName: 'Heron', ...row }
+		]);
+		const hiddenOf = async () =>
+			(await rowsOf()).filter((r) => r.steamId === C).map((r) => [r.name, r.hiddenName, r.kills]);
+		expect(await hiddenOf()).toEqual([['c', 'Heron', 1]]);
+		// a worker that started again mid-match knows the player by their own name only
+		await writeMatchPlayers(env.db, serverId, matchId, [
+			{ steamId: C, name: 'c', ...row, kills: 4 }
+		]);
+		expect(await hiddenOf()).toEqual([['c', 'Heron', 4]]);
+		// a later hidden name replaces it
+		await writeMatchPlayers(env.db, serverId, matchId, [
+			{ steamId: C, name: 'c', hiddenName: 'Ibex', ...row, kills: 5 }
+		]);
+		expect(await hiddenOf()).toEqual([['c', 'Ibex', 5]]);
+		// and a player never seen in the mode has none
+		expect((await rowsOf()).filter((r) => r.steamId !== C).map((r) => r.hiddenName)).toEqual([
+			null,
+			null
+		]);
+		// the feed pass below starts from the two rows of the first test
+		await env.db
+			.delete(matchPlayers)
+			.where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.steamId, C)));
 	});
 
 	test('the feed pass fills the rows that exist and makes none for a player it alone saw', async () => {

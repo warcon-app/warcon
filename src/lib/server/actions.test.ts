@@ -755,6 +755,52 @@ test('raw passes on the documented headers only: a proxy in front of the listene
 	expect(res.headers).toEqual({ 'content-type': 'text/html', etag: '"abc"' });
 });
 
+test('players keeps the hidden name of a player in anonymous mode, and nobody else’s', async () => {
+	const row = (o: Record<string, unknown>) => ({
+		name: 'Mad Marmalade',
+		steamId: '76561198100000102',
+		faction: 'Valkyra',
+		kills: 3,
+		deaths: 1,
+		cash: 900,
+		pingMs: 41,
+		...o
+	});
+	const client: any = {
+		json: async () => ({
+			players: [
+				row({ hiddenName: 'Falcon', anonymous: true }),
+				// everyone has a hidden name: one not in use is not kept
+				row({ steamId: '76561198100000103', hiddenName: 'Heron', anonymous: false }),
+				// a build from before Season 3
+				row({ steamId: '76561198100000104' }),
+				row({ steamId: '76561198100000105', hiddenName: '', anonymous: true })
+			]
+		})
+	};
+	const { players } = (await ACTIONS.players.run(client, {})) as { players: any[] };
+	expect(
+		players.map((p) => [p.steamId.slice(-3), p.name, p.hiddenName, 'hiddenName' in p])
+	).toEqual([
+		['102', 'Mad Marmalade', 'Falcon', true],
+		['103', 'Mad Marmalade', undefined, false],
+		['104', 'Mad Marmalade', undefined, false],
+		['105', 'Mad Marmalade', 'Anonymous', true]
+	]);
+	// the row has no `anonymous` of its own: the hidden name being there says it
+	for (const p of players) expect('anonymous' in p).toBe(false);
+	expect(players[0]).toEqual({
+		name: 'Mad Marmalade',
+		steamId: '76561198100000102',
+		faction: 'Valkyra',
+		kills: 3,
+		deaths: 1,
+		cash: 900,
+		ping: 41,
+		hiddenName: 'Falcon'
+	});
+});
+
 test('status keeps only safe faction colours, names and scores from the game', async () => {
 	const client: any = {
 		json: async () => ({

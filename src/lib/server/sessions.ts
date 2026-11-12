@@ -14,6 +14,14 @@ export interface OpenSession {
 	id: number;
 	steamId: string;
 	name: string;
+	/** the name the other players saw in place of `name`, once the player was seen in anonymous
+	 *  mode this session (the last one seen); it stays when they switch the mode off again, as the
+	 *  session's record of it. Who is anonymous now is the player list's to say ($lib/anonymous). */
+	hiddenName: string | null;
+	/** whether the last look saw the player in anonymous mode: what is said of them to people who
+	 *  are not staff once they are off the list (a map change, the grace after a leave) goes by it,
+	 *  so a player who left the mode is not given a hidden name again */
+	anonymous: boolean;
 	faction: string | null;
 	/** the session's totals: the game starts its counters again every match, so these carry what
 	 *  earlier matches of the session reached plus the counters as they stand (followPlayer) */
@@ -35,6 +43,8 @@ export interface OpenSession {
 	writtenAt: number;
 	/** what the database currently holds for faction */
 	writtenTeam: string | null;
+	/** what the database currently holds for the mode (modeOf): hidden_name and anonymous */
+	writtenMode: string;
 	/** this is the player's first session on this server (false when unknown: sessions reloaded
 	 *  after a restart, or opened quietly when joins were not trusted) */
 	firstVisit: boolean;
@@ -84,6 +94,8 @@ export async function loadPresence(
 			id: r.id,
 			steamId: r.steamId,
 			name: r.name,
+			hiddenName: r.hiddenName,
+			anonymous: r.anonymous,
 			faction: r.faction,
 			kills: r.kills,
 			deaths: r.deaths,
@@ -95,6 +107,7 @@ export async function loadPresence(
 			lastSeen: r.lastSeen.getTime(),
 			writtenAt: r.lastSeen.getTime(),
 			writtenTeam: r.faction,
+			writtenMode: modeOf({ hiddenName: r.hiddenName, anonymous: r.anonymous }),
 			firstVisit: false,
 			lastFaction: team,
 			team
@@ -188,6 +201,32 @@ export async function latestNames(
 	return out;
 }
 
+/**
+ * The hidden name of each of these SteamIDs whose newest session on these servers ended, or
+ * stands, in the game's anonymous mode (none for anyone else: a session that left the mode keeps
+ * its hidden name as a record, and names nobody here). For what is shown of a player to people
+ * who are not staff once they have left the list ($lib/anonymous). One look per player at one
+ * session, as latestNames.
+ */
+export async function latestHiddenNames(
+	db: DbOrTx,
+	serverIds: string[],
+	steamIds: string[]
+): Promise<Map<string, string>> {
+	const out = new Map<string, string>();
+	const ids = [...new Set(steamIds)];
+	if (!serverIds.length || !ids.length) return out;
+	const rows = await db.execute<{ steamId: string; hiddenName: string | null }>(sql`
+		SELECT i.steam_id AS "steamId", s.hidden_name AS "hiddenName"
+		  FROM jsonb_array_elements_text(${json(ids)}) AS i(steam_id)
+		 CROSS JOIN LATERAL (SELECT hidden_name, anonymous FROM player_sessions p
+		                      WHERE p.steam_id = i.steam_id AND p.server_id IN ${serverIds}
+		                      ORDER BY p.joined_at DESC LIMIT 1) s
+		 WHERE s.anonymous`);
+	for (const r of rows) if (r.hiddenName) out.set(r.steamId, r.hiddenName);
+	return out;
+}
+
 /** Which of these SteamIDs have never had a session on this server (a read; call before the transaction). */
 export async function firstVisits(
 	db: DbOrTx,
@@ -222,6 +261,8 @@ export function followPlayer(
 	teams?: readonly string[]
 ): void {
 	s.name = p.name;
+	if (p.hiddenName) s.hiddenName = p.hiddenName;
+	s.anonymous = !!p.hiddenName;
 	s.faction = p.faction;
 	if (isTeam(p.faction, teams)) s.lastFaction = p.faction;
 	if (isTeam(p.faction, teams)) s.team = p.faction;
@@ -237,6 +278,12 @@ export function followPlayer(
 
 /** Whether a session's side (followPlayer) is not the one its row holds. */
 export const sideMoved = (s: OpenSession): boolean => s.team !== s.writtenTeam;
+
+/** A session's anonymous mode as one value: the hidden name it keeps, and whether it is in use. */
+export const modeOf = (s: Pick<OpenSession, 'hiddenName' | 'anonymous'>): string =>
+	`${s.anonymous ? 1 : 0}:${s.hiddenName ?? ''}`;
+/** Whether the mode has changed since the row was last written. */
+export const modeMoved = (s: OpenSession): boolean => modeOf(s) !== s.writtenMode;
 
 /**
  * Applies a diff to the database and to the in-memory presence: inserts joins, closes leaves,
@@ -260,20 +307,22 @@ export async function persistPresence(
 	if (diff.left.length) {
 		await db.execute(sql`
 			UPDATE player_sessions AS s SET left_at = v.left_at, last_seen = v.left_at,
-			       name = v.name, faction = v.faction, kills = v.kills, deaths = v.deaths, cash = v.cash,
-			       seed_seconds = v.seed_seconds
+			       name = v.name, hidden_name = v.hidden_name, anonymous = v.anonymous, faction = v.faction,
+			       kills = v.kills, deaths = v.deaths, cash = v.cash, seed_seconds = v.seed_seconds
 			  FROM jsonb_to_recordset(${json(
 					diff.left.map((s) => ({
 						id: s.id,
 						left_at: new Date(s.lastSeen).toISOString(),
 						name: s.name,
+						hidden_name: s.hiddenName,
+						anonymous: s.anonymous,
 						faction: s.team,
 						kills: s.kills,
 						deaths: s.deaths,
 						cash: s.cash,
 						seed_seconds: Math.round(s.seedMs / 1000)
 					}))
-				)}) AS v(id bigint, left_at timestamptz, name text, faction text, kills int, deaths int, cash int, seed_seconds int)
+				)}) AS v(id bigint, left_at timestamptz, name text, hidden_name text, anonymous boolean, faction text, kills int, deaths int, cash int, seed_seconds int)
 			 WHERE s.id = v.id AND s.left_at IS NULL`);
 		for (const s of diff.left) presence.open.delete(s.steamId);
 	}
@@ -287,6 +336,8 @@ export async function persistPresence(
 					serverId,
 					steamId: p.steamId,
 					name: p.name,
+					hiddenName: p.hiddenName ?? null,
+					anonymous: !!p.hiddenName,
 					faction: teamOf(p),
 					joinedAt: ts,
 					lastSeen: ts,
@@ -302,6 +353,8 @@ export async function persistPresence(
 				id: idOf.get(p.steamId)!,
 				steamId: p.steamId,
 				name: p.name,
+				hiddenName: p.hiddenName ?? null,
+				anonymous: !!p.hiddenName,
 				faction: p.faction,
 				kills: p.kills,
 				deaths: p.deaths,
@@ -313,6 +366,7 @@ export async function persistPresence(
 				lastSeen: now,
 				writtenAt: now,
 				writtenTeam: teamOf(p),
+				writtenMode: modeOf({ hiddenName: p.hiddenName ?? null, anonymous: !!p.hiddenName }),
 				firstVisit: firstVisit.has(p.steamId),
 				lastFaction: teamOf(p),
 				team: teamOf(p)
@@ -323,36 +377,51 @@ export async function persistPresence(
 	if (heartbeatDue && diff.stayed.length) {
 		await db.execute(sql`
 			UPDATE player_sessions AS s SET last_seen = v.last_seen,
-			       name = v.name, faction = v.faction, kills = v.kills, deaths = v.deaths, cash = v.cash,
-			       seed_seconds = v.seed_seconds
+			       name = v.name, hidden_name = v.hidden_name, anonymous = v.anonymous, faction = v.faction,
+			       kills = v.kills, deaths = v.deaths, cash = v.cash, seed_seconds = v.seed_seconds
 			  FROM jsonb_to_recordset(${json(
 					diff.stayed.map(({ session: s }) => ({
 						id: s.id,
 						last_seen: new Date(s.lastSeen).toISOString(),
 						name: s.name,
+						hidden_name: s.hiddenName,
+						anonymous: s.anonymous,
 						faction: s.team,
 						kills: s.kills,
 						deaths: s.deaths,
 						cash: s.cash,
 						seed_seconds: Math.round(s.seedMs / 1000)
 					}))
-				)}) AS v(id bigint, last_seen timestamptz, name text, faction text, kills int, deaths int, cash int, seed_seconds int)
+				)}) AS v(id bigint, last_seen timestamptz, name text, hidden_name text, anonymous boolean, faction text, kills int, deaths int, cash int, seed_seconds int)
 			 WHERE s.id = v.id AND s.left_at IS NULL`);
 		for (const { session: s } of diff.stayed) {
 			s.writtenAt = now;
 			s.writtenTeam = s.team;
+			s.writtenMode = modeOf(s);
 		}
 		presence.heartbeatAt = now;
 	} else {
-		const moved = diff.stayed.map((x) => x.session).filter(sideMoved);
+		const moved = diff.stayed.map((x) => x.session).filter((s) => sideMoved(s) || modeMoved(s));
 		if (moved.length) {
-			// Only the side: the heartbeat brings the rest, and faction is in no index.
+			// Only the side and the anonymous mode, the look they change: the heartbeat brings the
+			// rest, and none of the three is in an index. The mode is what a public page goes by for
+			// a player off the list, so it does not wait.
 			await db.execute(sql`
-				UPDATE player_sessions AS s SET faction = v.faction
-				  FROM jsonb_to_recordset(${json(moved.map((s) => ({ id: s.id, faction: s.team })))})
-				       AS v(id bigint, faction text)
+				UPDATE player_sessions AS s
+				   SET faction = v.faction, hidden_name = v.hidden_name, anonymous = v.anonymous
+				  FROM jsonb_to_recordset(${json(
+						moved.map((s) => ({
+							id: s.id,
+							faction: s.team,
+							hidden_name: s.hiddenName,
+							anonymous: s.anonymous
+						}))
+					)}) AS v(id bigint, faction text, hidden_name text, anonymous boolean)
 				 WHERE s.id = v.id AND s.left_at IS NULL`);
-			for (const s of moved) s.writtenTeam = s.team;
+			for (const s of moved) {
+				s.writtenTeam = s.team;
+				s.writtenMode = modeOf(s);
+			}
 		}
 	}
 }

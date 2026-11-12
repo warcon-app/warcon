@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { connect, runMigrations, type Db } from '$lib/server/db';
-import { kills, matches, matchPlayers, playerSessions } from '$lib/server/db/schema';
+import { kills, matches, matchPlayers } from '$lib/server/db/schema';
+import { matchPlayersBefore53, playerSessionsBefore53 } from './schema-then';
 import { hasTestDb } from './db';
 import { oracleBase, oracleRangeBase, rangeRows, totalsRows } from './totals-oracle';
 
@@ -337,7 +338,7 @@ describe.skipIf(!hasTestDb)('the match rows from the feed', () => {
 			...[1, 2].flatMap((i) => [kb(o[i], 1, V, E), kb(o[i], 59, V, E)])
 		]);
 		await db
-			.insert(playerSessions)
+			.insert(playerSessionsBefore53)
 			.values([
 				session(A, NS1, -3.5, -2.1, 'Lonestar', 4, 1),
 				session(A, NS2, -2.5, -1.2, 'Lonestar', 5, 1),
@@ -368,7 +369,7 @@ describe.skipIf(!hasTestDb)('the match rows from the feed', () => {
 			]);
 		await run(db, '0032_match_players_backfill');
 		await db
-			.insert(matchPlayers)
+			.insert(matchPlayersBefore53)
 			.values([
 				worker(m[14].id, A, 9, 9, 700),
 				worker(m[15].id, A, 1, 0, 0),
@@ -376,7 +377,7 @@ describe.skipIf(!hasTestDb)('the match rows from the feed', () => {
 				worker(o[1].id, B, 1, 0, 0),
 				worker(o[2].id, B, 4, 4, 300)
 			]);
-		await db.insert(playerSessions).values(session(A, WK, 9.5, 11.5, 'Lonestar', 6, 2));
+		await db.insert(playerSessionsBefore53).values(session(A, WK, 9.5, 11.5, 'Lonestar', 6, 2));
 		await runMigrations(db, 'drizzle');
 	}, 60_000);
 
@@ -567,14 +568,14 @@ describe.skipIf(!hasTestDb)(
 					f(k[2], 30, E, B2, WL)
 				]);
 			await db
-				.insert(playerSessions)
+				.insert(playerSessionsBefore53)
 				.values([
 					session(S, B0, -1.9, -1.2, 'Lonestar', 1, 0),
 					session(S, B1, 1.5, 2.9, 'Lonestar', 5, 1),
 					session(S, B2, 2.2, 2.8, 'Lonestar', 1, 0)
 				]);
 			await run(db, '0032_match_players_backfill');
-			await db.insert(matchPlayers).values(worker(k[3].id, S, 3, 3, 200));
+			await db.insert(matchPlayersBefore53).values(worker(k[3].id, S, 3, 3, 200));
 			await runMigrations(db, 'drizzle');
 		}, 60_000);
 

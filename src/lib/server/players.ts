@@ -372,6 +372,16 @@ export async function dossier(
 			SELECT name FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids}
 			 GROUP BY name ORDER BY MAX(last_seen) DESC LIMIT 10`)
 		: [];
+	// The names the other players saw for them in anonymous mode, each with the sessions it was
+	// seen in: who they were to the server then, which a report made under that name needs.
+	const hiddenNames = ids.length
+		? await db.execute<{ name: string; firstSeen: Date; lastSeen: Date; sessions: number }>(sql`
+			SELECT hidden_name AS name, MIN(joined_at) AS "firstSeen", MAX(last_seen) AS "lastSeen",
+			       COUNT(*)::int AS sessions
+			  FROM player_sessions
+			 WHERE steam_id = ${steamId} AND server_id IN ${ids} AND hidden_name IS NOT NULL
+			 GROUP BY hidden_name ORDER BY MAX(last_seen) DESC LIMIT 10`)
+		: [];
 	const online = recent.find((s) => s.leftAt === null) ?? null;
 	const name = names[0]?.name || steamId;
 
@@ -441,6 +451,12 @@ export async function dossier(
 		steamId,
 		name,
 		names: names.map((n) => n.name),
+		hiddenNames: hiddenNames.map((n) => ({
+			name: n.name,
+			firstSeen: new Date(n.firstSeen).toISOString(),
+			lastSeen: new Date(n.lastSeen).toISOString(),
+			sessions: n.sessions
+		})),
 		feedNames: feedNames.names,
 		feedNamesTotal: feedNames.total,
 		online: online
@@ -484,6 +500,7 @@ export async function dossier(
 			serverId: s.serverId,
 			serverName: nameOf.get(s.serverId) || s.serverId,
 			name: s.name,
+			hiddenName: s.hiddenName,
 			faction: s.faction,
 			joinedAt: s.joinedAt.toISOString(),
 			lastSeen: s.lastSeen.toISOString(),

@@ -1,6 +1,7 @@
 // One row per player per match (match_players): what the game's scoreboard counted for that
-// player over that match, kept in the worker's memory while the match runs, written when the
-// player leaves and when the match ends, then enriched from the kill feed. Boards, careers, the
+// player over that match (and the hidden name they played it under, in the game's anonymous
+// mode), kept in the worker's memory while the match runs, written when the player leaves and
+// when the match ends, then enriched from the kill feed. Boards, careers, the
 // dossier and analytics read these rows; the kills table itself is read only for the feed, the
 // weapon and nemesis record and the team-kill trigger.
 //
@@ -21,6 +22,13 @@ export interface MatchTally {
 	steamId: string;
 	/** the name at the last look */
 	name: string;
+	/** the name the other players saw in its place at the last look: the player was in anonymous
+	 *  mode ($lib/anonymous). What is said of the match to its players (linesToOthers) reads it. */
+	hiddenName?: string | null;
+	/** the hidden name the player was last seen under during the match, kept when they leave the
+	 *  mode before its end: the row's, so that the match's public page names nobody who played any
+	 *  of it hidden */
+	anonAs?: string | null;
 	/** the last side seen that was a team on the scoreboard */
 	faction: string | null;
 	/** counters the game reset since the match began, as they stood when it did; for cash, what
@@ -47,6 +55,9 @@ export type Tallies = Map<string, MatchTally>;
 export interface TallyRow {
 	steamId: string;
 	name: string;
+	/** the hidden name the others saw for the player during the match; there only for a player
+	 *  who was in anonymous mode at some look of it */
+	hiddenName?: string | null;
 	faction: string | null;
 	seconds: number;
 	kills: number;
@@ -72,6 +83,8 @@ export function tallyLook(
 			tallies.set(p.steamId, {
 				steamId: p.steamId,
 				name: p.name,
+				hiddenName: p.hiddenName ?? null,
+				anonAs: p.hiddenName ?? null,
 				faction: isTeam(p.faction, opts.teams) ? p.faction : null,
 				banked: { kills: 0, deaths: 0, cash: 0 },
 				last: { kills: p.kills, deaths: p.deaths },
@@ -94,16 +107,30 @@ export function tallyLook(
 		t.last = { kills: p.kills, deaths: p.deaths };
 		t.cashLast = p.cash;
 		t.name = p.name;
+		t.hiddenName = p.hiddenName ?? null;
+		if (p.hiddenName) t.anonAs = p.hiddenName;
 		if (isTeam(p.faction, opts.teams)) t.faction = p.faction;
 		if (opts.stayed.has(p.steamId)) t.ms += opts.gapMs;
 		t.lastSeen = opts.now;
 	}
 }
 
+/**
+ * A match's lines for something its players will read (a Match broadcast's `{mvp}` and `{top}`):
+ * each player under the name the others saw for them at their last look, the hidden one for a
+ * player in anonymous mode.
+ */
+export const linesToOthers = (
+	tallies: Tallies,
+	rows: TallyRow[]
+): { name: string; kills: number }[] =>
+	rows.map((r) => ({ name: tallies.get(r.steamId)?.hiddenName || r.name, kills: r.kills }));
+
 /** The row a tally stands for right now: everything banked plus the counters as they stand. */
 export const tallyRow = (t: MatchTally): TallyRow => ({
 	steamId: t.steamId,
 	name: t.name,
+	...(t.anonAs ? { hiddenName: t.anonAs } : {}),
 	faction: t.faction,
 	seconds: Math.round(t.ms / 1000),
 	kills: t.banked.kills + t.last.kills,
@@ -133,14 +160,17 @@ export function closeTallies(
 		rows.push({
 			steamId: t.steamId,
 			name: t.name,
+			...(t.anonAs ? { hiddenName: t.anonAs } : {}),
 			faction: t.faction,
 			seconds: Math.round(t.ms / 1000),
 			kills: t.banked.kills,
 			deaths: t.banked.deaths,
 			cashDelta: t.banked.cash
 		});
+		// the next match knows the player only as their last look had them
 		carried.set(t.steamId, {
 			...t,
+			anonAs: t.hiddenName ?? null,
 			banked: { kills: 0, deaths: 0, cash: 0 },
 			last: { ...t.last },
 			droppedAt: 0,
@@ -151,7 +181,11 @@ export function closeTallies(
 	return { rows, carried };
 }
 
-/** Writes (or rewrites) these players' rows of the match. Sets, never adds. */
+/**
+ * Writes (or rewrites) these players' rows of the match. Sets, never adds; the hidden name alone
+ * is kept when a later write has none (a worker that started again mid-match no longer knows the
+ * player was in anonymous mode earlier in it), so a row never comes to name a player it hid.
+ */
 export async function writeMatchPlayers(
 	db: DbOrTx,
 	serverId: string,
@@ -160,21 +194,24 @@ export async function writeMatchPlayers(
 ): Promise<void> {
 	if (!rows.length) return;
 	await db.execute(sql`
-		INSERT INTO match_players (match_id, server_id, steam_id, name, faction, seconds, kills, deaths, cash_delta)
-		SELECT ${matchId}::bigint, ${serverId}, v.steam_id, v.name, v.faction, v.seconds, v.kills, v.deaths, v.cash_delta
+		INSERT INTO match_players (match_id, server_id, steam_id, name, hidden_name, faction, seconds, kills, deaths, cash_delta)
+		SELECT ${matchId}::bigint, ${serverId}, v.steam_id, v.name, v.hidden_name, v.faction, v.seconds, v.kills, v.deaths, v.cash_delta
 		  FROM jsonb_to_recordset(${json(
 				rows.map((r) => ({
 					steam_id: r.steamId,
 					name: r.name,
+					hidden_name: r.hiddenName || null,
 					faction: r.faction,
 					seconds: r.seconds,
 					kills: r.kills,
 					deaths: r.deaths,
 					cash_delta: r.cashDelta
 				}))
-			)}) AS v(steam_id text, name text, faction text, seconds int, kills int, deaths int, cash_delta int)
+			)}) AS v(steam_id text, name text, hidden_name text, faction text, seconds int, kills int, deaths int, cash_delta int)
 		ON CONFLICT (match_id, steam_id) DO UPDATE
-		   SET name = EXCLUDED.name, faction = EXCLUDED.faction, seconds = EXCLUDED.seconds,
+		   SET name = EXCLUDED.name,
+		       hidden_name = COALESCE(EXCLUDED.hidden_name, match_players.hidden_name),
+		       faction = EXCLUDED.faction, seconds = EXCLUDED.seconds,
 		       kills = EXCLUDED.kills, deaths = EXCLUDED.deaths, cash_delta = EXCLUDED.cash_delta`);
 }
 

@@ -535,6 +535,14 @@ export const playerSessions = pgTable(
 		serverId: text('server_id').notNull(),
 		steamId: text('steam_id').notNull(),
 		name: text('name').notNull(),
+		/** the name the other players saw in place of `name`, once the player was seen in the game's
+		 *  anonymous mode during the session (the last one seen); null for a session never seen so.
+		 *  It stays when they leave the mode: `anonymous` says whether they were in it at the end.
+		 *  In no index: the heartbeat rewrites the row, and searches read it with the names. */
+		hiddenName: text('hidden_name'),
+		/** whether the last look of the session saw the player in anonymous mode: what a public page
+		 *  goes by for a player who has left the list ($lib/anonymous) */
+		anonymous: boolean('anonymous').notNull().default(false),
 		faction: text('faction'),
 		joinedAt: ts('joined_at').notNull(),
 		lastSeen: ts('last_seen').notNull(),
@@ -721,6 +729,10 @@ export const matchPlayers = pgTable(
 		steamId: text('steam_id').notNull(),
 		/** the name at the last look */
 		name: text('name').notNull(),
+		/** the name the other players saw in place of `name` during the match, for a player seen
+		 *  in the game's anonymous mode at any look of it (the last one seen); null otherwise. The
+		 *  match's public page goes by it. */
+		hiddenName: text('hidden_name'),
 		/** the last side seen that was a team on the scoreboard */
 		faction: text('faction'),
 		/** time on during the match */

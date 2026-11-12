@@ -56,6 +56,12 @@ describe.skipIf(!hasTestDb)('match results and states from the feed', () => {
 	let env: Env;
 	let spy: ReturnType<typeof spyOn>;
 	const games = new Map<string, Game>();
+	/** the players in the game's anonymous mode, and the hidden name the others see for each */
+	const hiddenAs = new Map<string, string>();
+	const seen = (steamId: string) => ({
+		hiddenName: hiddenAs.get(steamId) ?? 'Quail',
+		anonymous: hiddenAs.has(steamId)
+	});
 	const json = (body: unknown) => ({
 		status: 200,
 		statusText: 'OK',
@@ -82,8 +88,24 @@ describe.skipIf(!hasTestDb)('match results and states from the feed', () => {
 				if (path === '/v1/players')
 					return json({
 						players: [
-							{ steamId: VALKYRA, name: 'Vee', faction: 'Valkyra', kills: 1, deaths: 0, cash: 0 },
-							{ steamId: LONESTAR, name: 'Ell', faction: 'Lonestar', kills: 0, deaths: 1, cash: 0 }
+							{
+								steamId: VALKYRA,
+								name: 'Vee',
+								faction: 'Valkyra',
+								kills: 1,
+								deaths: 0,
+								cash: 0,
+								...seen(VALKYRA)
+							},
+							{
+								steamId: LONESTAR,
+								name: 'Ell',
+								faction: 'Lonestar',
+								kills: 0,
+								deaths: 1,
+								cash: 0,
+								...seen(LONESTAR)
+							}
 						],
 						count: 2
 					});
@@ -198,6 +220,34 @@ describe.skipIf(!hasTestDb)('match results and states from the feed', () => {
 		await look(f);
 		await nextMatch(f);
 		expect((await endedMatches(f.server.id)).map((r) => r.winner)).toEqual(['Lonestar', 'Valkyra']);
+	});
+
+	test('the best of the match are announced under the names the others saw', async () => {
+		hiddenAs.set(VALKYRA, 'Falcon');
+		try {
+			const f = await fresh();
+			await env.db
+				.update(triggers)
+				.set({
+					config: validateConfig('match_broadcast', {
+						endMessage: 'Best: {mvp} · top {top}',
+						startMessage: '',
+						minPlayers: 1
+					})
+				})
+				.where(eq(triggers.id, `broadcast-${f.server.id}`));
+			invalidateTriggers(f.server.id);
+			await nextMatch(f);
+			// said to the whole server: Vee is in anonymous mode, so the hidden name
+			expect(await broadcasts(f.server.id)).toEqual(['Best: Falcon · top Falcon 1']);
+			// the match's own lines, which staff and the boards read, keep the player's name
+			const lines = (await env.db.execute(
+				`SELECT name FROM match_players WHERE server_id = '${f.server.id}' ORDER BY name`
+			)) as unknown as { name: string }[];
+			expect(lines.map((l) => l.name)).toEqual(['Ell', 'Vee']);
+		} finally {
+			hiddenAs.clear();
+		}
 	});
 
 	test("a result that comes just after the look corrects the match it closed, and its players' totals", async () => {
