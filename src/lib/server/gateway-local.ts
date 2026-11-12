@@ -2,7 +2,7 @@
 import type { Env } from './env';
 import type { OrgRow, ServerRow } from './access';
 import { LaneFull, LaneTimeout, PRIORITY, withServer, type Priority } from './dispatcher';
-import { ACTIONS } from './actions';
+import { actionNamed } from './actions';
 import { ApiError, str } from './http';
 import { WardogsClient } from './rcon';
 import { subscribe } from './events';
@@ -72,7 +72,7 @@ export async function runGameAction(
 	params: Record<string, unknown>,
 	priority: Priority
 ): Promise<unknown> {
-	const def = ACTIONS[action];
+	const def = actionNamed(action);
 	if (!def) throw new ApiError(404, `Unknown action '${action}'.`, 'unknown_action');
 	try {
 		return await withServer(server.id, priority, async () => {

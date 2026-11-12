@@ -2,8 +2,10 @@
 // one route that runs them. The table is kept here, apart from the registry, on purpose: moving
 // an action to another capability means changing both, and an action added without a line fails.
 import { beforeAll, describe, expect, test } from 'bun:test';
+import { inArray } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import type { Capability } from '$lib/capabilities';
+import { auditLog } from '$lib/server/db/schema';
 import { hasTestDb, testEnv } from './db';
 import { callApi, stubGateway } from './call';
 import { expected, outcomeOf } from './policy';
@@ -94,6 +96,40 @@ describe.skipIf(!hasTestDb)('game action permission matrix', () => {
 			expect(reached).toEqual(PRINCIPALS.filter((who) => want[who] === 'ok'));
 		});
 	}
+
+	test('a name the registry does not hold is no action, an object’s built-ins included', async () => {
+		gateway = stubGateway();
+		const { GET, POST } = await import('../routes/api/servers/[id]/rcon/[action]/+server');
+		const names = ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', 'nonsense'];
+		for (const action of names)
+			for (const [method, handler] of [
+				['POST', POST],
+				['GET', GET]
+			] as const) {
+				const answer = await callApi(handler, world.users.owner, {
+					method,
+					params: { id: world.server.id, action }
+				});
+				expect([action, method, answer.status, answer.code]).toEqual([
+					action,
+					method,
+					404,
+					'unknown_action'
+				]);
+			}
+		expect(gateway.runs).toEqual([]);
+		// and it leaves nothing in the trail
+		const rows = await env.db
+			.select({ action: auditLog.action })
+			.from(auditLog)
+			.where(
+				inArray(
+					auditLog.action,
+					names.map((n) => `rcon.${n}`)
+				)
+			);
+		expect(rows).toEqual([]);
+	});
 
 	test('a read may not be used to run a mutating action', async () => {
 		stubGateway();

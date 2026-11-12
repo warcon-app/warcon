@@ -1001,3 +1001,10 @@ export const ACTIONS: Record<string, ActionDef> = {
 const RAW_HEADERS = ['content-type', 'etag', 'retry-after'];
 
 export const ACTION_NAMES = Object.keys(ACTIONS);
+
+/**
+ * The action of that name, of the registry's own alone: a name that reaches here from a request
+ * path may be `constructor` or `toString`, which every object answers to and no action is.
+ */
+export const actionNamed = (name: string): ActionDef | undefined =>
+	Object.hasOwn(ACTIONS, name) ? ACTIONS[name] : undefined;

@@ -5,7 +5,7 @@ import { ApiError, apiJson, forLog, readJson } from './http';
 import { writeAudit } from './audit';
 import { getServer, requireUser, serverAccessFor } from './access';
 import { CAPABILITY_INFO } from '../capabilities';
-import { ACTIONS, ACTION_NAMES } from './actions';
+import { actionNamed, ACTION_NAMES } from './actions';
 import { GameError } from './rcon';
 import { gateway } from './gateway';
 import { assertRate } from './ratelimit';
@@ -54,7 +54,7 @@ export async function runAction(
 ): Promise<Response> {
 	const env = getEnv();
 	const req = event.request;
-	const def = ACTIONS[name];
+	const def = actionNamed(name);
 	if (!def)
 		throw new ApiError(
 			404,
