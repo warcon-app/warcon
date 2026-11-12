@@ -34,7 +34,8 @@ const FEATURES: Features = {
 	rotationEdit: true,
 	rotationSave: true,
 	liveSettings: true,
-	serverId: true
+	serverId: true,
+	chat: false
 };
 
 /** A game that lists nothing and refuses every change with its own text. */

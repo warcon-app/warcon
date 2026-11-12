@@ -6,7 +6,7 @@ import { ApiError, int, newId, str } from './http';
 import { writeAudit } from './audit';
 import type { OrgRow, SessionUser } from './access';
 import { apiKeys, organizations, servers, user, type ApiKeyRow } from './db/schema';
-import { CAPABILITY_INFO, LIST_CAPABILITY, parseCapabilities } from '../capabilities';
+import { CAPABILITY_INFO, LIST_CAPABILITY, PEOPLE_ONLY, parseCapabilities } from '../capabilities';
 import { parseServerScope } from './server-scope';
 import {
 	hashToken,
@@ -66,6 +66,12 @@ export async function createKey(
 		throw new ApiError(400, err instanceof Error ? err.message : 'Bad capabilities.');
 	}
 	if (!capabilities.length) throw new ApiError(400, 'Pick at least one capability for the key.');
+	const person = capabilities.find((c) => PEOPLE_ONLY.includes(c));
+	if (person)
+		throw new ApiError(
+			400,
+			`'${CAPABILITY_INFO[person].label}' is for people, not for an API key: players' chat is shown to those who moderate a server and is not to be exported.`
+		);
 	const serverIds = await parseServerScope(env, org.id, body.serverIds);
 	// The org lists are pushed to every server, so they are not something a key held to some
 	// servers can be given (access.ts refuses such a key the lists either way).

@@ -34,6 +34,10 @@
 			entries = [...d.entries].reverse();
 			loaded = true;
 		} catch (err) {
+			// A failed read ends the auto-refresh until it is ticked again: asking every five seconds
+			// would show the same error each time and, where the panel is the one refusing (the
+			// capability taken away, the stored password rejected), record each refusal.
+			auto = false;
 			toast(errorMessage(err), 'err');
 		}
 	}

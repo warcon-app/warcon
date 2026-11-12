@@ -10,7 +10,7 @@
 	import CapabilityPicker from '$lib/components/CapabilityPicker.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
-	import { capabilitySummary, type Capability } from '$lib/capabilities';
+	import { capabilitySummary, PEOPLE_ONLY, type Capability } from '$lib/capabilities';
 	import type {
 		ApiKeyView,
 		InviteView,
@@ -1142,7 +1142,7 @@
 			>
 			<div>
 				<span class="field-label">May</span>
-				<CapabilityPicker bind:value={d.capabilities} compact />
+				<CapabilityPicker bind:value={d.capabilities} without={PEOPLE_ONLY} compact />
 			</div>
 			<div>
 				<span class="field-label">Servers</span>

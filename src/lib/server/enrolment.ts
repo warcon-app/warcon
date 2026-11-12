@@ -73,8 +73,12 @@ export async function startGrace(env: Env, userId: string): Promise<void> {
 
 export const statusFor = (u: EnrolmentSubject): EnrolmentStatus => enrolmentStatus(u, settings());
 
-/** Server capabilities that make an account worth protecting: it can hurt a server or its players. */
+/**
+ * Server capabilities that make an account worth protecting: it can hurt a server or its players,
+ * or read what they type.
+ */
 export const PRIVILEGED_CAPS: Capability[] = [
+	'chat.read',
 	'bans.manage',
 	'slots.manage',
 	'lists.ban',

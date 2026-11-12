@@ -9,11 +9,12 @@ import { isDemoServer } from './env';
 import { ApiError } from './http';
 import {
 	CAPABILITIES,
+	type Capability,
 	CAPABILITY_INFO,
 	knownCapabilities,
 	LIST_CAPABILITY,
 	listKindsIn,
-	type Capability
+	PEOPLE_ONLY
 } from '../capabilities';
 import type { ListKind } from '../types';
 import { readManualRestart, type ManualRestart } from '../uptime';
@@ -353,7 +354,12 @@ export async function serverAccessFor(
 			user.apiKey.serverIds === null
 				? user.apiKey.capabilities
 				: user.apiKey.capabilities.filter((c) => !LIST_CAPS.has(c));
-		return accessFromCaps(caps, 'API key');
+		// Nor what only a person may hold (players' chat). principalOf drops it from a key's row
+		// already; this holds for a principal made any other way.
+		return accessFromCaps(
+			caps.filter((c) => !PEOPLE_ONLY.includes(c)),
+			'API key'
+		);
 	}
 	if (user.role === 'owner') return resolveAccess({ manager: true });
 	const [row] = await env.db

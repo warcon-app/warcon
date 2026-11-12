@@ -180,12 +180,19 @@ status and the catalog):
   (`Kavkazi`, `Russia`), an experience's is `Moscow KOTH 01` or `KOTH LimitedGear`, a lighting's
   is its id, and the status names the map as players know it (`Bakurani`). So "Sabatulo" comes
   from Warcon's own table (`MAP_DISPLAY`), not from the game.
+- **A feed that sends nothing.** A second server, read at 15:37 UTC, 21 minutes after it
+  restarted onto the build, with 99 players on Sabatulo and a match in play: the panel had
+  received no batch since the restart, and the game's `GET /v1/feed` reported the feed enabled,
+  its one endpoint healthy, `sentTotal` 0, nothing queued and no HTTP answer yet. With lines that
+  work the game had sent nothing at all, which is what `pausedForTerms` below describes (the
+  panel that read it did not yet pass the flag on, so the flag itself was not seen).
 
 **The rest of the redeploy** (13:22 UTC, the console's build stamp `eb816a7`). Read from the
 console's own client and demo code, so the shapes are what the console expects of a Season 3
-server. The live read above confirms the three chat routes and the two status fields; what the
-chat routes answer, the feed's flag and the players' new fields have not been seen from a live
-server. Warcon uses none of it but the feed's flag:
+server. The live read above confirms the three chat routes and the two status fields, and shows
+a feed sending nothing; what the chat routes answer, the feed's flag itself and the players' new
+fields have not been seen from a live server. Warcon uses the feed's flag and the three chat
+routes:
 
 - **Chat.** `GET /v1/chat/terms` answers `{ requiredVersion, acceptedVersion, accepted, text }` and
   `POST /v1/chat/terms { version }` accepts them (`{ ok, pending, message }`; 400 `missing_version`
@@ -199,12 +206,26 @@ server. Warcon uses none of it but the feed's flag:
   only so that the server can be moderated, is live and held only in the server's memory for the
   current map, and "You must not record, store, export, publish or share players' chat or
   identities beyond what moderating this server requires."
+  The console's other bundled points: chat is not stored for the reader by Bulkhead, the reader
+  answers for the privacy and data-protection law that applies to them, and "Bulkhead may revoke
+  access for misuse." The console's config schema has no key for an acceptance.
+  What Warcon does with them (`src/lib/chat-read.ts`, the actions `chatTerms`, `chatTermsAccept`
+  and `chat`): the server's Chat tab shows the terms and the lines to those who hold _Read chat_
+  (the organisation's owners and the site owner, until an owner gives it to a role; no built-in
+  role has it and an API key cannot hold it); accepting the terms is for an owner, in person, and
+  the audit trail keeps who accepted which version; the lines are read every four seconds per
+  open tab, at the priority of the worker's own looks, and kept nowhere; the raw action refuses
+  `/v1/chat` and everything under it. The answers are read leniently, since no live one has been
+  seen (a required version of 0, no `messages` beside a `latestSeq`, `seq` as digits). A game
+  that numbers from the start again is told as the console tells it, by a `latestSeq` below the
+  last line read, and also by its start time moving on. The demo server serves the three routes,
+  with its own stand-in terms and a scripted chat.
 - **The event feed waits on those terms.** `GET /v1/feed` gains `pausedForTerms`, which the console
   shows as "Paused: the event feed sends nothing until the chat terms are accepted." Whether an
   acceptance outlasts a restart is not known. This one Warcon reads (`feedReportOf` and the `terms`
   fault in `src/lib/feed-report.ts`): a silent feed's warning on the Config card says the game is
   holding the feed back, before any fault of the file's lines (a feed switched off in the file
-  comes first). Warcon has no action that accepts the terms.
+  comes first).
 - **Players** gain `hiddenName` (the name other players see) and `anonymous` (anonymous mode: other
   players see only the hidden name) in `GET /v1/players`.
 - **Status** gains `welcomeMessage: { maxLines, maxLineLength, minFontSize, maxFontSize,

@@ -2,14 +2,17 @@
 // one route that runs them. The table is kept here, apart from the registry, on purpose: moving
 // an action to another capability means changing both, and an action added without a line fails.
 import { beforeAll, describe, expect, test } from 'bun:test';
+import { inArray } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import type { Capability } from '$lib/capabilities';
+import { auditLog } from '$lib/server/db/schema';
 import { hasTestDb, testEnv } from './db';
 import { callApi, stubGateway } from './call';
 import { expected, outcomeOf } from './policy';
 import { PRINCIPALS, seedWorld, type World } from './world';
 
-const ACTION_CAPS: Record<string, Capability> = {
+/** `manager`: an owner of the server's organisation (or the site owner), in person; never a key. */
+const ACTION_CAPS: Record<string, Capability | 'manager'> = {
 	capabilities: 'server.view',
 	status: 'server.view',
 	health: 'server.view',
@@ -24,6 +27,10 @@ const ACTION_CAPS: Record<string, Capability> = {
 	bans: 'server.view',
 	reserved: 'server.view',
 	sponsor: 'server.view',
+
+	chatTerms: 'chat.read',
+	chat: 'chat.read',
+	chatTermsAccept: 'manager',
 
 	broadcast: 'chat.send',
 	whisper: 'chat.send',
@@ -62,6 +69,14 @@ test('every action has a line in the table', () => {
 	expect(Object.keys(ACTION_CAPS).sort()).toEqual(Object.keys(ACTIONS).sort());
 });
 
+test('the table says of each action what the registry does', () => {
+	for (const [name, cap] of Object.entries(ACTION_CAPS)) {
+		const def = ACTIONS[name];
+		expect([name, !!def.manager]).toEqual([name, cap === 'manager']);
+		if (cap !== 'manager') expect([name, def.cap]).toEqual([name, cap]);
+	}
+});
+
 describe.skipIf(!hasTestDb)('game action permission matrix', () => {
 	let env: Env;
 	let world: World;
@@ -73,14 +88,14 @@ describe.skipIf(!hasTestDb)('game action permission matrix', () => {
 	});
 
 	for (const [action, cap] of Object.entries(ACTION_CAPS)) {
-		test(`${action} needs ${cap}`, async () => {
+		test(`${action} needs ${cap === 'manager' ? 'an owner of the organisation' : cap}`, async () => {
 			gateway = stubGateway();
 			const { POST } = await import('../routes/api/servers/[id]/rcon/[action]/+server');
 			const got: Record<string, unknown> = {};
 			const want: Record<string, unknown> = {};
 			const reached: string[] = [];
 			for (const who of PRINCIPALS) {
-				want[who] = expected(`cap:${cap}`, who);
+				want[who] = expected(cap === 'manager' ? 'manager' : `cap:${cap}`, who);
 				const before = gateway.runs.length;
 				const answer = await callApi(POST, world.users[who], {
 					method: 'POST',
@@ -94,6 +109,40 @@ describe.skipIf(!hasTestDb)('game action permission matrix', () => {
 			expect(reached).toEqual(PRINCIPALS.filter((who) => want[who] === 'ok'));
 		});
 	}
+
+	test('a name the registry does not hold is no action, an object’s built-ins included', async () => {
+		gateway = stubGateway();
+		const { GET, POST } = await import('../routes/api/servers/[id]/rcon/[action]/+server');
+		const names = ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', 'nonsense'];
+		for (const action of names)
+			for (const [method, handler] of [
+				['POST', POST],
+				['GET', GET]
+			] as const) {
+				const answer = await callApi(handler, world.users.owner, {
+					method,
+					params: { id: world.server.id, action }
+				});
+				expect([action, method, answer.status, answer.code]).toEqual([
+					action,
+					method,
+					404,
+					'unknown_action'
+				]);
+			}
+		expect(gateway.runs).toEqual([]);
+		// and it leaves nothing in the trail
+		const rows = await env.db
+			.select({ action: auditLog.action })
+			.from(auditLog)
+			.where(
+				inArray(
+					auditLog.action,
+					names.map((n) => `rcon.${n}`)
+				)
+			);
+		expect(rows).toEqual([]);
+	});
 
 	test('a read may not be used to run a mutating action', async () => {
 		stubGateway();

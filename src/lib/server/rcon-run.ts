@@ -3,11 +3,12 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { flag, getEnv } from './env';
 import { ApiError, apiJson, forLog, readJson } from './http';
 import { writeAudit } from './audit';
-import { getServer, requireUser, serverAccessFor } from './access';
+import { getServer, keyForbidden, requireUser, serverAccessFor } from './access';
 import { CAPABILITY_INFO } from '../capabilities';
-import { ACTIONS, ACTION_NAMES } from './actions';
+import { actionNamed, ACTION_NAMES } from './actions';
 import { GameError } from './rcon';
 import { gateway } from './gateway';
+import { PRIORITY } from './dispatcher';
 import { assertRate } from './ratelimit';
 import { noteLocalEdit } from './lists-sync';
 import type { Kind } from './lists-plan';
@@ -54,7 +55,7 @@ export async function runAction(
 ): Promise<Response> {
 	const env = getEnv();
 	const req = event.request;
-	const def = ACTIONS[name];
+	const def = actionNamed(name);
 	if (!def)
 		throw new ApiError(
 			404,
@@ -73,6 +74,10 @@ export async function runAction(
 	const user = requireUser(event.locals);
 	const server = await getServer(env, serverId);
 	const access = server ? await serverAccessFor(env, user, serverId) : null;
+	// What only the organisation's owners may do is never a key's, whichever server it names (as
+	// requireServerManager has it): a key gets the same answer whether or not it can see the
+	// server. One that can leaves its refusal in the trail below, as every refusal does.
+	if (def.manager && user.apiKey && (!server || !access)) throw keyForbidden();
 	if (!server || !access) throw new ApiError(404, 'Server not found.', 'not_found');
 
 	const auditReads = flag(env.AUDIT_LOG_READS, false);
@@ -89,6 +94,24 @@ export async function runAction(
 		target
 	};
 
+	if (def.manager && (user.apiKey || !access.manager)) {
+		await writeAudit(env, req, {
+			...base,
+			outcome: 'denied',
+			status: 403,
+			message: user.apiKey
+				? 'Needs an owner of the organisation in person, an API key is not one'
+				: `Needs an owner of the organisation, role '${access.roleName}' is not one`,
+			detail
+		});
+		throw user.apiKey
+			? keyForbidden()
+			: new ApiError(
+					403,
+					`Only an owner of the organisation that runs ${server.name} can do that.`,
+					'forbidden'
+				);
+	}
 	if (!access.caps.has(def.cap)) {
 		await writeAudit(env, req, {
 			...base,
@@ -106,6 +129,9 @@ export async function runAction(
 
 	if (name === 'raw') assertRate(`raw:${user.id}`, 30, 60_000);
 	// Pages read the live view; direct game reads are for tools and the odd refresh, not a poll loop.
+	// Two tabs do read the game on a timer while they show, Server log and Chat: what they show is
+	// kept nowhere, so there is no live view of it to read instead. Both stop when the panel refuses
+	// them: a refusal is recorded each time, and a loop of them would fill the audit trail.
 	assertRate(actionBudget(user.id), ACTIONS_PER_MINUTE, 60_000);
 
 	// The game's answers as it sent them are what a connection test shows, and that needs Config
@@ -115,7 +141,14 @@ export async function runAction(
 
 	const started = Date.now();
 	try {
-		const result = await gateway().run(env, server, name, params);
+		// a page's timer read takes its turn with the worker's own looks, behind commands and rules
+		const result = await gateway().run(
+			env,
+			server,
+			name,
+			params,
+			def.poll ? PRIORITY.observe : undefined
+		);
 		if (name === 'capabilities' && !unshaped && result && typeof result === 'object')
 			delete (result as { raw?: unknown }).raw;
 		// Addresses are for the site owner alone: the listener's log keeps its events, not its peers.

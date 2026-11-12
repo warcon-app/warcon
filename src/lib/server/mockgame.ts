@@ -83,6 +83,23 @@ interface State {
 	startedAt: number;
 	/** what GET /v1/feed reports (setMockFeed); null: a feed that is off */
 	feedReport: Record<string, unknown> | null;
+	/** Season 3's chat: the terms version accepted (0: none) and the lines kept for the map on */
+	chat: { accepted: number; seq: number; last: number; lines: ChatMessage[] };
+}
+
+/** A chat line as the game sends it (the official console's Season 3 client and field notes). */
+interface ChatMessage {
+	seq: number;
+	sentUtc: string;
+	channel: string;
+	faction: string | null;
+	steamId: string | null;
+	realName: string;
+	hiddenName: string | null;
+	anonymous: boolean;
+	text: string;
+	rawText: string;
+	ping: boolean;
 }
 
 // Season 3 adds the map Sabatulo (id Russia, game mode Moscow_KOTH_01) and the modifier Limited
@@ -168,7 +185,11 @@ const LIVE_BUILD_MISSING = new Set([
 	'POST /v1/rotation/save',
 	'PATCH /v1/settings',
 	// Season 2 (CL-516586) on
-	'GET /v1/feed'
+	'GET /v1/feed',
+	// Season 3 on
+	'GET /v1/chat/terms',
+	'POST /v1/chat/terms',
+	'GET /v1/chat'
 ]);
 const liveBuild = () => /^(1|true|yes)$/i.test(process.env.MOCK_LIVE_BUILD || '');
 // With MOCK_LIVE_ADDS=now as well, a slot added to the document is reserved at once while one taken
@@ -255,8 +276,76 @@ const CAPABILITY_ROUTES = [
 	'GET /v1/config',
 	'POST /v1/config/validate',
 	'PUT /v1/config',
-	'GET /v1/feed'
+	'GET /v1/feed',
+	'GET /v1/chat/terms',
+	'POST /v1/chat/terms',
+	'GET /v1/chat'
 ];
+
+// Season 3's in-game chat (the official console's client and demo, 2026-11-12; no live server
+// seen). A server asks for its chat terms to be accepted, by version, before it serves the chat:
+// until then GET /v1/chat answers 409, and its event feed sends nothing, which GET /v1/feed reports
+// as pausedForTerms. It keeps the last 500 lines of the map on, numbered from 1.
+const CHAT_TERMS_VERSION = 1;
+// The demo's own stand-in: a real server sends the game's terms.
+const CHAT_TERMS_TEXT = [
+	"Read these terms before viewing this demo server's chat. They stand in for the terms a real WARDOGS server sends.",
+	'- Chat is shown here only so that this server can be moderated.',
+	'- It is live, and is not to be recorded, stored, exported or shared beyond what moderating the server requires.',
+	'- Whoever accepts answers for how it is used.'
+].join('\n');
+const CHAT_KEEP = 500;
+const CHAT_DEFAULT_LIMIT = 100;
+const CHAT_MAX_LIMIT = 500;
+/** a new demo line every so often once the terms are accepted */
+const CHAT_EVERY_MS = 2500;
+/** [channel, what players saw, what was typed, a ping callout] */
+const CHAT_SCRIPT: [string, string, string, boolean][] = [
+	['Team', 'push the hill from the east side', 'push the hill from the east side', false],
+	['Global', 'anyone seen a medic around', 'anyone seen a medic around', false],
+	['Squad', 'reloading, cover me', 'reloading, cover me', false],
+	['Global', 'what the **** is that tank doing', 'what the hell is that tank doing', false],
+	['Team', 'Enemy spotted near the foundry', 'Enemy spotted near the foundry', true],
+	['Team', 'need ammo at the north point', 'need ammo at the north point', false],
+	['Global', 'gg that was close', 'gg that was close', false],
+	['Proximity', 'over here, behind the wall', 'over here, behind the wall', false],
+	['Vehicle', 'hold on, taking the hill', 'hold on, taking the hill', false],
+	['Team', 'Attack here', 'Attack here', true]
+];
+const HIDDEN_NAMES = ['Amber Falcon', 'Quiet Badger', 'Copper Heron', 'Jade Otter', 'Dusty Weasel'];
+const FACTION_LABELS = ['RED', 'BLU', 'GRN'];
+
+/** Adds the demo lines that fell due since the last one: nothing before the terms are accepted. */
+function chatUpTo(s: State, now: number): void {
+	const c = s.chat;
+	if (c.accepted < CHAT_TERMS_VERSION || !s.players.length) return;
+	if (!c.last) c.last = now - CHAT_EVERY_MS * 4;
+	// a server left alone for a while does not come back with hundreds of lines at once
+	if (now - c.last > CHAT_EVERY_MS * 40) c.last = now - CHAT_EVERY_MS * 40;
+	while (now - c.last >= CHAT_EVERY_MS) {
+		c.last += CHAT_EVERY_MS;
+		const [channel, text, rawText, ping] = CHAT_SCRIPT[c.seq % CHAT_SCRIPT.length];
+		const who = s.players[(c.seq * 7) % s.players.length];
+		c.seq++;
+		// the chat names a side by its short label, as the console's notes have it (RED, BLU, GRN)
+		const side = s.factions.findIndex((f) => f.name === who.faction);
+		c.lines.push({
+			seq: c.seq,
+			sentUtc: new Date(c.last).toISOString(),
+			channel,
+			faction: FACTION_LABELS[side] ?? null,
+			steamId: who.steamId || null,
+			realName: who.name,
+			hiddenName: HIDDEN_NAMES[c.seq % HIDDEN_NAMES.length],
+			// every third speaker is in anonymous mode: the others see the hidden name only
+			anonymous: c.seq % 3 === 0,
+			text,
+			rawText,
+			ping
+		});
+	}
+	if (c.lines.length > CHAT_KEEP) c.lines.splice(0, c.lines.length - CHAT_KEEP);
+}
 
 // The schema live build CL-501228 reports from GET /v1/config (captured 2026-09-14; CL-499480's
 // was the same minus bWriteAuditLogFile and the per-key writable/lockedBy flags).
@@ -502,7 +591,8 @@ function seed(name: string): State {
 		matchState: '',
 		matchId: crypto.randomUUID(),
 		startedAt: STARTED,
-		feedReport: null
+		feedReport: null,
+		chat: { accepted: 0, seq: 0, last: 0, lines: [] }
 	};
 	state.configText = seedConfig(state);
 	return state;
@@ -608,6 +698,9 @@ export function restartMock(key: string, at = Date.now()): void {
 	const s = stateFor(key);
 	s.startedAt = at;
 	s.reserved = reservedFromText(s.configText).filter((id) => /^\d{17}$/.test(id));
+	// A new process numbers its chat from 1 again. Whether a real server keeps an acceptance of
+	// its chat terms across a restart is not known; the demo keeps it.
+	s.chat = { accepted: s.chat.accepted, seq: 0, last: 0, lines: [] };
 	if (startupMap()) comeUp(s);
 }
 
@@ -787,6 +880,8 @@ function resetScores(s: State): void {
 	}
 	s.matchStart = Date.now();
 	s.matchId = crypto.randomUUID();
+	// The chat is kept for the map on: a new match starts with none, its numbering going on.
+	s.chat.lines = [];
 	// Kills, deaths and cash start again, as on the game's scoreboard.
 	for (const p of s.players) {
 		p.kills = 0;
@@ -951,9 +1046,57 @@ export function mockHandle(
 		});
 	}
 	if (route === 'GET feed') {
+		const report = s.feedReport ?? {
+			enabled: false,
+			endpointCount: 0,
+			anyUnhealthy: false,
+			endpoints: []
+		};
+		// A Season 3 report (one that carries the flag) follows the terms; a Season 2 one has none.
 		return ok(
-			s.feedReport ?? { enabled: false, endpointCount: 0, anyUnhealthy: false, endpoints: [] }
+			'pausedForTerms' in report
+				? { ...report, pausedForTerms: s.chat.accepted < CHAT_TERMS_VERSION }
+				: report
 		);
+	}
+	if (route === 'GET chat/terms') {
+		return ok({
+			requiredVersion: CHAT_TERMS_VERSION,
+			acceptedVersion: s.chat.accepted,
+			accepted: s.chat.accepted >= CHAT_TERMS_VERSION,
+			text: CHAT_TERMS_TEXT
+		});
+	}
+	if (route === 'POST chat/terms') {
+		if (b.version === undefined || b.version === null)
+			return fail(400, 'Provide the terms version to accept.', 'missing_version');
+		if (Number(b.version) !== CHAT_TERMS_VERSION)
+			return fail(
+				400,
+				`Terms version ${b.version} is not the version this server requires (${CHAT_TERMS_VERSION}).`,
+				'terms_version_mismatch'
+			);
+		s.chat.accepted = CHAT_TERMS_VERSION;
+		log(s, 'COMMAND', `chat terms accept ${CHAT_TERMS_VERSION}`);
+		return ok({
+			ok: true,
+			pending: false,
+			message: `OK: chat terms version ${CHAT_TERMS_VERSION} accepted.`
+		});
+	}
+	if (route === 'GET chat') {
+		if (s.chat.accepted < CHAT_TERMS_VERSION)
+			return fail(
+				409,
+				'The chat terms have not been accepted on this server.',
+				'chat_terms_not_accepted'
+			);
+		chatUpTo(s, Date.now());
+		const after = Number(qs.get('after')) || 0;
+		const asked = Number(qs.get('limit')) || CHAT_DEFAULT_LIMIT;
+		const limit = Math.min(CHAT_MAX_LIMIT, Math.max(1, Math.trunc(asked)));
+		const messages = s.chat.lines.filter((l) => l.seq > after).slice(0, limit);
+		return ok({ latestSeq: s.chat.seq, messages, count: messages.length });
 	}
 	if (route === 'GET server-id') {
 		// Stable per demo server, standing in for the join code the WARDOGS backend issues.

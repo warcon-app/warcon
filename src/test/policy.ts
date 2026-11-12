@@ -27,6 +27,8 @@ export type Policy =
 	| `anyCap:${Capability}`; // the capability on any server of the org
 
 const ALL: readonly Capability[] = CAPABILITIES;
+/** Players' chat is read by people an organisation's owners choose: no built-in role, never a key. */
+const BUT_CHAT: readonly Capability[] = ALL.filter((c) => c !== 'chat.read');
 
 /** What each of the cast holds on the server under test; absent = cannot see it. */
 const CAPS: Partial<Record<PrincipalName, readonly Capability[]>> = {
@@ -36,7 +38,7 @@ const CAPS: Partial<Record<PrincipalName, readonly Capability[]>> = {
 	owner: ALL,
 	site: ALL,
 	keyView: ['server.view'],
-	keyAll: ALL,
+	keyAll: BUT_CHAT,
 	orgBans: ['server.view', 'lists.ban'],
 	orgSlots: ['server.view', 'lists.reserve'],
 	keyBans: ['server.view', 'lists.ban']
@@ -49,8 +51,8 @@ const CAPS: Partial<Record<PrincipalName, readonly Capability[]>> = {
  */
 const ANY_CAPS: Partial<Record<PrincipalName, readonly Capability[]>> = {
 	...CAPS,
-	elsewhere: ALL,
-	keyElsewhere: ALL.filter((c) => c !== 'lists.ban' && c !== 'lists.reserve')
+	elsewhere: BUT_CHAT,
+	keyElsewhere: BUT_CHAT.filter((c) => c !== 'lists.ban' && c !== 'lists.reserve')
 };
 
 const KEYS: PrincipalName[] = ['keyView', 'keyAll', 'keyElsewhere', 'keyBans'];
