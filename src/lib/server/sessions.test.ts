@@ -3,6 +3,8 @@ import {
 	diffPresence,
 	followPlayer,
 	LEAVE_GRACE_MS,
+	modeMoved,
+	modeOf,
 	newPresence,
 	type OpenSession
 } from './sessions';
@@ -21,6 +23,8 @@ const open = (steamId: string): OpenSession => ({
 	id: Number(steamId.slice(-3)),
 	steamId,
 	name: steamId,
+	hiddenName: null,
+	anonymous: false,
 	faction: null,
 	kills: 0,
 	deaths: 0,
@@ -32,6 +36,7 @@ const open = (steamId: string): OpenSession => ({
 	lastSeen: 2000,
 	writtenAt: 2000,
 	writtenTeam: null,
+	writtenMode: '0:',
 	firstVisit: false,
 	lastFaction: null,
 	team: null
@@ -254,6 +259,28 @@ describe('followPlayer', () => {
 		followPlayer(s, at(57, 9, 120_000), 5000);
 		expect(totals(s)).toEqual([94, 16, 210_000]);
 		expect(s.lastSeen).toBe(5000);
+	});
+
+	test('a session keeps the hidden name once its player was seen in anonymous mode, and whether it is in use', () => {
+		const s = open('76561198000000001');
+		followPlayer(s, at(1, 0, 0), 1000);
+		expect([s.hiddenName, s.anonymous, modeMoved(s)]).toEqual([null, false, false]);
+		followPlayer(s, { ...at(2, 0, 0), hiddenName: 'Falcon' }, 2000);
+		// a change of mode is one the row does not hold yet
+		expect([s.hiddenName, s.anonymous, modeMoved(s)]).toEqual(['Falcon', true, true]);
+		s.writtenMode = modeOf(s);
+		// the mode switched off again: the session still says it was played under that name, and
+		// that the name is no longer the one the others see
+		followPlayer(s, at(3, 0, 0), 3000);
+		expect([s.hiddenName, s.anonymous, modeMoved(s)]).toEqual(['Falcon', false, true]);
+		s.writtenMode = modeOf(s);
+		// and on again under another name: the last one seen
+		followPlayer(s, { ...at(4, 0, 0), hiddenName: 'Heron' }, 4000);
+		expect([s.hiddenName, s.anonymous, modeMoved(s)]).toEqual(['Heron', true, true]);
+		s.writtenMode = modeOf(s);
+		followPlayer(s, { ...at(5, 0, 0), hiddenName: 'Heron' }, 5000);
+		expect(modeMoved(s)).toBe(false);
+		expect(s.name).toBe('76561198000000001');
 	});
 
 	test('the team played is kept when the player ends on the holding team or no side', () => {

@@ -1,6 +1,8 @@
 <script lang="ts">
 	// A public match page: the match panel as the dossier shows it, names linking to public
 	// careers, and the match's kill feed as the live page shows kills (names and factions only).
+	// A player who played the match in anonymous mode is here under their hidden name; their line
+	// carries no SteamID, so it links nowhere.
 	import { api, qs } from '$lib/api';
 	import MatchPanel from '$lib/components/MatchPanel.svelte';
 	import { causeLabel } from '$lib/causes';
@@ -57,7 +59,10 @@
 <div class="rise">
 	<a href="{base}/matches" class="caps text-mist-400 hover:text-mist-100">← Matches</a>
 	<div class="mt-3 panel">
-		<MatchPanel {view} hrefFor={(steamId) => `${base}/players/${steamId}`} />
+		<MatchPanel
+			{view}
+			hrefFor={(steamId) => (/^\d{17}$/.test(steamId) ? `${base}/players/${steamId}` : null)}
+		/>
 		{#if view.kills}
 			<span class="mt-4 field-label">Kill feed · {view.kills}</span>
 			<div class="table-wrap">

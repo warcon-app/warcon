@@ -370,6 +370,8 @@ describe.skipIf(!hasTestDb)('delivery across servers', () => {
 			id: 1,
 			steamId: AWAY,
 			name: 'Away',
+			hiddenName: null,
+			anonymous: false,
 			faction: null,
 			kills: 0,
 			deaths: 0,
@@ -381,6 +383,7 @@ describe.skipIf(!hasTestDb)('delivery across servers', () => {
 			lastSeen: heldAt - 5000,
 			writtenAt: heldAt - 5000,
 			writtenTeam: null,
+			writtenMode: '0:',
 			firstVisit: false,
 			lastFaction: null,
 			team: null

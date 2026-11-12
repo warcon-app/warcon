@@ -3,7 +3,9 @@
 	// when, how long, how many), the final scores, the score over time, the awards and the
 	// scoreboard: one table per side, the winner first, then anyone never on a side; one sort
 	// orders them all, kills first, and on a wide screen their columns line up. The page renders
-	// the match's kill feed under it.
+	// the match's kill feed under it. A player who played the match in the game's anonymous mode
+	// carries the name the others saw for them in the panel; the public site has that name alone
+	// and no page to open from it ($lib/anonymous).
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import ScoreTimeline from '$lib/components/ScoreTimeline.svelte';
 	import { fmtCash } from '$lib/cash';
@@ -26,8 +28,9 @@
 		showIds = false
 	}: {
 		view: MatchView;
-		/** where a player's name goes: the dossier, or the public career */
-		hrefFor: (steamId: string) => string;
+		/** where a player's name goes: the dossier, or the public career; null for a line that
+		 *  leads nowhere (the public line of a player who was in anonymous mode) */
+		hrefFor: (steamId: string) => string | null;
 		showIds?: boolean;
 	} = $props();
 
@@ -131,15 +134,20 @@
 {#if view.awards.length}
 	<div class="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
 		{#each view.awards as a (a.key)}
+			{@const href = hrefFor(a.steamId)}
 			<div class="rounded-ctl border border-black bg-ink-950 px-3.5 py-3">
 				<div class="caps text-mist-400">{a.label}</div>
 				<div class="mt-1 font-display text-xl font-semibold tabular">{a.value}</div>
-				<a
-					href={hrefFor(a.steamId)}
-					data-sveltekit-preload-data="tap"
-					class="block truncate text-[12.5px] text-mist-400 hover:text-accent hover:underline"
-					>{a.name}</a
-				>
+				{#if href}
+					<a
+						{href}
+						data-sveltekit-preload-data="tap"
+						class="block truncate text-[12.5px] text-mist-400 hover:text-accent hover:underline"
+						>{a.name}</a
+					>
+				{:else}
+					<span class="block truncate text-[12.5px] text-mist-400">{a.name}</span>
+				{/if}
 			</div>
 		{/each}
 	</div>
@@ -198,16 +206,28 @@
 				</thead>
 				<tbody>
 					{#each t.lines as l (l.steamId)}
+						{@const href = hrefFor(l.steamId)}
 						<tr>
 							<td>
 								<!-- a long name is cut short, on a phone too, so the numbers stay in view -->
-								<a
-									href={hrefFor(l.steamId)}
-									data-sveltekit-preload-data="tap"
-									title={l.name}
-									class="block max-w-[11rem] truncate hover:text-accent hover:underline md:max-w-none"
-									>{l.name}</a
-								>
+								{#if href}
+									<a
+										{href}
+										data-sveltekit-preload-data="tap"
+										title={l.name}
+										class="block max-w-[11rem] truncate hover:text-accent hover:underline md:max-w-none"
+										>{l.name}</a
+									>
+								{:else}
+									<span title={l.name} class="block max-w-[11rem] truncate md:max-w-none"
+										>{l.name}</span
+									>
+								{/if}
+								{#if l.hiddenName}<span
+										class="block max-w-[11rem] truncate text-[11px] text-mist-400 md:max-w-none"
+										title="Anonymous mode: the other players saw {l.hiddenName}, not this name"
+										>In game · <span class="text-mist-100">{l.hiddenName}</span></span
+									>{/if}
 								{#if showIds}<span class="block font-mono text-[11px] text-mist-600"
 										>{l.steamId}</span
 									>{/if}

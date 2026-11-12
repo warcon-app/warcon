@@ -1,7 +1,8 @@
 // Everyone an organisation has seen: one row per SteamID built from player_sessions on the org's
-// servers the viewer can open, with every name they played under and the names the kill feed showed
-// for them there that were not those (player_aliases). A player who never joined one of those
-// servers cannot appear here, whatever is searched for.
+// servers the viewer can open, with every name they played under, the names the other players saw
+// for them in the game's anonymous mode (the sessions' hidden names, $lib/anonymous) and the names
+// the kill feed showed for them there that were neither (player_aliases). A player who never joined
+// one of those servers cannot appear here, whatever is searched for.
 import { sql, type SQL } from 'drizzle-orm';
 import type { Env } from './env';
 import { getProfiles } from './steam';
@@ -19,7 +20,8 @@ export const SEEN_SORTS = [
 export type SeenSort = (typeof SEEN_SORTS)[number];
 
 export interface SeenFilters {
-	/** matches any name used or shown in the kill feed (contains), or the SteamID (prefix) */
+	/** matches any name used, any hidden name the other players saw for them or any name shown in
+	 *  the kill feed (contains), or the SteamID (prefix) */
 	q: string;
 	/** seen in the last N days; null for ever */
 	since: number | null;
@@ -54,6 +56,8 @@ export interface SeenPlayer {
 	name: string;
 	/** every other name seen, most recent first */
 	aliases: string[];
+	/** the names the other players saw for them while they played in anonymous mode */
+	hiddenNames: string[];
 	/** the names the kill feed showed for them that were not the ones the server listed them under,
 	 *  most recent first */
 	feedNames: string[];
@@ -78,6 +82,7 @@ interface Row extends Record<string, unknown> {
 	steamId: string;
 	name: string;
 	names: string[];
+	hiddenNames: string[] | null;
 	feedNames: string[] | null;
 	lastServerId: string;
 	lastServerName: string | null;
@@ -131,6 +136,7 @@ export async function seenPlayers(
 		const q = f.q;
 		const like = '%' + likeEscape(q) + '%';
 		const named = sql`(EXISTS (SELECT 1 FROM unnest(names) n WHERE n ILIKE ${like})
+		                   OR EXISTS (SELECT 1 FROM unnest(hidden_names) n WHERE n ILIKE ${like})
 		                   OR EXISTS (SELECT 1 FROM unnest(feed_names) n WHERE n ILIKE ${like}))`;
 		conds.push(/^\d+$/.test(q) ? sql`(steam_id LIKE ${q + '%'} OR ${named})` : named);
 	}
@@ -159,6 +165,7 @@ export async function seenPlayers(
 			SELECT steam_id,
 			       (array_agg(name ORDER BY last_seen DESC))[1] AS name,
 			       (array_agg(DISTINCT name)) AS names,
+			       (array_agg(DISTINCT hidden_name) FILTER (WHERE hidden_name IS NOT NULL)) AS hidden_names,
 			       (array_agg(server_id ORDER BY last_seen DESC))[1] AS last_server_id,
 			       MIN(joined_at) AS first_seen,
 			       MAX(last_seen) AS last_seen,
@@ -198,7 +205,8 @@ export async function seenPlayers(
 			  FROM agg a LEFT JOIN servers s ON s.id = a.last_server_id
 			  LEFT JOIN fed f ON f.steam_id = a.steam_id
 		)
-		SELECT steam_id AS "steamId", name, names, feed_names AS "feedNames",
+		SELECT steam_id AS "steamId", name, names, hidden_names AS "hiddenNames",
+		       feed_names AS "feedNames",
 		       last_server_id AS "lastServerId",
 		       last_server_name AS "lastServerName", first_seen AS "firstSeen", last_seen AS "lastSeen",
 		       sessions, minutes, kills, deaths, servers, online,
@@ -220,8 +228,12 @@ export async function seenPlayers(
 			steamId: r.steamId,
 			name: r.name,
 			aliases: (r.names || []).filter((n: string) => n !== r.name),
-			// a name the feed showed that they also played under as their own is no other name
-			feedNames: (r.feedNames || []).filter((n: string) => !(r.names || []).includes(n)),
+			hiddenNames: r.hiddenNames || [],
+			// a name the feed showed that they also played under, as their own or as their hidden one,
+			// is no other name
+			feedNames: (r.feedNames || []).filter(
+				(n: string) => !(r.names || []).includes(n) && !(r.hiddenNames || []).includes(n)
+			),
 			firstSeen: r.firstSeen.toISOString(),
 			lastSeen: r.lastSeen.toISOString(),
 			sessions: r.sessions,

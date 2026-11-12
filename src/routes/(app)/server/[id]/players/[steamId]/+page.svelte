@@ -2,7 +2,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { api, errorMessage, rconPost } from '$lib/api';
 	import { MAX_CHAT } from '$lib/chat';
-	import { fmtNum, fmtTime } from '$lib/format';
+	import { fmtAgo, fmtNum, fmtTime } from '$lib/format';
 	import { causeLabel } from '$lib/causes';
 	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
@@ -310,6 +310,18 @@
 					>· also seen as {d.names.slice(1, 6).join(', ')}{d.names.length > 6 ? '…' : ''}</span
 				>{/if}
 		</div>
+		{#if d.hiddenNames.length}
+			<div class="mt-1.5 max-w-[980px] text-[12.5px] leading-relaxed text-mist-400">
+				In anonymous mode the other players saw
+				{#each d.hiddenNames as h, i (h.name)}<span
+						class="text-mist-100"
+						title="{h.sessions} session{h.sessions === 1 ? '' : 's'}, {fmtTime(
+							h.firstSeen
+						)} to {fmtTime(h.lastSeen)}">{h.name}</span
+					>{i < d.hiddenNames.length - 1 ? ', ' : ''}{/each}
+				<span>(last {fmtAgo(d.hiddenNames[0].lastSeen)})</span>
+			</div>
+		{/if}
 		{#if d.feedNames.length}
 			<div class="mt-1.5 max-w-[980px] text-[12.5px] leading-relaxed text-mist-400">
 				In the kill feed as
@@ -452,7 +464,14 @@
 							<tr>
 								<td class="whitespace-nowrap">{fmtTime(s.joinedAt)}</td>
 								<td>{s.serverName}</td>
-								<td>{s.name}</td>
+								<td
+									>{s.name}{#if s.hiddenName}
+										<Badge
+											tone="info"
+											title="Anonymous mode: the other players saw {s.hiddenName}, not this name"
+											>as {s.hiddenName}</Badge
+										>{/if}</td
+								>
 								<td>{s.faction || '—'}</td>
 								<td class="num"
 									>{minutes(s.minutes)}{#if !s.leftAt}<Badge tone="ok" class="ml-1">live</Badge

@@ -132,6 +132,11 @@ export interface Player {
 	deaths: number;
 	cash: number;
 	ping: number | null;
+	/**
+	 * The name the other players see in place of this one's own. There only while the player is in
+	 * the game's anonymous mode, which Season 3 builds report ($lib/anonymous).
+	 */
+	hiddenName?: string;
 }
 /** What the worker last saw on a server: the dashboard, server page and players page render this. */
 export interface LiveView {
@@ -415,6 +420,9 @@ export interface DossierSession {
 	serverId: string;
 	serverName: string;
 	name: string;
+	/** the name the other players saw in place of `name`, when the session was (at least partly)
+	 *  played in anonymous mode; null otherwise */
+	hiddenName: string | null;
 	faction: string | null;
 	joinedAt: string;
 	lastSeen: string;
@@ -450,6 +458,9 @@ export interface DossierView {
 	steamId: string;
 	name: string;
 	names: string[];
+	/** the names the other players saw for them while they played in the game's anonymous mode
+	 *  ($lib/anonymous), newest first, each with the sessions it was seen in */
+	hiddenNames: { name: string; firstSeen: string; lastSeen: string; sessions: number }[];
 	/** the names the kill feed showed for them that were not the ones the server listed them under,
 	 *  newest first, on the servers the viewer can open; `holder` is another listed player whose name
 	 *  it read as */

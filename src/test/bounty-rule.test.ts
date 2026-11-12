@@ -5,7 +5,7 @@
 // and the claimer's reserved slot goes on the list the rule names. A leave or a match end lapses
 // it, a worker restart keeps it, any save of the rule calls it off. A Bounties webhook gets a card
 // for each, with names and never a SteamID. The dry run replays the day's kills the same way.
-import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { and, eq, isNull } from 'drizzle-orm';
 import { join } from 'node:path';
 import type { Env } from '$lib/server/env';
@@ -33,7 +33,7 @@ import {
 	OFFLINE_AFTER_FAILURES,
 	type ServerMemory
 } from '$lib/server/observe';
-import { startDelivery, stopDelivery } from '$lib/server/outbox';
+import { deliveryStats, startDelivery, stopDelivery } from '$lib/server/outbox';
 import { WardogsClient } from '$lib/server/rcon';
 import { closeAllSessions, LEAVE_GRACE_MS } from '$lib/server/sessions';
 import { dryRun, invalidateTriggers, validateConfig } from '$lib/server/triggers';
@@ -92,11 +92,19 @@ describe.skipIf(!hasTestDb)('Bounty rule, live', () => {
 	let spy: ReturnType<typeof spyOn>;
 	/** who the stand-in game lists, per server */
 	const listed = new Map<string, string[]>();
+	/** the players in the game's anonymous mode, and the hidden name the others see for each */
+	const hiddenAs = new Map<string, string>();
 	const broadcasts: [string, string][] = [];
 	const whispers: [string, string, string][] = [];
 	/** what reached Discord */
 	const posts: { title: string; description: string }[] = [];
 	const realFetch = globalThis.fetch;
+
+	// The worker's lease lasts fifteen seconds and is taken once for the file, which runs about
+	// that long: every test starts with it renewed, so a slow machine does not lose it part-way.
+	beforeEach(async () => {
+		expect(await acquireOrRenew(env, 'bounty test')).toBe(true);
+	});
 
 	beforeAll(async () => {
 		env = { ...(await testEnv()), STEAM_API_KEY: '' };
@@ -124,6 +132,9 @@ describe.skipIf(!hasTestDb)('Bounty rule, live', () => {
 								name: name(steamId),
 								steamId,
 								faction: SIDE[steamId],
+								// Season 3: everyone has a hidden name, and it is in use for some
+								hiddenName: hiddenAs.get(steamId) ?? 'Quail',
+								anonymous: hiddenAs.has(steamId),
 								kills: 0
 							}))
 						})
@@ -200,12 +211,16 @@ describe.skipIf(!hasTestDb)('Bounty rule, live', () => {
 		)[0].state as { open: { steamId: string; streak: number; match: string } | null } | null;
 	const rowOf = async (id: number) =>
 		(await env.db.select().from(outbox).where(eq(outbox.id, id)))[0];
-	/** Runs the delivery loop until the rows are done. */
+	/**
+	 * Runs the delivery loop until the rows are done and their chains have ended: a row's state is
+	 * written first, the trail and the rule's count after it, and a test reads those next.
+	 */
 	const deliver = async (...ids: number[]) => {
 		startDelivery(env);
 		for (let i = 0; i < 100; i++) {
 			const rows = await Promise.all(ids.map(rowOf));
-			if (rows.every((r) => r.state !== 'pending' && r.state !== 'sending')) break;
+			const done = rows.every((r) => r.state !== 'pending' && r.state !== 'sending');
+			if (done && !deliveryStats().chains) break;
 			await Bun.sleep(50);
 		}
 		await stopDelivery();
@@ -328,6 +343,91 @@ describe.skipIf(!hasTestDb)('Bounty rule, live', () => {
 		expect(cards[1].description).toContain("**p902** ended **p901**'s run at 3");
 		expect(cards[1].description).toContain('Reward: a reserved slot for 2 days');
 		for (const c of cards) expect(c.description).not.toMatch(/\d{17}/);
+	});
+
+	test('a player in anonymous mode is announced, claimed and carded under the name the others see', async () => {
+		const w = await seedWorld(env);
+		await bountiesHook(w);
+		posts.length = 0;
+		// the marked player and the claimer are both in anonymous mode; the feed names them as ever
+		hiddenAs.set(A, 'Falcon');
+		hiddenAs.set(B, 'Heron');
+		try {
+			const m = await memoryOf(w);
+			await look(m, A, B, C, D);
+			const id = await rule(w, {
+				streak: 3,
+				minPlayers: 2,
+				reward: 'none',
+				setMessage: 'BOUNTY on {name} [{steamid}] ({target}), {streak} kills, {kills} ever, {kd}',
+				claimMessage: '{player} [{steamid}] took {target} down, match {matches}',
+				whisper: 'Well done {name} [{steamid}]: {target} is yours, match {matches}'
+			});
+			await post(w.server.id, [ev(A, B), ev(A, C), ev(A, B)]);
+			const [set] = await rowsOf(id);
+			// said to everyone: the hidden name, and neither the SteamID nor the stats that would
+			// point at their line of a public board
+			expect((set.params as { message: string }).message).toBe(
+				'BOUNTY on Falcon [] (Falcon), 3 kills, … ever, …'
+			);
+			// the trail is the staff's: their own name
+			expect(set.okMessage).toBe('Announced the bounty on p901 (3 kills).');
+			expect(set.detail).toMatchObject({ name: 'p901' });
+			expect((await stateOf(id))?.open).toMatchObject({
+				steamId: A,
+				name: 'p901',
+				hiddenName: 'Falcon'
+			});
+			await post(w.server.id, [ev(B, A)]);
+			const rows = await rowsOf(id);
+			expect(rows.slice(1).map((r) => r.action)).toEqual([BOUNTY_CLAIM, 'broadcast', 'whisper']);
+			expect(rows[1].okMessage).toBe('p902 claimed the bounty on p901 (a run of 3).');
+			expect((rows[2].params as { message: string }).message).toBe(
+				'Heron [] took Falcon down, match …'
+			);
+			// the whisper is the claimer's own: their name, SteamID and stats, the marked player still
+			// hidden
+			expect((rows[3].params as { message: string }).message).toBe(
+				`Well done p902 [${B}]: Falcon is yours, match 0`
+			);
+			const cards = await postsSoon(2);
+			expect(cards.map((c) => c.title)).toEqual(['Bounty set', 'Bounty claimed']);
+			expect(cards[0].description).toContain('**Falcon**: 3 kills without dying');
+			expect(cards[1].description).toContain("**Heron** ended **Falcon**'s run at 3");
+			for (const c of cards) expect(c.description).not.toMatch(/p90[12]|\d{17}/);
+			// nothing said to the server names either of them
+			for (const r of rows.filter((x) => x.action === 'broadcast'))
+				expect((r.params as { message: string }).message).not.toMatch(/p90[12]|\d{17}/);
+		} finally {
+			hiddenAs.clear();
+		}
+	});
+
+	test('a bounty on a player in anonymous mode lapses under the name it was announced with', async () => {
+		const w = await seedWorld(env);
+		await bountiesHook(w);
+		posts.length = 0;
+		hiddenAs.set(A, 'Falcon');
+		try {
+			const m = await memoryOf(w);
+			await look(m, A, B, C, D);
+			const id = await rule(w, { streak: 3, minPlayers: 2, reward: 'none' });
+			await post(w.server.id, [ev(A, B), ev(A, C), ev(A, B)]);
+			expect((await stateOf(id))?.open).toMatchObject({ steamId: A, hiddenName: 'Falcon' });
+			// they leave: past the grace the look lets the bounty go
+			m.presence.open.get(A)!.lastSeen = Date.now() - 120_000;
+			await look(m, B, C, D);
+			expect((await stateOf(id))?.open).toBeNull();
+			const lapse = (await rowsOf(id)).find((r) => r.action === BOUNTY_LAPSE)!;
+			// the note in the trail names them; the card for the players' channel does not
+			expect(lapse.okMessage).toContain('p901');
+			const cards = await postsSoon(2);
+			expect(cards.map((c) => c.title)).toEqual(['Bounty set', 'Bounty lapsed']);
+			expect(cards[1].description).toContain('**Falcon** left the server on a run of 3');
+			for (const c of cards) expect(c.description).not.toMatch(/p901|\d{17}/);
+		} finally {
+			hiddenAs.clear();
+		}
 	});
 
 	test('a claimer whose slot lasts longer keeps it; one whose slot ends sooner has it made to last; the org list when the rule says', async () => {

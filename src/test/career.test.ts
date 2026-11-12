@@ -1,6 +1,7 @@
 // Boards and careers are summed from each player's line of every match that ended; these check
 // the reads against a database.
 import { beforeAll, describe, expect, test } from 'bun:test';
+import { and, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import { matches, matchPlayers, playerSessions } from '$lib/server/db/schema';
 import { loadBoard, loadCareer, riskPerformanceFor } from '$lib/server/leaderboards';
@@ -143,6 +144,28 @@ describe.skipIf(!hasTestDb)('career and boards from the match rows', () => {
 
 		const perf = await riskPerformanceFor(env, [w.server.id], [STEAM]);
 		expect(perf.get(STEAM)).toMatchObject({ matches: 2, losses: 1, kills: 8, deaths: 3 });
+
+		// The newer match was played in the game's anonymous mode: its public page has the player
+		// under the hidden name, so the public career does not list it beside their own. The panel's
+		// career lists it, and both count it.
+		await env.db
+			.update(matchPlayers)
+			.set({ hiddenName: 'Heron' })
+			.where(and(eq(matchPlayers.matchId, second.id), eq(matchPlayers.steamId, STEAM)));
+		const asked = {
+			serverId: w.server.id,
+			orgId: w.org.id,
+			ids: [w.server.id],
+			nameOf: new Map<string, string>(),
+			steamId: STEAM
+		};
+		const panel = await loadCareer(env, asked);
+		const shown = await loadCareer(env, { ...asked, publicView: true });
+		expect(panel.last.map((m) => m.matchId)).toEqual([second.id, first.id]);
+		expect(shown.last.map((m) => m.matchId)).toEqual([first.id]);
+		expect(JSON.stringify(shown)).not.toContain('Heron');
+		expect({ ...shown, last: [] }).toEqual({ ...panel, last: [] });
+		expect(shown).toMatchObject({ matches: 2, kills: 8, deaths: 3 });
 	});
 
 	test('kills per hour leaves seed time out of the hours', async () => {

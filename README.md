@@ -130,6 +130,12 @@ What is in the box:
 - **Weather that changes mid-match**: a [Weather cycle](#automation-triggers) rule changes the
   time of day and weather every so many minutes, in turn or at random, with no map change or
   restart; rain only where the server allows it, and on Sabatulo only the lightings it takes.
+- **Anonymous mode, respected**: a player who hides their name in the game is shown to your staff
+  under both names, the hidden one the other players see beside their own, and can be found by
+  either. To everyone else the panel says what the game says: rule messages that name another
+  player, the Discord status card, a Bounties channel, the public status page and a match's
+  public page use the hidden name. Public leaderboards do not hide such a player yet. See
+  [Anonymous mode](#anonymous-mode).
 - **In-game chat, live**: on Season 3 servers a **Chat** tab shows what players type as they type
   it: the channel, the side, the name the others saw (the hidden name of a player in anonymous
   mode), and where the game's chat filter changed a line, what was typed. It is for those an
@@ -632,6 +638,56 @@ A server whose last look failed is named above the table, and its players are le
 answers again. Anyone who can open a server sees its players here, as on its own Players tab, and
 nothing its own tab would not show them.
 
+### Anonymous mode
+
+A player can hide their name in the game's options. The other players then see a name the game made
+up for them (one short word, and two players can share one) on the scoreboard, in the kill feed and
+in the chat. Season 3 servers (build CL-533689 on) tell the panel both names and whether the hidden
+one is in use; older builds say nothing of it, and nothing changes there.
+
+**Staff see both.** Wherever the panel lists who is on (a server's Players tab and its Teams view,
+the Overview board, the Players page), a player in anonymous mode carries an _anon_ mark and the
+name the others see for them, and the filter finds them by it: it is the name a report made in the
+game will give you. Each session keeps the hidden name it was played under, so past players are
+found by it too, on the server's Players tab and the organisation's Players page, and a player's
+page lists the hidden names they were seen under and when. A match keeps the hidden name each
+player played it under, and its page in the panel shows it under their own. The chat tab shows
+both names on each line. A player's own name, their SteamID and their history are where they
+always were: anonymous mode hides a player from other players, not from the people who run the
+server.
+
+**Everyone else sees what the game shows them.** What the panel says to people who are not staff
+names a player in anonymous mode by the hidden name, and gives no way from it to who they are:
+
+- Rule messages that name another player: a Bounty's broadcasts (where their `{steamid}` is left
+  blank and their stats, `{kills}` and the rest, read `…`: a public board would give them away),
+  a Match broadcast's `{mvp}` and `{top}`, a Death whisper's `{killer}`, a Team kill limit's
+  `{victim}`. A whisper to the player themself still uses their own name and stats, and the audit
+  trail and Recent actions keep the name: those are yours.
+- The Discord status card and the cards a Bounties channel gets.
+- The public status page: its roster and its last kills, with no link to a career page.
+- A match's public page, for good: whoever played any of the match hidden is on its scoreboard,
+  in its awards and in its kills under the hidden name, with no link and no SteamID, whatever
+  they did afterwards. Matches that ended before the panel knew of the mode stay as they were.
+- A public career, where it would point at them: its last matches leave out the ones its player
+  played hidden (each is on its own page under the hidden name, with the same figures), and its
+  most killed and nemeses leave out anyone who is in the mode, or was when last seen. The panel's
+  own career and dossier show all of it.
+
+**Where a server's leaderboards are public, this does not yet keep a hidden player hidden.** The
+public leaderboard and careers still count everything a player does in the mode under their own
+name, as they did before the game said who was anonymous. The board lists everyone seen in the
+last minute or two, so whoever is on it but not on the roster under that name is one of the
+server's hidden players; and a hidden player's totals, best streak and kill-feed record move as
+they play, by the figures of their hidden line. Until the public boards and careers count open
+play only, which is the next piece of work, keep a server's leaderboards private if its players
+rely on the mode. A server with only its status page public shows the hidden names and nothing to
+set them against.
+
+An API key with View is your own tool and gets both names. A JSON webhook carries a player's own
+name and SteamID and says nothing of the mode, so do not post what it sends where other players
+read it.
+
 ### Player dossiers, risk and the watchlist
 
 Every player name in the panel links to a dossier: sessions, playtime, seed time, kills and deaths
@@ -941,6 +997,11 @@ goes with `…` in their place. What became of a rule's whisper or kick is told 
 words under Recent actions, in the audit trail and on Discord (`Whispered [ABC] Night Owl.`,
 `Refused: the player is not on the server.`), never the game's, so what it tells a player reaches
 that player alone. A dry run shows `…` for the stats and for whatever else it does not replay.
+
+A message other players will read about someone in the game's [anonymous mode](#anonymous-mode)
+names them as the game does: in a Bounty's broadcasts `{name}` and `{target}` are the hidden name,
+`{steamid}` is empty and the player's stats read `…`; a Death whisper's `{killer}`, a Team kill
+limit's `{victim}` and a Match broadcast's `{mvp}` and `{top}` are the hidden name too.
 
 ### In-game chat
 
@@ -1317,7 +1378,9 @@ final scores, the score of each faction over the match (from the analytics sampl
 judged at read time (most kills, best K/D at ten kills or more, longest shot, best streak,
 richest match; none for a match under twenty minutes), a sortable scoreboard of every player's
 line and the match's kill feed. Both are public too under the leaderboards switch, at
-`/s/<id>/matches`.
+`/s/<id>/matches`; there a player who played the match in the game's
+[anonymous mode](#anonymous-mode) goes by their hidden name, which the panel's page shows under
+their own.
 
 An org owner can **purge a server's stats** at the foot of its Settings tab: every recorded kill,
 match, match row and match event of the server is deleted, for good, after typing the server's
@@ -1365,7 +1428,13 @@ the server limit, which shuts every such page in it at once.
 
 Public pages never show pings, the build or the panel's own error text (an unreachable server
 says only that it could not be reached), and read Steam personas from the cache only. The status
-page shows in-game names alone. With leaderboards public, a player's SteamID is public too: it
+page shows in-game names alone, and a player in the game's [anonymous mode](#anonymous-mode) is on
+it under the hidden name the other players see, in the roster and in the kills, with no link to
+their career; a match's public page names whoever played it hidden the same way, and a public
+career neither lists such a match nor names such a player among its most killed and nemeses. The
+leaderboard itself still counts hidden play under the player's own name, which gives a hidden
+player away: see [Anonymous mode](#anonymous-mode) before opening the leaderboards of a server
+whose players use it. With leaderboards public, a player's SteamID is public too: it
 is the address of their career, and the board, the live page's names and a career's most killed
 and nemeses link by it; the board also shows the in-game cash. A public board goes twenty pages
 deep (the top thousand); the panel's has no ceiling. A page that is off answers 404, so a closed page looks like no
@@ -1589,7 +1658,10 @@ the live view).
 `ok` false means the last look did not reach the server, and `error` says why; `statusAt` and
 `playersAt` say when the status and the players were last read. `gameServerId` is the join code.
 Live builds report no `scoreCap` or `matchSeconds`, so those are null there. A player's `kills`,
-`deaths` and `cash` are the in-game scoreboard's, which starts again every match.
+`deaths` and `cash` are the in-game scoreboard's, which starts again every match. A player in the
+game's [anonymous mode](#anonymous-mode) also has `hiddenName`, the name the other players see in
+place of `name` (Season 3 builds; absent for everyone else): use it for anything you show to
+people who are not your staff.
 
 `GET /api/live/events?ids=a,b` is the same as a stream of server-sent events: `live` (the object
 above, at every look), `kills` (`{"type": "kills", "serverId": …, "kills": […]}`, as the kill
@@ -1812,13 +1884,13 @@ These need _View_ on the server unless the table says otherwise.
 
 | Route                                                    | Answers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/servers/:id/players/seen`                      | everyone who has played on the server: `q` (name, alias, a name the kill feed showed for them, or SteamID; each player's `feedNames` are those names), `since` (days), `flag` (`banned`, `watched` or `online`), `sort` (`lastSeen`, `firstSeen`, `minutes`, `sessions`, `kills`, `deaths`, `name`), `dir`, `offset`, `limit` (up to 100)                                                                                                                                                                                                                                                            |
-| `GET /api/servers/:id/players/:steamId`                  | the dossier: names, the names the kill feed showed that were not theirs (`feedNames`), sessions, totals per server with seed time, every ban in force (`bans`), risk, the kill feed's summary, the admin actions you may read with a kick's reason and a whisper's text; notes and why a player is watched only with _Notes & watchlist_; the Seeding reward's progress (`seedReward`) only with _Automation_                                                                                                                                                                                        |
+| `GET /api/servers/:id/players/seen`                      | everyone who has played on the server: `q` (name, alias, a hidden name from anonymous mode, a name the kill feed showed for them, or SteamID; each player's `hiddenNames` and `feedNames` are those names), `since` (days), `flag` (`banned`, `watched` or `online`), `sort` (`lastSeen`, `firstSeen`, `minutes`, `sessions`, `kills`, `deaths`, `name`), `dir`, `offset`, `limit` (up to 100)                                                                                                                                                                                                       |
+| `GET /api/servers/:id/players/:steamId`                  | the dossier: names, the hidden names they played under in anonymous mode (`hiddenNames`), the names the kill feed showed that were not theirs (`feedNames`), sessions, totals per server with seed time, every ban in force (`bans`), risk, the kill feed's summary, the admin actions you may read with a kick's reason and a whisper's text; notes and why a player is watched only with _Notes & watchlist_; the Seeding reward's progress (`seedReward`) only with _Automation_                                                                                                                  |
 | `GET /api/servers/:id/players/:steamId/career`           | rank, streak, results by map and faction, the last ten matches, the organisation's last ten seasons with the places won                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `GET /api/servers/:id/players/marks?ids=a,b`             | watched, first visit, risk score, Steam name (`steamName`) and kills and deaths over the matches finished on this server (`record`, null before the first) for up to 200 SteamIDs                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `GET /api/servers/:id/kills`                             | the stored kill feed, newest first (see [Kill feed](#kill-feed)): `killer`, `victim`, `player` (a SteamID, or part of a name), `kind` (`headshot`, `teamKill`, `suicide`, `vehicle`, `environment`), `cause`, `minM` (metres), `match`, `limit` (up to 200); `count=1` adds the total. For the next page, send the last kill's `ts` as `before` and its `eventTime` as `beforeTime`                                                                                                                                                                                                                  |
 | `GET /api/servers/:id/matches?page=`                     | the match history, fifty a page, newest first; the match in progress has no `endedAt`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `GET /api/servers/:id/matches/:matchId`                  | a match that has ended: each player's line, the score timeline, awards                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `GET /api/servers/:id/matches/:matchId`                  | a match that has ended: each player's line (with `hiddenName` for one who played it in anonymous mode), the score timeline, awards                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `GET /api/servers/:id/leaderboard`                       | `scope` (`server` or `org`), `range` (`current`, the default: what the organisation's boards open on; `s:<key>`, a season by its key from `seasons`; `7d`, `30d`, `90d`, `all`), `sort` (`kills`, `deaths`, `kd`, `perHour`, `playtime`, `seeded`, `matches`, `wins`, `winRate`, `cash`, `cashPerMin`), `dir`, `page` (fifty a page), `minMinutes` (default 60). The answer's `when` says what was read (the range, the season, whether it has finished), `seasons` lists the organisation's seasons that have started, newest first, and `winners` holds a finished season's top three per category |
 | `GET /api/servers/:id/leaderboard/export`                | the same query as the board, as a CSV file of every row from the top (up to 10,000; `page` is ignored); ten a minute                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `GET /api/servers/:id/analytics?range=`                  | population, uptime, wins per team (`wins`) and, with a kill feed, combat, over `24h`, `7d` or `30d`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -1886,7 +1958,10 @@ A server whose public pages are on has JSON anyone can read, no key needed:
 `GET /api/public/servers/:id` (the status page), and while its leaderboards are public
 `.../leaderboard` (the leaderboard query above, twenty pages at most), `.../matches`,
 `.../matches/:matchId` and `.../players/:steamId` (a career). Each answers 404 while its page is
-off, and one address may make 120 of these requests a minute. See [Public pages](#public-pages).
+off, and one address may make 120 of these requests a minute. A player who played a match in the
+game's [anonymous mode](#anonymous-mode) is in that match's JSON under their hidden name, their
+line's `steamId` a stand-in such as `anon-1`, not a SteamID, and that match is not in their
+career's `last`. See [Public pages](#public-pages).
 
 #### Stability
 

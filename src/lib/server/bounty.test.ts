@@ -197,6 +197,10 @@ describe('the Bounty rule, its memory', () => {
 		const open = { ...A, streak: 15, best: 17, setAt: 4000, match: 'm12' };
 		const state = bountyState(version, open);
 		expect(savedBounty(state, version)).toEqual(open);
+		// the name the others saw for a marked player in anonymous mode comes back with it
+		const hidden = { ...open, hiddenName: 'Falcon' };
+		expect(savedBounty(bountyState(version, hidden), version)).toEqual(hidden);
+		expect(savedBounty({ version, open: { ...open, hiddenName: 7 } }, version)).toEqual(open);
 		expect(savedBounty(state, bountyVersion({ ...row, updatedAt: new Date(6000) }))).toBeNull();
 		expect(savedBounty(state, bountyVersion({ ...row, config: { streak: 20 } }))).toBeNull();
 		expect(savedBounty(bountyState(version, null), version)).toBeNull();

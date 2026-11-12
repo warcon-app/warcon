@@ -1,4 +1,5 @@
 // Public career JSON for one player, over the organisation's servers with public leaderboards.
+// Its last matches leave out the ones the player played in the game's anonymous mode.
 import { getEnv } from '$lib/server/env';
 import { ApiError, apiJson, param, route } from '$lib/server/http';
 import {
@@ -25,7 +26,8 @@ export const GET = route(async (event) => {
 		orgId: ps.org.id,
 		ids,
 		nameOf: new Map(orgServers.map((s) => [s.id, s.name])),
-		steamId
+		steamId,
+		publicView: true
 	});
 	return apiJson({ ok: true, player: { steamId, name }, career }, 200, publicHeaders(30));
 });

@@ -13,6 +13,7 @@ import { MAX_CHAT } from '../chat';
 import { hideSecretValues, redactSecrets, restoreSecrets, SECRET_PLACEHOLDER } from '../config-doc';
 import { feedReportOf } from '../feed-report';
 import { CHAT_MAX_LIMIT, CHAT_PAGE, chatReadOf, chatTermsOf, type ChatRead } from '../chat-read';
+import { hiddenNameOf } from '../anonymous';
 
 export interface ActionDef {
 	cap: Capability;
@@ -482,15 +483,20 @@ export const ACTIONS: Record<string, ActionDef> = {
 			if (!Array.isArray(d?.players))
 				throw new GameError(502, 'The server did not return a player list.', 'bad_response', d);
 			return {
-				players: d.players.map((p: any) => ({
-					name: p.name,
-					steamId: p.steamId,
-					faction: p.faction ?? null,
-					kills: p.kills ?? 0,
-					deaths: p.deaths ?? 0,
-					cash: p.cash ?? 0,
-					ping: p.pingMs ?? p.ping ?? null
-				}))
+				players: d.players.map((p: any) => {
+					// Season 3: the name the others see, kept only for a player in anonymous mode
+					const hiddenName = hiddenNameOf(p);
+					return {
+						name: p.name,
+						steamId: p.steamId,
+						faction: p.faction ?? null,
+						kills: p.kills ?? 0,
+						deaths: p.deaths ?? 0,
+						cash: p.cash ?? 0,
+						ping: p.pingMs ?? p.ping ?? null,
+						...(hiddenName ? { hiddenName } : {})
+					};
+				})
 			};
 		}
 	},

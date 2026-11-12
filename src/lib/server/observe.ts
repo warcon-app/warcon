@@ -55,6 +55,7 @@ import {
 	loadPresence,
 	newPresence,
 	followPlayer,
+	modeMoved,
 	persistPresence,
 	sideMoved,
 	type Presence,
@@ -63,6 +64,7 @@ import {
 import {
 	closeTallies,
 	enrichMatchPlayers,
+	linesToOthers,
 	tallyLook,
 	tallyRow,
 	writeMatchPlayers,
@@ -500,8 +502,9 @@ const idsOf = (players: Player[]) =>
 		.sort()
 		.join(',');
 
-/** Changes that matter to a page load; scores, clock and pings move constantly and are left out. */
-const liveKeyOf = (m: ServerMemory) =>
+/** Changes that matter to a page load; scores, clock and pings move constantly and are left out.
+ *  Also read by the test of what it holds. */
+export const liveKeyOf = (m: ServerMemory) =>
 	JSON.stringify([
 		m.ok,
 		m.error,
@@ -518,7 +521,9 @@ const liveKeyOf = (m: ServerMemory) =>
 		m.identity.restartTimeUtc,
 		m.identity.restartTimeUtcFile,
 		m.startedAt,
-		idsOf(m.players)
+		idsOf(m.players),
+		// who is in anonymous mode, and as whom: the public page names them from this row
+		m.players.filter((p) => p.hiddenName).map((p) => [p.steamId, p.hiddenName])
 	]);
 
 /** Changes that deserve an analytics sample between heartbeats. */
@@ -728,8 +733,11 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						restartTimeUtc: m.identity.restartTimeUtc,
 						matchEnd,
 						recovered: wasOffline,
-						// the lines the match stage will write, for the broadcast's {mvp} and {top}
-						matchLines: matchEnd ? closeTallies(m.tallies, prevStatusAt).rows : [],
+						// the lines the match stage will write, for the broadcast's {mvp} and {top}: said to
+						// the server, so each player under the name the others saw
+						matchLines: matchEnd
+							? linesToOthers(m.tallies, closeTallies(m.tallies, prevStatusAt).rows)
+							: [],
 						// the sessions open after this look: a leaver's, gone past the grace, closes at it
 						// (the map itself follows when the look is written)
 						present: {
@@ -757,12 +765,13 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 			if (t) t.dirty = true;
 		}
 	}
-	// A side that changed is written at this look, not at the heartbeat (sessions.ts).
+	// A side that changed is written at this look, not at the heartbeat, and so is a player going
+	// into anonymous mode or out of it (sessions.ts).
 	const presenceDue =
 		diff.joined.length > 0 ||
 		diff.left.length > 0 ||
 		(heartbeatDue && diff.stayed.length > 0) ||
-		diff.stayed.some((x) => sideMoved(x.session));
+		diff.stayed.some((x) => sideMoved(x.session) || modeMoved(x.session));
 	if (riskWaitNote.length) ev.updates.push(...riskWaitNote);
 	const needWrite =
 		presenceDue || ev.intents.length > 0 || ev.updates.length > 0 || liveDue || sampleDue;

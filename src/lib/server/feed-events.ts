@@ -35,6 +35,7 @@ import {
 } from './death-whisper';
 import { keptVars, messageVars, serverVars, type MessageVars } from './message-vars';
 import { mapName } from '$lib/format';
+import { seenAs } from '$lib/anonymous';
 import { countsForTeamKill, MAX_REASON, type TeamKillConfig } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
 import {
@@ -73,6 +74,7 @@ import { NAME_FLAG } from './name-filter';
 import { applyTriggerUpdates, enqueueIntents, wakeDelivery } from './outbox';
 import { LostOwnership, withOwnedTransaction } from './leadership';
 import { memoryOf } from './observe';
+import { readLiveRows } from './live';
 import { onMatchFeed } from './match-feed';
 import { publicMessage } from './http';
 import { notifyBounty, notifyTeamKills, type BountyCard } from './webhook-delivery';
@@ -87,7 +89,8 @@ import {
 	rewardWords,
 	type BountyConfig,
 	type BountyKill,
-	type BountyPlayer
+	type BountyPlayer,
+	type OpenBounty
 } from './bounty';
 import { isDemoServer } from './env';
 import { drainMockFeed } from './mockgame';
@@ -102,7 +105,7 @@ export async function onKillsIngested(
 ): Promise<void> {
 	if (!kills.length) return;
 	emit({ type: 'kills', serverId, kills });
-	const named = namedIn(kills);
+	const named = namedIn(kills, hiddenOn(serverId));
 	try {
 		await recordFeedNames(env, serverId, kills, named);
 	} catch (err) {
@@ -117,6 +120,7 @@ export async function onKillsIngested(
 	}
 	// what the rules' texts say about a killer, their stats read once for the whole batch
 	const vars = killerVars(env, serverId);
+	await vars.prime();
 	try {
 		await actOnKillDistance(env, serverId, kills, vars);
 	} catch (err) {
@@ -153,17 +157,40 @@ export async function onKillsIngested(
 	}
 }
 
-/** Both players of every kill as the feed named them, in the order the game played them; a suicide
- *  names its player once, and the environment no one. */
-function namedIn(batch: KillView[]) {
+/**
+ * Both players of every kill as the feed named them, in the order the game played them; a suicide
+ * names its player once, and the environment no one. A player in anonymous mode whom the feed
+ * names by their hidden name is left out: that is the game showing them as it shows them to
+ * everyone, neither a name of their own making (aliases.ts) nor a change of name (name-change.ts).
+ * The feeds seen so far name such a player by their own name; this holds either way.
+ */
+function namedIn(batch: KillView[], hidden: ReadonlyMap<string, string> = new Map()) {
 	return [...batch]
 		.sort((a, b) => a.eventTime - b.eventTime)
 		.flatMap((k) => [
 			...(k.killer?.steamId ? [{ ...k.killer, k }] : []),
 			...(k.victim.steamId && k.victim.steamId !== k.killer?.steamId ? [{ ...k.victim, k }] : [])
-		]);
+		])
+		.filter((p) => hidden.get(p.steamId) !== p.name);
 }
 type Named = ReturnType<typeof namedIn>;
+
+/** The hidden names the player list holds for its players in anonymous mode, by SteamID
+ *  ($lib/anonymous); read once a look, as listedOf. */
+const hiddenCache = new WeakMap<Player[], Map<string, string>>();
+function hiddenOn(serverId: string): ReadonlyMap<string, string> {
+	const players = memoryOf(serverId)?.players;
+	if (!players) return new Map();
+	let hidden = hiddenCache.get(players);
+	if (!hidden)
+		hiddenCache.set(
+			players,
+			(hidden = new Map(
+				players.flatMap((p) => (p.hiddenName ? [[p.steamId, p.hiddenName] as const] : []))
+			))
+		);
+	return hidden;
+}
 
 /** The names the server's player list holds, by SteamID, from the worker's last look at it (read
  *  once a look, however many batches come in meanwhile). */
@@ -647,8 +674,13 @@ async function actOnBounty(
 		}
 		const events = bountyStep(cfg, track, inOrder, { canMark: on >= cfg.minPlayers, now });
 		if (!events.length && !out.intents.length) continue;
-		// a bounty set here is of the batch's match
-		for (const e of events) if (e.kind === 'set') e.bounty.match = await batchMatch();
+		// a bounty set here is of the batch's match, and on the player as the others know them
+		for (const e of events)
+			if (e.kind === 'set') {
+				e.bounty.match = await batchMatch();
+				const hidden = vars.hiddenOf(e.bounty.steamId);
+				if (hidden) e.bounty.hiddenName = hidden;
+			}
 		const reward = rewardWords(cfg);
 		const slot = cfg.reward === 'slot';
 		const until = slot ? dateOf(new Date(now + cfg.slotDays * 86400_000)) : '';
@@ -672,15 +704,21 @@ async function actOnBounty(
 			),
 			{ org: false }
 		);
-		const say = (text: string, who: BountyPlayer, extra: MessageVars, max: number) =>
-			renderTemplate(text, keptVars(vars.about(who, stats, extra)), max);
+		// The two broadcasts are for everyone, so their players go by the names the others see; the
+		// whisper is the claimer's own, and names the marked player the same way.
+		const announce = (text: string, who: BountyPlayer, extra: MessageVars) =>
+			renderTemplate(text, keptVars(vars.toOthers(who, stats, extra)), MAX_CHAT);
+		const tell = (text: string, who: BountyPlayer, extra: MessageVars) =>
+			renderTemplate(text, keptVars(vars.about(who, stats, extra)), MAX_CHAT);
+		/** the marked player to the others: as the list has them now, else as when it was set */
+		const marked = (b: OpenBounty) => vars.shown(b.steamId, seenAs(b));
 		const card = { reward, orgWide: slot && cfg.scope === 'org', at: new Date(now).toISOString() };
 		for (const e of events) {
 			const k = byEvent.get(e.kill.eventId)!;
 			const dedupe = (what: string) => [row.id, what, k.eventId].join(':');
 			if (e.kind === 'set') {
 				const b = e.bounty;
-				const message = say(cfg.setMessage, b, own(b.name, b.streak, k.map), MAX_CHAT);
+				const message = announce(cfg.setMessage, b, own(marked(b), b.streak, k.map));
 				out.intents.push({
 					trigger: row,
 					action: 'broadcast',
@@ -700,7 +738,7 @@ async function actOnBounty(
 					...card,
 					kind: 'set',
 					map: k.map || null,
-					name: b.name,
+					name: marked(b),
 					faction: b.faction,
 					streak: b.streak
 				});
@@ -710,7 +748,7 @@ async function actOnBounty(
 			const c = e.claimer;
 			const claimer = c.name || c.steamId;
 			const claimed = `${claimer} claimed the bounty on ${b.name} (a run of ${b.best}).`;
-			const extra = own(b.name, b.best, k.map);
+			const extra = own(marked(b), b.best, k.map);
 			out.intents.push({
 				trigger: row,
 				action: BOUNTY_CLAIM,
@@ -731,7 +769,7 @@ async function actOnBounty(
 				out.intents.push({
 					trigger: row,
 					action: 'broadcast',
-					params: { message: say(cfg.claimMessage, c, extra, MAX_CHAT) },
+					params: { message: announce(cfg.claimMessage, c, extra) },
 					target: c.steamId,
 					okMessage: `Announced ${claimer}'s claim on ${b.name}.`,
 					detail: { name: claimer, target: b.name, stage: 'claim', eventId: k.eventId },
@@ -760,7 +798,7 @@ async function actOnBounty(
 				out.intents.push({
 					trigger: row,
 					action: 'whisper',
-					params: { steamId: c.steamId, message: say(cfg.whisper, c, extra, MAX_CHAT) },
+					params: { steamId: c.steamId, message: tell(cfg.whisper, c, extra) },
 					target: c.steamId,
 					okMessage: `Whispered ${claimer}.`,
 					detail: { name: claimer },
@@ -776,8 +814,8 @@ async function actOnBounty(
 				...card,
 				kind: 'claim',
 				map: k.map || null,
-				claimer,
-				target: b.name,
+				claimer: vars.shown(c.steamId, claimer),
+				target: marked(b),
 				run: b.best
 			});
 		}
@@ -959,10 +997,15 @@ async function actOnDeathWhisper(
 			for (const p of picks) {
 				const k = byEvent.get(p.eventId)!;
 				const name = k.victim.name || p.steamId;
+				// the killer as the player who died knows them: under the hidden name in anonymous mode
+				const death = deathVars(k);
 				const message = renderTemplate(
 					cfg.messages[p.index],
 					vars.about(k.victim, stats, {
-						...deathVars(k),
+						...death,
+						...(death.killer && k.killer
+							? { killer: vars.shown(k.killer.steamId, String(death.killer)) }
+							: {}),
 						...(k.map ? { map: mapName(k.map) } : {})
 					}),
 					MAX_CHAT
@@ -1009,8 +1052,18 @@ async function actOnDeathWhisper(
  * list) and their stats, read once per player for the whole batch, whichever rules ask. Nothing is
  * looked at until a rule acts.
  */
+/** Nobody's stats: every stats placeholder reads as unknown. */
+const STATS_UNSAID: StatsRead = { here: null, org: null };
+
+/** How old the stored player list may be for a worker that has not looked yet to go by it. */
+const STORED_LIST_MAX_AGE_MS = 5 * 60_000;
+
 function killerVars(env: Env, serverId: string) {
-	let seen: { server: MessageVars; live: Map<string, Player> } | null = null;
+	let seen: {
+		server: MessageVars;
+		live: Map<string, Player>;
+		open: ReadonlyMap<string, { hiddenName: string | null; anonymous: boolean }>;
+	} | null = null;
 	const look = () => {
 		if (seen) return seen;
 		const m = memoryOf(serverId);
@@ -1021,19 +1074,77 @@ function killerVars(env: Env, serverId: string) {
 				startedAt: m?.startedAt ?? 0,
 				now: Date.now()
 			}),
-			live: new Map((m?.players ?? []).map((p) => [p.steamId, p]))
+			live: new Map((m?.players ?? []).map((p) => [p.steamId, p])),
+			open: m?.presence.open ?? new Map()
 		};
 		return seen;
 	};
 	const read = statsReader(env, serverId);
+	/** who was in anonymous mode in the live view the worker before this one stored (prime) */
+	let stored: ReadonlyMap<string, string> | null = null;
+	/**
+	 * The hidden name the other players see in place of a player's own ($lib/anonymous): what the
+	 * player list says of them now, or, for one gone from the list a moment ago, what their session
+	 * saw at its last look (a session that left the mode keeps its hidden name, and gives none
+	 * here). The feed names a player by their own name, so this is asked by SteamID.
+	 */
+	const hiddenOf = (steamId: string | null | undefined): string | undefined => {
+		if (!steamId) return undefined;
+		if (stored) return stored.get(steamId);
+		const { live, open } = look();
+		const on = live.get(steamId);
+		if (on) return on.hiddenName || undefined;
+		const session = open.get(steamId);
+		return (session?.anonymous && session.hiddenName) || undefined;
+	};
 	return {
+		/**
+		 * Before a rule speaks. A worker that has just started has not read the player list yet (its
+		 * first look comes within thirty seconds) while kills already arrive, so it would take
+		 * everyone for a player out of anonymous mode. Until that first look, who is in the mode is
+		 * read from the live view the worker before it stored, when that is fresh enough to mean
+		 * the same players. One small read, and none once the list has been looked at.
+		 */
+		prime: async (): Promise<void> => {
+			if (memoryOf(serverId)?.playersAt) return;
+			try {
+				const live = (await readLiveRows(env, [serverId])).get(serverId);
+				const at = live?.playersAt ? Date.parse(live.playersAt) : NaN;
+				if (!live || !(Date.now() - at < STORED_LIST_MAX_AGE_MS)) return;
+				stored = new Map(
+					live.players.flatMap((p) => (p.hiddenName ? [[p.steamId, p.hiddenName] as const] : []))
+				);
+			} catch (err) {
+				if (err instanceof LostOwnership) throw err;
+				console.warn(`[warcon] stored player list of ${serverId}:`, forLog(err));
+			}
+		},
 		/** what these killers' texts tell them of their stats; nothing is read for none */
 		stats: (wants: { steamId: string; text: string }[], sides?: { org: boolean }) =>
 			statsFor(read, wants, sides),
 		of: (k: KillView, stats: StatsRead, own: MessageVars): MessageVars =>
 			about(k.killer!, stats, own),
 		/** the same for either player of a kill, as the feed named them */
-		about
+		about,
+		hiddenOf,
+		/** the name the other players see for a player: the hidden one, else the name given */
+		shown: (steamId: string | null | undefined, name: string): string => hiddenOf(steamId) || name,
+		/**
+		 * The same as `about` for a text someone else will read (a broadcast): a player in anonymous
+		 * mode goes by the hidden name, and what would undo it is not said: their SteamID is left
+		 * blank and their stats are unknown (the boards are public, and a player's all-time kills
+		 * point at one line of them).
+		 */
+		toOthers: (
+			who: { steamId: string; name: string; faction: string | null },
+			stats: StatsRead,
+			own: MessageVars
+		): MessageVars => {
+			const hidden = hiddenOf(who.steamId);
+			return hidden
+				? { ...about({ ...who, name: hidden }, STATS_UNSAID, own), steamid: '' }
+				: about(who, stats, own);
+		}
 	};
 	function about(
 		who: { steamId: string; name: string; faction: string | null },
@@ -1160,8 +1271,9 @@ async function actOnTeamKills(
 		for (const { steamId, k, count, kick } of acts) {
 			const name = k.killer!.name;
 			// the map the kill was on, which a map change can leave behind the server's
+			// the victim as the killer knows them: under the hidden name in anonymous mode
 			const v = vars.of(k, stats, {
-				victim: k.victim.name,
+				victim: vars.shown(k.victim.steamId, k.victim.name),
 				count,
 				...(k.map ? { map: mapName(k.map) } : {})
 			});

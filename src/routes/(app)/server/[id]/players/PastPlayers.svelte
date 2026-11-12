@@ -184,6 +184,16 @@
 								>
 							{/if}
 						</div>
+						{#if p.hiddenNames.length}
+							{@const hid = feedNamesLine(p.hiddenNames, q)}
+							<div class="text-[12px] text-mist-400" title={p.hiddenNames.join(', ')}>
+								in anonymous mode as {#each hid.names as h, i (h.name)}<span
+										class={h.hit ? 'font-semibold text-accent' : ''}>{h.name}</span
+									>{i < hid.names.length - 1
+										? ', '
+										: ''}{/each}{#if hid.more}{` and ${hid.more} more`}{/if}
+							</div>
+						{/if}
 						{#if p.feedNames.length}
 							{@const line = feedNamesLine(p.feedNames, q)}
 							<div class="text-[12px] text-mist-400" title={p.feedNames.join(', ')}>

@@ -105,7 +105,9 @@ export async function matchListView(
 
 /**
  * One match of the server that has ended, with everything its page shows, or null when there
- * is no such match here (another server's id is not found either).
+ * is no such match here (another server's id is not found either). The view is the staff's: a
+ * line names its player and carries the hidden name they played under. A public route passes it
+ * through publicMatch (public.ts) first.
  */
 export async function loadMatch(
 	env: Env,
@@ -152,6 +154,7 @@ export async function loadMatch(
 	const lines: MatchLine[] = rows.map((r) => ({
 		steamId: r.steamId,
 		name: r.name,
+		...(r.hiddenName ? { hiddenName: r.hiddenName } : {}),
 		faction: r.faction,
 		seconds: r.seconds,
 		kills: r.kills,
