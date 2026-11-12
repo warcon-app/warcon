@@ -536,6 +536,8 @@
 		leadMinutes: number;
 		leadMessage: string;
 		repeatMinutes: number;
+		leadersAt100: boolean;
+		leadersMessage: string;
 		endMessage: string;
 		startMessage: string;
 		warnAt: number;
@@ -802,6 +804,8 @@
 				'Scheduled restart in about {minutes} minutes, at the end of the round then in progress.'
 			),
 			repeatMinutes: n('repeatMinutes', 0),
+			leadersAt100: b('leadersAt100', false),
+			leadersMessage: s('leadersMessage', ''),
 			endMessage: s('endMessage', 'Match over: {faction} wins on {previous} · {scores}'),
 			startMessage: s('startMessage', 'New match on {map}. Good luck!'),
 			warnAt: n('warnAt', 2),
@@ -1008,6 +1012,8 @@
 				};
 			case 'match_broadcast':
 				return {
+					leadersAt100: f.leadersAt100,
+					leadersMessage: f.leadersMessage,
 					endMessage: f.endMessage,
 					startMessage: f.startMessage,
 					minPlayers: Number(f.minPlayers)
@@ -2295,6 +2301,8 @@
 						{restartNote} See Game restart on the Settings tab.
 					</p>
 				{:else if f.kind === 'match_broadcast'}
+					<label class="flex items-center gap-2"><input type="checkbox" bind:checked={f.leadersAt100} /> Show match leaders when a faction reaches 100 points</label>
+					{#if f.leadersAt100}<label class="field-label" for="leaders-message">Leaders message</label><textarea id="leaders-message" class="input min-h-28 font-mono" bind:value={f.leadersMessage} maxlength={MAX_CHAT} placeholder="Leave blank for the default message"></textarea><p class="note">Optional placeholders: {'{kills_name}'}, {'{kills}'}, {'{cash_name}'}, {'{cash}'}, {'{streak}'}, {'{streak_name}'}, {'{streak_count}'}, {'{next_map}'}, {'{next_weather}'}. Sent once per match while scores are visible.</p>{/if}
 					<fieldset class="space-y-2">
 						<legend class="field-label">When a match ends</legend>
 						<input

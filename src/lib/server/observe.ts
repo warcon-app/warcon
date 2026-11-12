@@ -704,6 +704,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 					{
 						server,
 						status: m.status,
+						getRotation: () => ACTIONS.rotation.run(client, {}) as Promise<import('$lib/types').Rotation>,
 						players: m.players,
 						playersObserved: players !== null,
 						playersIntervalMs: m.playersIntervalMs,

@@ -1,3 +1,5 @@
+import { nextLeaderMap, renderLeadersMessage } from './match-leaders';
+import { feedRecord, type FeedKill } from './match-players';
 // Automation: per-server triggers the worker evaluates on every observation, all
 // built on what the worker already sees (joins, player counts, empty stretches) plus the Steam cache:
 //   welcome      whisper a message to players as they join (or once they have picked a faction)
@@ -54,6 +56,7 @@ import { writeAudit } from './audit';
 import { emit } from './events';
 import {
 	kills,
+	matches,
 	outbox,
 	playerSessions,
 	samples,
@@ -624,6 +627,7 @@ async function dropQueued(env: Env, triggerId: string, why: string): Promise<voi
 // delivers them). Evaluation itself makes no game request.
 
 export interface TickContext {
+	getRotation?: () => Promise<import('$lib/types').Rotation>;
 	server: ServerRow;
 	status: Status;
 	players: Player[];
@@ -898,7 +902,7 @@ export async function evaluateTriggers(
 					await evalSeedReward(env, ctx, row, row.config as SeedRewardConfig, out, read);
 					break;
 				case 'match_broadcast':
-					evalMatchBroadcast(ctx, row, row.config as MatchBroadcastConfig, out);
+					await evalMatchBroadcast(env, ctx, row, row.config as MatchBroadcastConfig, out);
 					break;
 				case 'name_filter':
 					await evalNameFilter(ctx, row, row.config as NameFilterConfig, out, read);
@@ -2037,12 +2041,55 @@ export function forgetRuleMemory(): void {
 	forgetBounties();
 }
 
-function evalMatchBroadcast(
+/** Once per recorded match, while the scoreboard still shows the finished round. */
+async function announceLeadersAt100(env: Env, ctx: TickContext, row: TriggerRow, cfg: MatchBroadcastConfig, out: Evaluation) {
+	if (!cfg.leadersAt100 || ctx.matchEnd || ctx.status.playerCount < cfg.minPlayers ||
+		!ctx.status.scores.some((side) => side.score >= 100)) return;
+	const [match] = await env.db.select({ id: matches.id, map: matches.map }).from(matches)
+		.where(and(eq(matches.serverId, ctx.server.id), isNull(matches.endedAt))).limit(1);
+	if (!match || match.map !== ctx.status.map) return;
+	const state = (row.state ?? {}) as Record<string, unknown>;
+	if (state.leadersMatchId === match.id) return;
+	const players = ctx.players.filter((p) => p.name && p.steamId);
+	if (!players.length) return;
+	const byKills = [...players].sort((a, b) => b.kills - a.kills || a.name.localeCompare(b.name))[0];
+	const byCash = [...players].sort((a, b) => b.cash - a.cash || a.name.localeCompare(b.name))[0];
+	const events = await env.db.select({ killerSteamId: kills.killerSteamId, victimSteamId: kills.victimSteamId,
+		headshot: kills.headshot, suicide: kills.suicide, teamKill: kills.teamKill,
+		cause: kills.cause, distanceM: kills.distanceM }).from(kills)
+		.where(and(eq(kills.serverId, ctx.server.id), eq(kills.matchRow, match.id)))
+		.orderBy(asc(kills.eventTime), asc(kills.ts));
+	const streaks = feedRecord(events as FeedKill[]);
+	const streak = players.map((p) => ({ player: p, count: streaks.get(p.steamId)?.killStreak ?? 0 }))
+		.sort((a, b) => b.count - a.count || a.player.name.localeCompare(b.player.name))[0];
+	let next: { nextMap?: string; nextWeather?: string } = {};
+	try { next = nextLeaderMap(await ctx.getRotation?.()); }
+	catch { /* A missing rotation must not suppress the leaders. */ }
+	const message = renderLeadersMessage(cfg.leadersMessage, {
+		...next,
+		killsName: byKills.name, kills: byKills.kills, cashName: byCash.name, cash: byCash.cash,
+		streakName: streak?.player.name, streakCount: streak?.count
+	});
+	if (!message) return;
+	out.intents.push({ trigger: row, action: 'broadcast', params: { message }, target: message,
+		okMessage: 'Match leaders broadcast sent.', detail: { stage: 'leaders', matchId: match.id },
+		steamId: null, dedupeKey: key(row, 'leaders', match.id) });
+	row.state = { ...state, leadersMatchId: match.id };
+	out.updates.push({ id: row.id, state: row.state, lastFiredAt: ctx.ts, lastResult: 'Sending match leaders at 100 points' });
+}
+
+async function evalMatchBroadcast(
+	env: Env,
 	ctx: TickContext,
 	row: TriggerRow,
 	cfg: MatchBroadcastConfig,
 	out: Evaluation
 ) {
+	try {
+		await announceLeadersAt100(env, ctx, row, cfg, out);
+	} catch (err) {
+		console.warn('[warcon] match leaders:', forLog(err));
+	}
 	const step = matchBroadcastStep(
 		matchHeld.get(row.id) ?? null,
 		ctx.matchEnd,
