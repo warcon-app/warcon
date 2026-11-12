@@ -318,6 +318,18 @@ export function hideSecretValues<T>(answer: T, ...texts: string[]): T {
 	return walk(answer) as T;
 }
 
+/** Mask complete INI values when they contain a credential, so they can be restored intact. */
+export function redactConfigDocument(text: string): string {
+ const redacted = redactSecrets(text);
+ const { eol, lines } = splitLines(redacted);
+ const masked = splitLines(hideSecretValues(redacted, text)).lines;
+ return lines.map((line, i) => {
+  if (line === masked[i]) return line;
+  const equals = line.indexOf('=');
+  return equals < 0 ? masked[i] : line.slice(0, equals + 1) + SECRET_PLACEHOLDER;
+ }).join(eol);
+}
+
 /**
  * The other half of redactSecrets: `text` came back from someone who was shown placeholders, and
  * every credential line still holding one gets the value that line has in `live` (the document as
@@ -328,7 +340,12 @@ export function restoreSecrets(text: string, live: string): string {
 	const { eol, lines } = splitLines(text);
 	const held = secretLines(lines).filter((s) => s.value === SECRET_PLACEHOLDER);
 	if (!held.length) return text;
-	const real = secretLines(splitLines(live).lines);
+	// Recreate the document the caller saw, and restore only values that the
+	// current server document actually masked, including non-credential fields.
+	const original = splitLines(live).lines;
+	const shown = redactConfigDocument(live);
+	const real = secretLines(splitLines(shown).lines).filter(s => s.value === SECRET_PLACEHOLDER)
+		.map(s => ({ ...s, value: original[s.index].slice(original[s.index].indexOf('=') + 1).trim() }));
 	const taken = new Map<string, number>();
 	for (const s of held) {
 		const nth = taken.get(s.slot) ?? 0;

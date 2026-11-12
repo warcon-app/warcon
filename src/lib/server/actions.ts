@@ -10,7 +10,7 @@ import { steamIdRefusal } from './steam';
 import { reservedFromText, reservedIntoText } from '../reserved-doc';
 import { saneScores } from '../format';
 import { MAX_CHAT } from '../chat';
-import { hideSecretValues, redactSecrets, restoreSecrets, SECRET_PLACEHOLDER } from '../config-doc';
+import { hideSecretValues, redactConfigDocument, restoreSecrets, SECRET_PLACEHOLDER } from '../config-doc';
 import { feedReportOf } from '../feed-report';
 import { CHAT_MAX_LIMIT, CHAT_PAGE, chatReadOf, chatTermsOf } from '../chat-read';
 
@@ -619,7 +619,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		mutating: false,
 		run: async (c) => {
 			const doc = await readConfig(c);
-			return hideSecretValues({ ...doc, text: redactSecrets(doc.text) }, doc.text);
+			return { ...hideSecretValues({ ...doc, text: '' }, doc.text), text: redactConfigDocument(doc.text) };
 		}
 	},
 	// Season 2's report on its kill feed (CL-516586 on; $lib/feed-report): on or not, and per
