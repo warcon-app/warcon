@@ -187,6 +187,55 @@ status and the catalog):
   work the game had sent nothing at all, which is what `pausedForTerms` below describes (the
   panel that read it did not yet pass the flag on, so the flag itself was not seen).
 
+**The welcome popup.** From the notes the WARDOGS team sent server admins on 2026-11-12 ("Server
+Welcome Messages") and the check the console runs on each line (`js/welcome-text.js`, a port of
+Unreal's rich text markup reader):
+
+- The four keys sit in `[/Script/WDGame.WDGameStateSession]` and apply from the next match:
+  `ServerWelcomeMessageLines` (the text), `bServerWelcomeMessageEnabled`,
+  `ServerWelcomeMessageCloseDelaySeconds` (the Close button stays locked for 0 to 60 seconds) and
+  `bServerWelcomeMessageSkipForStreamers`. The console writes the text as the server writes any
+  array, `!ServerWelcomeMessageLines=ClearArray` and one `.ServerWelcomeMessageLines=` line for
+  each line of the popup (`.` adds a value even when the list has it, where `+` would add a blank
+  or a repeated line once), an empty value for a blank spacer.
+- A line is plain text and tags. A tag is `<Name>text</>`, or `<Name attr="value" …>text</>` with
+  one space before each attribute and straight double quotes, always closed by `</>`; the text of
+  a tag ends at the first `</>`, so tags do not nest. The popup keeps `<Header>`, `<Bold>` and
+  `<Italic>` (any tag without attributes is taken for a style; what the game draws for a name it
+  has no style for has not been seen) and `<text>` with `color="#RRGGBB"`, `size="8"` to `"24"`
+  and `fontface="Bold"` or `"Italic"`, in any mix. Any other tag with attributes (a link, a Header
+  with a colour) shows as typed. `&lt;` `&gt;` `&amp;` `&quot;` are the characters themselves.
+- The limits: 128 lines, 128 visible characters a line (tags do not count, an entity counts as
+  one), font sizes 8 to 24; `GET /v1/status` reports them as `welcomeMessage` (seen on CL-533689,
+  above). In game, anything over a limit is cut. Over RCON the document is refused, with the line
+  named, when the popup has more lines than the limit, a line longer than the limit, a tag with
+  attributes that is not `<text>`, a `<text>` attribute other than `color`, `size` and
+  `fontface`, or a size that is not a whole number in range written plainly (`16`, not `016`,
+  `16.5` or ` 16`). The console's own demo server does not act that refusal out, so its shape on
+  the wire has not been seen: the demo refuses its AFK timeout with 400 `config_invalid`, "The
+  config was refused." and `errors: [{ section, key, message }]`, and Warcon's demo answers a
+  refused popup the same way.
+
+What Warcon does with it: the Config tab's form has the three plain keys as fields and an editor
+for the text (`src/lib/welcome-text.ts` reads a line as the console does, says what the game
+refuses and what it would show as typed, and draws the preview; `src/lib/welcome-doc.ts` reads
+and writes the array). It checks against the limits the status reports, read from the status as
+the game sent it (`raw`, which only Config & settings gets), and otherwise against the ones above.
+A line goes into the file in quotes, its own quotes and backslashes escaped, when it starts with a
+quote, has white space at either end, ends in a backslash or holds `//` (the console's rule), and
+also when it holds `{`, `}` or `|`: Unreal's own reader of such files drops braces and ends a line
+at a bar outside quotes, and whether the game's does has not been seen. No route or action is the
+popup's own; an older build shows no sign of it (no limits, no key in its `sections`), which the
+form says in a note without locking anything, since `sections` has been wrong about what a server
+takes before. The demo server has the popup (limits, the four keys in its schema, a seeded text,
+the refusal) except under `MOCK_LIVE_BUILD`, which stands in for a build from before it.
+
+The live read above confirms the limits in the status, the same five numbers. Not seen on a live
+server: the rest (the document was not read); whether `sections` names the four keys; whether a
+line over a limit written into the file by hand makes the game refuse every later apply over RCON
+(reserved slots, the live name and the rotation go through the same document); how often a player
+gets the popup.
+
 **The rest of the redeploy** (13:22 UTC, the console's build stamp `eb816a7`). Read from the
 console's own client and demo code, so the shapes are what the console expects of a Season 3
 server. The live read above confirms the three chat routes and the two status fields, and shows
@@ -228,16 +277,11 @@ routes:
   comes first).
 - **Players** gain `hiddenName` (the name other players see) and `anonymous` (anonymous mode: other
   players see only the hidden name) in `GET /v1/players`.
-- **Status** gains `welcomeMessage: { maxLines, maxLineLength, minFontSize, maxFontSize,
-  maxCloseDelaySeconds }` (128, 128, 8, 24 and 60 in the demo) and `afk: { timeoutSeconds,
-  minTimeoutSeconds, maxTimeoutSeconds }` (600, 300 and 1800 in the demo).
-- **Config.** `[/Script/WDGame.WDGameStateSession]` gains the welcome popup a player sees on first
-  deploying: `bServerWelcomeMessageEnabled`, `ServerWelcomeMessageCloseDelaySeconds`,
-  `bServerWelcomeMessageSkipForStreamers` and the array `ServerWelcomeMessageLines` (styled with
-  `<Bold>`, `<Italic>`, `<Header>` or `<text color="#RRGGBB" size="8-24" fontface="Bold">`, each
-  closed by `</>`), read when a match starts. A new section
+- **Status** gains, beside the welcome popup's limits (above), `afk: { timeoutSeconds,
+  minTimeoutSeconds, maxTimeoutSeconds }` (600, 300 and 1800 in the demo and on CL-533689).
+- **Config.** Beside the welcome popup's four keys (above), a new section
   `[/Script/BHAFKDetection.BHAFKDetectionSettings]` holds `DefaultAFKTimeOutSeconds`, the idle time
-  before the game kicks a player, also from the next match. A quoted value now escapes `"` and `\`
+  before the game kicks a player, read when a match starts. A quoted value now escapes `"` and `\`
   with a backslash, which is how a welcome line carries its own quotes.
 
 ## ServerSettings.ini keys the server honours
@@ -248,7 +292,9 @@ routes:
 [/Script/Engine.GameSession]              MaxPlayers
 [MatchState.PreMatch.WaitingForPlayers.PlayerCount]  MinimumRequiredPlayers
 [MatchState.Playing.KOTH]                 ScorePeriod (18-30)
-[/Script/WDGame.WDGameStateSession]       bLockOverpopulatedTeamsConfig, OverpopulatedTeamThresholdConfig
+[/Script/WDGame.WDGameStateSession]       bLockOverpopulatedTeamsConfig, OverpopulatedTeamThresholdConfig; Season 3 (see above):
+                                          bServerWelcomeMessageEnabled, ServerWelcomeMessageCloseDelaySeconds,
+                                          bServerWelcomeMessageSkipForStreamers, ServerWelcomeMessageLines
 [/Script/WDGame.WDServerMapRotationSettings]  bEnabled, RotationMode, +RotationEntries=(Map="",Experience(s)="",Lighting="",ZoneAlternator="")
 [/Script/WDRCON.WDRCONSettings]           bEnabled, BindAddress, Port, Password, PasswordHash, AllowedOrigins, AllowedHosts (CL-507060;
                                           CL-501228 had bWriteAuditLogFile instead)

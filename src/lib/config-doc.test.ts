@@ -1,11 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import {
+	decodeText,
+	encodeText,
+	getArray,
 	getScalar,
+	hasKey,
 	hideSecretValues,
 	parseIni,
 	quoteIfNeeded,
 	redactSecrets,
 	restoreSecrets,
+	setArrayInText,
 	setScalarInText
 } from './config-doc';
 
@@ -197,5 +202,110 @@ describe('credentials', () => {
 		const live = '[x]\n+WebhookTargets=(Url="https://h.example",token="s3cret")\n';
 		expect(redactSecrets(live)).toBe('[x]\n+WebhookTargets=(hidden)\n');
 		expect(restoreSecrets(redactSecrets(live), live)).toBe(live);
+	});
+});
+
+// Free text (a line of the welcome popup): what the file holds for it, and what is read back.
+describe('free text in the file', () => {
+	test('as written wherever the game reads it back unchanged', () => {
+		for (const plain of [
+			'',
+			'Be kind, play the objective and have fun.',
+			'<Header>Welcome to the server</>',
+			'<text color="#7FD6FF" size="16">English</> only',
+			'say "hi" to Bob',
+			'a=b; c #d [e]',
+			'50/50 or C:\\maps\\one'
+		])
+			expect(encodeText(plain)).toBe(plain);
+	});
+	test('in quotes, its own quotes and backslashes escaped, wherever it would not', () => {
+		// the official console's own example: a // starts a comment for the game's reader
+		expect(encodeText('<text color="#7FD6FF">https://wardogs.example</>')).toBe(
+			'"<text color=\\"#7FD6FF\\">https://wardogs.example</>"'
+		);
+		expect(encodeText('"Dogpile" rules')).toBe('"\\"Dogpile\\" rules"');
+		expect(encodeText('  indented')).toBe('"  indented"');
+		expect(encodeText('trailing ')).toBe('"trailing "');
+		expect(encodeText('\ttabbed')).toBe('"\ttabbed"');
+		expect(encodeText('ends in a backslash\\')).toBe('"ends in a backslash\\\\"');
+		// Unreal's reader drops braces and ends a line at a bar outside quotes
+		expect(encodeText('Welcome {player}')).toBe('"Welcome {player}"');
+		expect(encodeText('Rules | Discord')).toBe('"Rules | Discord"');
+		expect(encodeText('a "quoted" // comment')).toBe('"a \\"quoted\\" // comment"');
+	});
+	test('reads back what was written, whatever it holds', () => {
+		for (const text of [
+			'',
+			' ',
+			'"',
+			'""',
+			'\\',
+			'\\\\',
+			'"\\"',
+			'a\\"b',
+			"it's",
+			'"quoted"',
+			'// comment',
+			'{a}|{b}',
+			'  both ends  ',
+			'<text color="#7FD6FF">https://x.example/a//b</>',
+			'é 😀 “curly”',
+			'ends with a quote"',
+			'"starts with one'
+		])
+			expect([text, decodeText(encodeText(text))]).toEqual([text, text]);
+	});
+	test('reads what the official console writes, and a value in plain quotes', () => {
+		expect(decodeText('"<text color=\\"#7FD6FF\\">https://wardogs.example</>"')).toBe(
+			'<text color="#7FD6FF">https://wardogs.example</>'
+		);
+		expect(decodeText('"https://x/y"')).toBe('https://x/y');
+		expect(decodeText('  spaced  ')).toBe('spaced');
+		expect(decodeText('"')).toBe('"');
+		expect(decodeText('C:\\maps\\one')).toBe('C:\\maps\\one');
+	});
+	test('a line break never reaches the file', () => {
+		const sneaky = 'hello\r\n[/Script/WDRCON.WDRCONSettings]\nPassword=mine';
+		expect(encodeText(sneaky)).not.toMatch(/[\r\n]/);
+		const out = setArrayInText('[A]\nx=1\n', 'A', 'Lines', [sneaky], encodeText);
+		expect(parseIni(out).sections.map((sec) => sec.name)).toEqual(['A']);
+		expect(out.split('\n')).toHaveLength(5);
+	});
+	test('a list of it keeps every line, a blank or a repeated one too, and its place in the file', () => {
+		const doc = '; top\n[A]\nx=1\n+Lines=old\ny=2\n\n[B]\nz=3\n';
+		const lines = ['<Header>Hi</>', '', 'see https://x.example', '', 'see https://x.example'];
+		const out = setArrayInText(doc, 'A', 'Lines', lines, encodeText);
+		expect(out).toBe(
+			[
+				'; top',
+				'[A]',
+				'x=1',
+				'!Lines=ClearArray',
+				'.Lines=<Header>Hi</>',
+				'.Lines=',
+				'.Lines="see https://x.example"',
+				'.Lines=',
+				'.Lines="see https://x.example"',
+				'y=2',
+				'',
+				'[B]',
+				'z=3',
+				''
+			].join('\n')
+		);
+		const parsed = parseIni(out);
+		expect(parsed.warnings).toEqual([]);
+		expect(getArray(parsed, 'A', 'Lines', decodeText)).toEqual(lines);
+		// the default readers are as they were: quotes off, nothing unescaped
+		expect(getArray(parseIni('[A]\n+L="a\\"b"\n'), 'A', 'L')).toEqual(['a\\"b']);
+		expect(setArrayInText('[A]\n', 'A', 'L', ['https://x'])).toContain('.L="https://x"');
+	});
+	test('hasKey tells an emptied list from a key that is not there', () => {
+		const doc = parseIni('[A]\n!Lines=ClearArray\nName=x\n');
+		expect(hasKey(doc, 'a', 'lines')).toBe(true);
+		expect(getArray(doc, 'A', 'Lines')).toEqual([]);
+		expect(hasKey(doc, 'A', 'Other')).toBe(false);
+		expect(hasKey(doc, 'B', 'Lines')).toBe(false);
 	});
 });

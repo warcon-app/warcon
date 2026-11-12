@@ -15,6 +15,9 @@ import {
 	reservedIntoText,
 	reservedSlotsHeld
 } from '../reserved-doc';
+import { S_STATE } from '../config-fields';
+import { WELCOME_KEYS, WELCOME_LINES_KEY, welcomeLinesFromText } from '../welcome-doc';
+import { checkWelcome, refusedWelcome, WELCOME_LIMITS } from '../welcome-text';
 
 export const MOCK_PASSWORD = 'demo';
 
@@ -636,6 +639,20 @@ function seedConfig(s: State): string {
 		'[/Script/WDGame.WDGameStateSession]',
 		'bLockOverpopulatedTeamsConfig=true',
 		'OverpopulatedTeamThresholdConfig=2',
+		// Season 3's welcome popup, as the official console's demo has it: a line with a `//` in it is
+		// quoted, and its own quotes escaped.
+		...(liveBuild()
+			? []
+			: [
+					'bServerWelcomeMessageEnabled=True',
+					'ServerWelcomeMessageCloseDelaySeconds=5',
+					'bServerWelcomeMessageSkipForStreamers=False',
+					'!ServerWelcomeMessageLines=ClearArray',
+					'.ServerWelcomeMessageLines=<Header>Welcome to the demo server</>',
+					'.ServerWelcomeMessageLines=Be kind, play the objective and have fun.',
+					'.ServerWelcomeMessageLines=',
+					'.ServerWelcomeMessageLines="<text color=\\"#7FD6FF\\">https://warcon.example</>"'
+				]),
 		'',
 		'[/Script/WDGame.WDServerMapRotationSettings]',
 		`bEnabled=${s.rotation.enabled ? 'true' : 'false'}`,
@@ -654,13 +671,52 @@ function seedConfig(s: State): string {
 	].join('\r\n');
 }
 
+// Season 3's welcome popup: four keys beside the team balance ones, read when a match starts. The
+// descriptions are the official console's demo's; what a live server says of them has not been seen.
+const WELCOME_OVERRIDES = [
+	{
+		key: WELCOME_LINES_KEY,
+		appliesWhen: 'next-match',
+		description:
+			'Welcome popup lines, shown once when a player first deploys. Up to 128 lines of 128 visible characters, scrolling when taller than the popup; style with <Bold>, <Italic>, <Header> or <text color="#RRGGBB" size="8-24" fontface="Bold">. Links and other tags show as typed.'
+	},
+	{
+		key: 'bServerWelcomeMessageEnabled',
+		appliesWhen: 'next-match',
+		description: 'Shows the welcome popup from the next match.'
+	},
+	{
+		key: 'ServerWelcomeMessageCloseDelaySeconds',
+		appliesWhen: 'next-match',
+		description:
+			"Seconds the welcome popup's Close button stays locked so players read it first. 0 = no lock, up to 60."
+	},
+	{
+		key: 'bServerWelcomeMessageSkipForStreamers',
+		appliesWhen: 'next-match',
+		description: 'Players with streamer mode on skip the welcome popup.'
+	}
+];
+
 /**
- * The schema with the two launch-argument locks the TLR host runs with on live build CL-501228
- * (ServerName by -RCON_FixedServerName, Port by -RCONPort): `writable: false` plus `lockedBy`.
- * Only under MOCK_LIVE_BUILD, so the plain demo stays fully editable.
+ * The schema as the demo reports it. Plain, it has Season 3's welcome popup. Under MOCK_LIVE_BUILD
+ * it is live build CL-501228's, from before the popup, with the two launch-argument locks the TLR
+ * host runs with (ServerName by -RCON_FixedServerName, Port by -RCONPort): `writable: false` plus
+ * `lockedBy`. So the plain demo stays fully editable.
  */
 function configSections(): typeof CONFIG_SECTIONS {
-	if (!liveBuild()) return CONFIG_SECTIONS;
+	if (!liveBuild())
+		return CONFIG_SECTIONS.map((c) =>
+			c.section === S_STATE
+				? {
+						...c,
+						description:
+							'Team balance rules and the welcome message. The running match keeps its current values; the config values are read when a match starts.',
+						allowedKeys: [...c.allowedKeys, ...WELCOME_KEYS],
+						keyOverrides: WELCOME_OVERRIDES
+					}
+				: c
+		);
 	const pin = (key: string, lockedBy: string, appliesWhen: string) => ({
 		key,
 		appliesWhen,
@@ -1110,6 +1166,8 @@ export function mockHandle(
 			lighting: s.current.lighting,
 			alternator: s.current.alternator,
 			scoreTick: { current: s.scoreTick, min: 18, max: 30 },
+			// Season 3: the welcome popup's limits, which the editors of its text check against.
+			...(liveBuild() ? {} : { welcomeMessage: { ...WELCOME_LIMITS } }),
 			// Live builds CL-499480 and CL-501228 send neither the cap nor the match clock.
 			...(liveBuild()
 				? {}
@@ -1427,6 +1485,26 @@ export function mockHandle(
 					revision: current
 				},
 				412
+			);
+		}
+		// Season 3: a welcome popup with a line over a limit, or a tag the popup would not keep, is
+		// refused with the line named (the WARDOGS team's notes; the answer's shape is the one the
+		// official console's demo gives its other refusal, and has not been seen from a live server).
+		const popup = liveBuild()
+			? []
+			: refusedWelcome(checkWelcome(welcomeLinesFromText(text) ?? [], WELCOME_LIMITS));
+		if (popup.length) {
+			return ok(
+				{
+					ok: false,
+					error: { code: 'config_invalid', message: 'The config was refused.' },
+					errors: popup.map((i) => ({
+						section: S_STATE,
+						key: WELCOME_LINES_KEY,
+						message: i.message
+					}))
+				},
+				400
 			);
 		}
 		const outcomes = configSections()

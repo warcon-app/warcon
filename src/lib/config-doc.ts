@@ -107,27 +107,43 @@ export function getScalar(doc: ParsedIni, section: string, key: string): string 
 	return e && e.values.length ? unquote(e.values[0]) : null;
 }
 
-/** The array values of `key` in `section` (quotes stripped, in file order); [] when absent. */
-export function getArray(doc: ParsedIni, section: string, key: string): string[] {
+/**
+ * The array values of `key` in `section` (quotes stripped, in file order); [] when absent. `decode`
+ * reads each value as the file holds it: `decodeText` for a list of free text.
+ */
+export function getArray(
+	doc: ParsedIni,
+	section: string,
+	key: string,
+	decode: (raw: string) => string = unquote
+): string[] {
 	const s = doc.sections.find((x) => sameName(x.name, section));
 	const e = s?.keys.find((k) => sameName(k.key, key));
-	return e ? e.values.map(unquote) : [];
+	return e ? e.values.map(decode) : [];
+}
+
+/** Whether the document sets `key` in `section` at all, in any form (an emptied list counts). */
+export function hasKey(doc: ParsedIni, section: string, key: string): boolean {
+	const s = doc.sections.find((x) => sameName(x.name, section));
+	return !!s?.keys.some((k) => sameName(k.key, key));
 }
 
 /**
  * Replaces every array line for `key` in `section` with `!key=ClearArray` followed by one `.key=`
  * line per value, the way the server itself serialises arrays. The block goes where the first old
- * line was (or at the end of the section); everything else in the file is untouched.
+ * line was (or at the end of the section); everything else in the file is untouched. `encode`
+ * writes each value as the file holds it: `encodeText` for a list of free text.
  */
 export function setArrayInText(
 	text: string,
 	section: string,
 	key: string,
-	values: string[]
+	values: string[],
+	encode: (value: string) => string = quoteIfNeeded
 ): string {
 	const eol = text.includes('\r\n') ? '\r\n' : '\n';
 	const lines = text ? text.split(/\r\n|\n|\r/) : [];
-	const block = [`!${key}=ClearArray`, ...values.map((v) => `.${key}=${quoteIfNeeded(v)}`)];
+	const block = [`!${key}=ClearArray`, ...values.map((v) => `.${key}=${encode(v)}`)];
 
 	let start = -1;
 	let end = lines.length;
@@ -342,6 +358,35 @@ function needsQuoting(value: string): boolean {
 }
 export const quoteIfNeeded = (value: string): string =>
 	needsQuoting(value) ? `"${value}"` : value;
+
+/**
+ * Free text as the file holds it (a line of the welcome popup): as written wherever the game
+ * reads it back unchanged, otherwise in quotes with `"` and `\` escaped by a backslash, which is
+ * how the official console writes such a value since Season 3. In quotes goes text that starts
+ * with a quote (read back as a quoted value), has white space at either end (trimmed), ends in a
+ * backslash (a continued line), or holds `//` (a comment to the game's reader), `{`, `}` or `|`.
+ * The last three are not in the console's rule: Unreal's own reader drops braces and ends a line
+ * at a bar outside quotes, and whether the game's does has not been seen, so they are kept out of
+ * its way. A line break never goes into the file: it would start a line of its own, a key or a
+ * section among them.
+ */
+export function encodeText(value: string): string {
+	const line = value.replace(/[\r\n]+/g, ' ');
+	const quoted =
+		line.startsWith('"') ||
+		/^\s|\s$/.test(line) ||
+		line.endsWith('\\') ||
+		line.includes('//') ||
+		/[{}|]/.test(line);
+	return quoted ? `"${line.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : line;
+}
+
+/** The other half of encodeText: a quoted value loses its quotes and the backslash of `\"`, `\'` and `\\`. */
+export function decodeText(raw: string): string {
+	const value = raw.trim();
+	if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return value;
+	return value.slice(1, -1).replace(/\\(["'\\])/g, '$1');
+}
 
 /**
  * Sets `section.key=value` in the ini text with the smallest possible edit: the existing

@@ -107,6 +107,11 @@ What is in the box:
   opened once it has seen the restart (on builds that report their uptime; otherwise within the
   hour), and a map the host has just been given is there then. While a restarted server cannot be
   reached, its pages stay on the lists read before.
+- **The game's welcome popup, with a preview**: from Season 3 a server shows each player a popup
+  of its own text when they first deploy. The Config tab edits that text beside the popup as
+  players will read it, with buttons for its styles, colours and sizes, and names a line the game
+  would refuse (too long, a link, a tag it does not keep) before anything is sent. See
+  [Welcome popup](#welcome-popup).
 - **Map sets**: an organisation keeps whole rotations under a name, say an infantry set and a
   standard one, and the Map rotation tab loads one in place of the server's rotation in one apply,
   then switches back the same way. Owners save a server's rotation as a set, or paste one in from
@@ -511,6 +516,83 @@ tab's document editing does, and it is there on builds that edit the rotation th
 document (every live build so far). Whoever holds _Config & settings_ on a server sees the sets
 there, API keys with it included; only an owner saves, renames or deletes one, never a key, and
 each change is in the organisation's audit trail with the set's name and size.
+
+### Welcome popup
+
+From Season 3 (12 November 2026) the game has a welcome popup of its own: a server shows each
+player its text in a popup, once, when they first deploy. It is not the
+[Welcome whisper](#automation-triggers) rule, which is the panel's and whispers a line of chat; a
+server can have both.
+
+The popup is four keys of the config document, beside the team balance ones
+(`[/Script/WDGame.WDGameStateSession]`), which the game reads when a match starts, so a change
+shows from the next match. The **Config** tab's form has them under **Welcome popup**:
+
+- **Show the popup** (`bServerWelcomeMessageEnabled`), **Close countdown**
+  (`ServerWelcomeMessageCloseDelaySeconds`: seconds the popup's Close button stays locked, 0 to
+  60, so players read it first) and **Skip for streamers**
+  (`bServerWelcomeMessageSkipForStreamers`: players with streamer mode on do not get it);
+- **Text** (`ServerWelcomeMessageLines`): a text box with one line for each line of the popup,
+  beside the popup as players will read it. An empty line leaves a gap, a long line wraps inside
+  the popup, and the popup scrolls when the text is taller than it.
+
+The text is written in the game's own markup:
+
+| Write                                                      | For                                                                                                       |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `<Header>Welcome to Dogpile</>`                            | the popup's title style                                                                                   |
+| `<Bold>No cheating</>`, `<Italic>Have fun</>`              | bold, italic                                                                                              |
+| `<text color="#FF4D4D" size="20" fontface="Bold">RULES</>` | a look of one's own: any mix of a colour as `#RRGGBB`, a size from 8 to 24 and a face, `Bold` or `Italic` |
+| `&lt;` `&gt;` `&amp;` `&quot;`                             | the characters `<` `>` `&` `"` themselves                                                                 |
+
+Every tag is closed by `</>`, whatever its name, and several can stand on one line
+(`Keep chat in <text color="#7FD6FF">English</> and be respectful`). A tag does not go inside
+another, and a Header takes no colour or size: a coloured title is
+`<text size="20" fontface="Bold" color="#FF4D4D">SERVER RULES</>`. Nothing in the popup can be
+clicked: a link, like any other tag, shows as typed.
+
+**Header**, **Bold**, **Italic**, **Colour**, **Size** and **Plain** write the tags around the
+selection, or around the whole line the caret is on, and keep to those rules: a tag the selection
+cuts through is closed before it and opened again after it, bold on coloured text keeps the
+colour, and a colour on a Header makes it that coloured title. Ctrl+B and Ctrl+I do bold and
+italic, and undo steps back over a style as over anything typed. The preview draws plain text at
+14 and a Header at 20, as the official console does; the game has its own font, so it shows sizes
+and colours against each other, not the popup to the pixel.
+
+Sent over RCON, a document is refused by the game when its popup has more than 128 lines, a line
+with more than 128 visible characters (tags do not count, and `&lt;` counts as one), a tag with
+attributes that is not `<text>` (a link, an image, a Header with a colour), a `<text>` attribute
+other than `color`, `size` and `fontface`, or a size that is not a whole number from 8 to 24. (In
+a file edited on the host nothing is refused: the game cuts a line at the limit and shows such a
+tag as typed.) The editor marks such a line as it is typed and says what is wrong with it, and
+**Apply to server** names it and asks before sending text that has been changed with one in it:
+the game has the last word on its own rules, and its refusal is shown line by line.
+**Keep as typed** rewrites a refused tag with `&lt;` and `&gt;`, so that it reads as it was typed
+and the game takes it. Where a server's status reports limits of its own, those are the ones
+checked against.
+
+The editor also notes what the game takes and then shows as typed, which is seldom what was
+meant: a tag closed by name as in HTML (`</Bold>`), one left open, one inside another, one whose
+quotes turned curly on the way through a chat message, a style the popup does not have, a colour
+that is not `#RRGGBB`. **Close with </>** and **Straighten quotes** put the first and the fourth
+right. A `<` that was never a tag (`<3`, `a < b`) shows as typed too, as it was meant to.
+
+In the file, each line of the popup is one `.ServerWelcomeMessageLines=` line under a
+`!ServerWelcomeMessageLines=ClearArray`, so a blank line, or the same line twice, stays as it was
+written. A line the game's reader would not read back whole (one that starts with a quote, has a
+space at either end, ends in a backslash, or holds `//`, a brace or a bar) goes in quotes, with
+its own quotes and backslashes escaped by a backslash, as the official console writes it; the
+**Raw file** view shows the lines that way.
+
+The popup needs _Config & settings_, like the rest of the document, and nothing more. An API key
+with it sets the popup the same way, through the `config` and `configApply`
+[game actions](#game-actions): read the document, change those keys, send it back with its
+revision. The limits a server reports are in the answer of `status` asked with `raw=1`, under
+`raw.welcomeMessage`, which is for _Config & settings_ too.
+
+A server not yet on Season 3 has no popup, and drops these keys when a file with them is applied.
+The form says so above the fields when a server shows no sign of one: no limits in its status,
+none of the keys in its config.
 
 ### Announcements
 
@@ -1944,7 +2026,8 @@ src/lib/server/analytics.ts    analytics queries per server and range
 src/lib/server/audit.ts        audit writer/query with secret redaction
 src/lib/server/mockgame.ts     in-process imitation of the WDRCON API for demo/testing
 src/lib/config-doc.ts / config-fields.ts   ServerSettings.ini parser and line-level setter (pure, tested) / the keys the config form manages
-src/lib/components/            Modal, MapPicker, PopulationChart, CashChart, ConfigForm, Toasts, badges…
+src/lib/welcome-text.ts / welcome-doc.ts   the game's welcome popup: its markup, limits and preview (pure, tested) / its lines in the config document
+src/lib/components/            Modal, MapPicker, PopulationChart, CashChart, ConfigForm, WelcomeEditor, Toasts, badges…
 src/routes/(auth)/             /sign-in (+ /verify), /setup, /join/[token], /recover (form actions)     src/routes/sign-out
 src/routes/api/passkeys/       WebAuthn ceremonies relayed to Better Auth; src/routes/auth/steam/ the Steam callback
 src/routes/(app)/              dashboard, /players, /server/[id]/{,players,players/[steamId],bans,rotation,config,automation,analytics,leaderboard,log,settings}, /audit, /orgs, /orgs/[id]/{,bans,reserved,seasons}, /admin/{,users,settings}, /servers, /account

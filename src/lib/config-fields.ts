@@ -41,14 +41,24 @@ const JOIN_LIMIT_NOTE = {
 		'Older server builds do not send join limits on a session update, so on those it takes effect on restart. A current server applies it as soon as Apply returns.'
 };
 
+/** The game's own welcome popup (Season 3); its text has an editor of its own under these fields. */
+export const WELCOME_GROUP = 'Welcome popup';
+
 export const GROUPS = [
 	'Server',
 	'Join limits',
 	'Slots and start',
 	'Scoring',
 	'Team balance',
-	'Rotation'
+	'Rotation',
+	WELCOME_GROUP
 ];
+
+const WELCOME_NOTE = {
+	state: 'next-match' as const,
+	description:
+		'The game reads the welcome popup when a match starts, so a change shows from the next match.'
+};
 
 export const FIELDS: ConfigField[] = [
 	{
@@ -243,8 +253,61 @@ export const FIELDS: ConfigField[] = [
 		group: 'Rotation',
 		live: 'the Map rotation tab',
 		help: 'Ordered walks the rotation top to bottom; Random picks each next entry.'
+	},
+	{
+		key: 'welcomeEnabled',
+		label: 'Show the popup',
+		type: 'bool',
+		section: S_STATE,
+		ini: 'bServerWelcomeMessageEnabled',
+		def: false,
+		group: WELCOME_GROUP,
+		appliesFallback: WELCOME_NOTE,
+		help: 'Shows each player the text below in a popup, once, when they first deploy.'
+	},
+	{
+		key: 'welcomeCloseDelay',
+		label: 'Close countdown',
+		type: 'number',
+		min: 0,
+		max: 60,
+		unit: 's',
+		section: S_STATE,
+		ini: 'ServerWelcomeMessageCloseDelaySeconds',
+		def: 0,
+		group: WELCOME_GROUP,
+		appliesFallback: WELCOME_NOTE,
+		help: 'Seconds the popup’s Close button stays locked, so players read it first. 0 = no lock.'
+	},
+	{
+		key: 'welcomeSkipStreamers',
+		label: 'Skip for streamers',
+		type: 'bool',
+		section: S_STATE,
+		ini: 'bServerWelcomeMessageSkipForStreamers',
+		def: false,
+		group: WELCOME_GROUP,
+		appliesFallback: WELCOME_NOTE,
+		help: 'Players with streamer mode on do not get the popup.'
 	}
 ];
+
+/**
+ * The popup's text, ServerWelcomeMessageLines: a list of lines, so not among FIELDS, whose values
+ * are one line of the file each. Here for what a field says of its key: when a change applies,
+ * and whether the command line pins it.
+ */
+export const WELCOME_TEXT: ConfigField = {
+	key: 'welcomeLines',
+	label: 'Text',
+	type: 'text',
+	section: S_STATE,
+	ini: 'ServerWelcomeMessageLines',
+	def: '',
+	group: WELCOME_GROUP,
+	appliesFallback: WELCOME_NOTE,
+	help: ''
+};
 
 export const isNumeric = (f: ConfigField) => f.type === 'number' || f.type === 'slider';
 
