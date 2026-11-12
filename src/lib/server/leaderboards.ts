@@ -57,6 +57,7 @@ const lines = (ids: string[], from: Date, steamId: string | string[] | null) => 
 	lines AS (
 		SELECT p.steam_id, p.match_id, p.server_id, p.faction, p.seconds, p.kills, p.deaths, p.cash_delta,
 		       p.headshots, p.team_kills, p.suicides, p.vehicle_kills, p.longest_m, p.kill_streak, p.death_streak,
+		       (p.hidden_name IS NOT NULL) AS hidden,
 		       m.started_at, m.ended_at, m.map,
 		       CASE WHEN p.faction IS NULL THEN NULL
 		            WHEN jsonb_typeof(m.final_scores) = 'array' AND jsonb_array_length(m.final_scores) > 0
@@ -739,6 +740,8 @@ interface LineRow extends Record<string, unknown> {
 	longestM: string | null;
 	killStreak: string;
 	deathStreak: string;
+	/** the player played the match in the game's anonymous mode */
+	hidden: boolean;
 }
 
 /** A career lists the organisation's last ten seasons that have started. */
@@ -780,6 +783,13 @@ export async function loadCareer(
 		ids: string[];
 		nameOf: Map<string, string>;
 		steamId: string;
+		/**
+		 * For a public page: the last matches leave out the ones the player played in the game's
+		 * anonymous mode. Each is on its own public page under their hidden name, with these same
+		 * figures; listed here beside their own name, it would say who that was ($lib/anonymous).
+		 * The totals count them as ever.
+		 */
+		publicView?: boolean;
 	}
 ): Promise<CareerView> {
 	const { serverId, ids, steamId } = opts;
@@ -793,7 +803,8 @@ export async function loadCareer(
 				WITH ${lines(ids, EPOCH, steamId)}
 				SELECT match_id AS "matchId", server_id AS "serverId", started_at AS "startedAt", ended_at AS "endedAt",
 				       map, faction, result, seconds, kills, deaths, cash_delta AS "cashDelta", headshots,
-				       vehicle_kills AS "vehicleKills", longest_m AS "longestM", kill_streak AS "killStreak", death_streak AS "deathStreak"
+				       vehicle_kills AS "vehicleKills", longest_m AS "longestM", kill_streak AS "killStreak", death_streak AS "deathStreak",
+				       hidden
 				  FROM lines ORDER BY started_at DESC, match_id DESC`)
 			: Promise.resolve<LineRow[]>([])
 	]);
@@ -814,7 +825,8 @@ export async function loadCareer(
 		vehicleKills: num(r.vehicleKills),
 		longestM: r.longestM === null ? null : num(r.longestM),
 		killStreak: num(r.killStreak),
-		deathStreak: num(r.deathStreak)
+		deathStreak: num(r.deathStreak),
+		hidden: r.hidden === true
 	}));
 	const count = (kind: MatchResult) => rows.filter((r) => r.result === kind).length;
 	const sum = (pick: (r: (typeof rows)[number]) => number) => rows.reduce((n, r) => n + pick(r), 0);
@@ -824,7 +836,8 @@ export async function loadCareer(
 		(n, r) => (r.longestM === null ? n : n === null ? r.longestM : Math.max(n, r.longestM)),
 		null
 	);
-	const last: CareerMatch[] = rows.slice(0, 10).map((r) => ({
+	const listed = opts.publicView ? rows.filter((r) => !r.hidden) : rows;
+	const last: CareerMatch[] = listed.slice(0, 10).map((r) => ({
 		matchId: r.matchId,
 		serverId: r.serverId,
 		serverName: r.serverName,

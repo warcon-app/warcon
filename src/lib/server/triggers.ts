@@ -255,6 +255,7 @@ import {
 import { COMMAND_PREFIX, commandsLine } from '$lib/chat-commands';
 import type { DbOrTx } from './db';
 import { mapName } from '$lib/format';
+import { seenAs } from '$lib/anonymous';
 import { statsIn, usesStats } from '$lib/placeholders';
 import { settings } from './settings';
 import { playerStats, riskPerformanceFor } from './leaderboards';
@@ -2100,7 +2101,8 @@ export function bountyLapse(
 			map: map || null,
 			reward: rewardWords(cfg),
 			orgWide: cfg.reward === 'slot' && cfg.scope === 'org',
-			name: open.name,
+			// for players: the name the bounty was announced under ($lib/anonymous)
+			name: seenAs(open),
 			run: open.best,
 			why
 		}

@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import type { FactionScore, LiveView, Player } from '$lib/types';
 import { factionColor, fmtDuration, isMod, mapName, prettify, zoneLabel } from '$lib/format';
 import { mapArtCandidates } from '$lib/map-art';
+import { seenAs } from '$lib/anonymous';
 import { restartScheduleOf, restartWindow, type ManualRestart } from '$lib/uptime';
 import { scoreCapOf } from '$lib/match';
 import type { StatusStyle } from '$lib/status-styles';
@@ -190,7 +191,7 @@ export function fitLines(lines: string[], max: number = LIMITS.field): string {
 }
 
 const playerLine = (p: Player, bold: boolean) => {
-	const name = escapeMarkdown(p.name);
+	const name = escapeMarkdown(seenAs(p));
 	return `${bold ? `**${name}**` : name} ${p.kills}/${p.deaths}`;
 };
 const byKills = (a: Player, b: Player) => b.kills - a.kills || a.deaths - b.deaths;
@@ -355,7 +356,7 @@ function buildBody(opts: StatusOptions, server: StatusServer, live: LiveView | n
 			inline: true
 		}));
 		const topLine = top.length
-			? `Top: ${top.map((p) => `**${escapeMarkdown(p.name)}** ${p.kills}/${p.deaths}`).join(' · ')}\n`
+			? `Top: ${top.map((p) => `**${escapeMarkdown(seenAs(p))}** ${p.kills}/${p.deaths}`).join(' · ')}\n`
 			: '';
 		return fitEmbed({
 			...common,
@@ -378,7 +379,7 @@ function buildBody(opts: StatusOptions, server: StatusServer, live: LiveView | n
 			' K   D   Player            Faction',
 			...shown.map(
 				(p) =>
-					`${String(p.kills).padStart(2)}  ${String(p.deaths).padStart(2)}   ${cell(p.name, 17)} ${clip(p.faction ?? '—', 10)}`
+					`${String(p.kills).padStart(2)}  ${String(p.deaths).padStart(2)}   ${cell(seenAs(p), 17)} ${clip(p.faction ?? '—', 10)}`
 			)
 		].join('\n');
 		const fields: EmbedField[] = rows.length
@@ -434,7 +435,7 @@ function substance(server: StatusServer, live: LiveView | null, now: number): un
 		s.alternator,
 		s.scoreCap,
 		s.scores.map((f) => [f.name, f.score]),
-		live.players.map((p) => [p.name, p.faction, p.kills, p.deaths])
+		live.players.map((p) => [seenAs(p), p.faction, p.kills, p.deaths])
 	];
 }
 

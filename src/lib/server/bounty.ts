@@ -95,6 +95,12 @@ export interface BountyKill {
 
 /** The bounty open on a server. */
 export interface OpenBounty extends BountyPlayer {
+	/**
+	 * The name the other players saw in place of `name` when it was set: the player was in the
+	 * game's anonymous mode ($lib/anonymous). What is said to players of this bounty (the
+	 * broadcasts, a Bounties channel) says this name; the trail keeps their own.
+	 */
+	hiddenName?: string;
 	/** the run that put the bounty on them */
 	streak: number;
 	/** their longest run since it was set, for the claim (in memory; written with the next change) */
@@ -221,6 +227,7 @@ export function savedBounty(state: unknown, version: string): OpenBounty | null 
 		? {
 				steamId: o.steamId,
 				name: o.name,
+				...(typeof o.hiddenName === 'string' && o.hiddenName ? { hiddenName: o.hiddenName } : {}),
 				faction: typeof o.faction === 'string' ? o.faction : null,
 				streak: Number(o.streak) || 0,
 				best: Number(o.best) || Number(o.streak) || 0,

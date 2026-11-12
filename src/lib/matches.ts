@@ -21,8 +21,13 @@ export interface MatchSummary {
 
 /** A player's line of the match, as the scoreboard shows it. */
 export interface MatchLine {
+	/** on a public page, a stand-in that is no SteamID for a player who played the match in the
+	 *  game's anonymous mode (publicMatch) */
 	steamId: string;
 	name: string;
+	/** the name the other players saw in place of `name`: the player was in the game's anonymous
+	 *  mode during the match ($lib/anonymous). There only then, and only for staff. */
+	hiddenName?: string;
 	faction: string | null;
 	seconds: number;
 	kills: number;

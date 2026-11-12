@@ -14,6 +14,7 @@ import {
 	organizations,
 	outbox,
 	samples,
+	serverLive,
 	servers,
 	triggers,
 	webhooks
@@ -65,6 +66,8 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 	let spy: ReturnType<typeof spyOn>;
 	/** who the stand-in game lists, per server */
 	const listed = new Map<string, string[]>();
+	/** the players in the game's anonymous mode, and the hidden name the others see for each */
+	const hiddenAs = new Map<string, string>();
 	/** players whose whisper the stand-in refuses */
 	const refuse = new Set<string>();
 	const whispers: [string, string, string][] = [];
@@ -103,6 +106,9 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 							name: name(steamId),
 							steamId,
 							faction: SIDE[steamId],
+							// Season 3: everyone has a hidden name, and it is in use for some
+							hiddenName: hiddenAs.get(steamId) ?? 'Quail',
+							anonymous: hiddenAs.has(steamId),
 							kills: 0,
 							deaths: 0,
 							cash: 0
@@ -260,6 +266,147 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 		expect([after.fireCount, after.lastResult]).toEqual([3, 'Whispered p961.']);
 		await Bun.sleep(2000);
 		expect(titles.filter((t) => t === 'Trigger · death whisper')).toEqual([]);
+	});
+
+	test('a killer in anonymous mode is named as the player who died knows them', async () => {
+		const w = await seedWorld(env);
+		hiddenAs.set(A, 'Falcon');
+		try {
+			const m = await memoryOf(w);
+			await look(m, A, B, C, D);
+			const id = await rule(w, { messages: ['{killer} got you, {name} [{steamid}]'] });
+			// B killed by A, who is anonymous; then A, by B: the whisper to A is A's own
+			await post(w.server.id, [ev(A, B)]);
+			await post(w.server.id, [ev(B, A)]);
+			const rows = await rowsOf(id);
+			expect(rows.map((r) => [r.target, (r.params as { message: string }).message])).toEqual([
+				[B, `Falcon got you, p962 [${B}]`],
+				[A, `p962 got you, p961 [${A}]`]
+			]);
+			// the trail is the staff's: who was whispered, by their own name
+			expect(rows.map((r) => r.okMessage)).toEqual(['Whispered p962.', 'Whispered p961.']);
+			// A leaves and the kill arrives a moment later: still inside the grace, still hidden
+			listed.set(m.server.id, [B, C, D]);
+			await observeServer(env, m, { status: true, players: true });
+			expect(m.players.map((p) => p.steamId)).not.toContain(A);
+			await post(w.server.id, [ev(A, C)]);
+			const late = (await rowsOf(id)).find((r) => r.target === C)!;
+			expect((late.params as { message: string }).message).toBe(`Falcon got you, p963 [${C}]`);
+		} finally {
+			hiddenAs.clear();
+		}
+	});
+
+	test('a Team kill limit names the victim to the killer as the game shows them', async () => {
+		const w = await seedWorld(env);
+		hiddenAs.set(C, 'Heron');
+		try {
+			const m = await memoryOf(w);
+			await look(m, A, B, C, D);
+			const id = newId();
+			await env.db.insert(triggers).values({
+				id,
+				serverId: w.server.id,
+				orgId: w.org.id,
+				kind: 'team_kill',
+				name: 'Team kill limit',
+				enabled: true,
+				config: validateConfig('team_kill', {
+					warnAt: 1,
+					warnMessage: 'You shot {victim}, {name}: {count} so far',
+					kickAt: 2,
+					kickReason: 'Team kills: {victim} was the last ({count})'
+				})
+			});
+			invalidateTriggers(w.server.id);
+			// B and C are both Lonestar; C is in anonymous mode
+			await post(w.server.id, [ev(B, C)]);
+			await post(w.server.id, [ev(B, C)]);
+			const rows = await rowsOf(id);
+			expect(rows.map((r) => r.action)).toEqual(['whisper', 'kick']);
+			expect((rows[0].params as { message: string }).message).toBe(
+				'You shot Heron, p962: 1 so far'
+			);
+			expect((rows[1].params as { reason: string }).reason).toBe(
+				'Team kills: Heron was the last (2)'
+			);
+			// the trail keeps who it was
+			expect(rows[0].detail).toMatchObject({ name: 'p962', victim: 'p963', count: 1 });
+		} finally {
+			hiddenAs.clear();
+		}
+	});
+
+	test('a killer who has left the mode goes by their own name again, on the list and off it', async () => {
+		const w = await seedWorld(env);
+		hiddenAs.set(A, 'Falcon');
+		try {
+			const m = await memoryOf(w);
+			await look(m, A, B, C, D);
+			const id = await rule(w, { messages: ['{killer} got you, {name}'] });
+			// A switches the mode off: the next look sees them under their own name
+			hiddenAs.delete(A);
+			await look(m, A, B, C, D);
+			await post(w.server.id, [ev(A, B)]);
+			// then A is off the list for a moment, as everyone is at a map change. The session keeps
+			// the hidden name it was played under, and that it was no longer the one in use.
+			listed.set(m.server.id, [B, C, D]);
+			await observeServer(env, m, { status: true, players: true });
+			expect(m.players.map((p) => p.steamId)).not.toContain(A);
+			expect(m.presence.open.get(A)).toMatchObject({ hiddenName: 'Falcon', anonymous: false });
+			await post(w.server.id, [ev(A, C)]);
+			const rows = await rowsOf(id);
+			expect(rows.map((r) => [r.target, (r.params as { message: string }).message])).toEqual([
+				[B, 'p961 got you, p962'],
+				[C, 'p961 got you, p963']
+			]);
+		} finally {
+			hiddenAs.clear();
+		}
+	});
+
+	test('a worker that has not looked yet goes by the list the one before it stored, while that is fresh', async () => {
+		const w = await seedWorld(env);
+		hiddenAs.set(C, 'Heron');
+		try {
+			// the worker before this one saw C in anonymous mode, and stored the list
+			await look(await memoryOf(w), A, B, C, D);
+			const id = newId();
+			await env.db.insert(triggers).values({
+				id,
+				serverId: w.server.id,
+				orgId: w.org.id,
+				kind: 'team_kill',
+				name: 'Team kill limit',
+				enabled: true,
+				config: validateConfig('team_kill', {
+					warnAt: 1,
+					warnMessage: 'You shot {victim}, {name}: {count} so far',
+					kickAt: 3,
+					kickReason: 'Team kills: {victim} was the last ({count})'
+				})
+			});
+			invalidateTriggers(w.server.id);
+			// this one has just started: it holds no list, and its first look is still to come
+			const fresh = await memoryOf(w);
+			expect([fresh.playersAt, fresh.players.length]).toEqual([0, 0]);
+			await post(w.server.id, [ev(B, C)]);
+			const said = async () =>
+				(await rowsOf(id)).map((r) => (r.params as { message: string }).message);
+			expect(await said()).toEqual(['You shot Heron, p962: 1 so far']);
+			// a stored list too old to mean the same players is not gone by
+			await env.db
+				.update(serverLive)
+				.set({ playersAt: new Date(Date.now() - 10 * 60_000) })
+				.where(eq(serverLive.serverId, w.server.id));
+			await post(w.server.id, [ev(B, C)]);
+			expect(await said()).toEqual([
+				'You shot Heron, p962: 1 so far',
+				'You shot p963, p962: 2 so far'
+			]);
+		} finally {
+			hiddenAs.clear();
+		}
 	});
 
 	test('a whisper the game refuses is in the audit trail and on Discord, in fixed words', async () => {

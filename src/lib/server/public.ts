@@ -9,10 +9,13 @@ import { ApiError, clientIp, normalizeError } from './http';
 import { organizations, servers, type OrgRow, type ServerRow } from './db/schema';
 import { readLiveRows } from './live';
 import { recentKills } from './feed';
+import { latestHiddenNames } from './sessions';
 import { assertRate } from './ratelimit';
 import { effectiveFeatures, type FeatureSet, type PublicFeature } from '$lib/features';
 import { EMPTY_FILTER } from '$lib/kills';
-import type { KillView, LiveView } from '$lib/types';
+import { isAnonymous, seenAs } from '$lib/anonymous';
+import type { MatchLine, MatchView } from '$lib/matches';
+import type { CombatSummary, KillView, LiveView } from '$lib/types';
 
 export interface PublicServer {
 	server: ServerRow;
@@ -56,7 +59,11 @@ export async function publicOrgServers(
 	return rows.filter((s) => effectiveFeatures(org, s)[feature]);
 }
 
-/** What the public status page shows: never a Steam ID, ping, cash, the build or an error text. */
+/**
+ * What the public status page shows: never a Steam ID, ping, cash, the build or an error text.
+ * A player in the game's anonymous mode is on it as the game shows them to the other players:
+ * under their hidden name, with no link to a career page ($lib/anonymous).
+ */
 export interface PublicStatus {
 	serverId: string;
 	name: string;
@@ -74,7 +81,8 @@ export interface PublicStatus {
 	scores: { name: string; colorHex: string; score: number }[];
 	scoreCap: number | null;
 	matchSeconds: number | null;
-	/** steamId is set only while the server's career pages are open: it is the link, never shown */
+	/** steamId is set only while the server's career pages are open, and never for a player in
+	 *  anonymous mode: it is the link, never shown */
 	roster: {
 		name: string;
 		faction: string | null;
@@ -86,7 +94,8 @@ export interface PublicStatus {
 	kills: PublicKill[] | null;
 }
 
-/** One kill as the public page shows it: names and factions, never a SteamID. */
+/** One kill as the public page shows it: names and factions, never a SteamID. A player in
+ *  anonymous mode is named as the game shows them (publicKill's `hidden`). */
 export interface PublicKill {
 	eventId: string;
 	ts: string;
@@ -107,12 +116,24 @@ export interface PublicKill {
 /** How many kills the public page carries: enough to read the last few minutes, one small read. */
 export const PUBLIC_KILLS = 20;
 
-export const publicKill = (k: KillView): PublicKill => ({
+/**
+ * `hidden`: the hidden names of the kill's players who are in anonymous mode, by SteamID
+ * (hiddenNamesFor). The feed names a player by their own name, so without it they go as fed.
+ */
+export const publicKill = (k: KillView, hidden?: ReadonlyMap<string, string>): PublicKill => ({
 	eventId: k.eventId,
 	ts: k.ts,
 	eventTime: k.eventTime,
-	killer: k.killer ? { name: k.killer.name, faction: k.killer.faction } : null,
-	victim: { name: k.victim.name, faction: k.victim.faction },
+	killer: k.killer
+		? {
+				name: (k.killer.steamId && hidden?.get(k.killer.steamId)) || k.killer.name,
+				faction: k.killer.faction
+			}
+		: null,
+	victim: {
+		name: (k.victim.steamId && hidden?.get(k.victim.steamId)) || k.victim.name,
+		faction: k.victim.faction
+	},
 	cause: k.cause,
 	distanceM: k.distanceM,
 	headshot: k.headshot,
@@ -129,7 +150,9 @@ export const publicKill = (k: KillView): PublicKill => ({
 export function publicStatus(
 	ps: PublicServer,
 	live: LiveView | null,
-	kills: KillView[] | null
+	kills: KillView[] | null,
+	/** the hidden names of the kills' players who are in anonymous mode (hiddenNamesFor) */
+	hidden: ReadonlyMap<string, string> = new Map()
 ): PublicStatus {
 	const ok = !!live && live.ok && !!live.status;
 	const s = live?.status ?? null;
@@ -155,15 +178,107 @@ export function publicStatus(
 		roster: ok
 			? live!.players
 					.map((p) => ({
-						name: String(p.name ?? ''),
+						// as the game shows them: the hidden name, and no way on from it
+						name: String(seenAs(p) ?? ''),
 						faction: p.faction ?? null,
 						kills: Number(p.kills) || 0,
 						deaths: Number(p.deaths) || 0,
-						steamId: linkable && /^\d{17}$/.test(String(p.steamId ?? '')) ? String(p.steamId) : null
+						steamId:
+							linkable && !isAnonymous(p) && /^\d{17}$/.test(String(p.steamId ?? ''))
+								? String(p.steamId)
+								: null
 					}))
 					.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths || a.name.localeCompare(b.name))
 			: [],
-		kills: kills ? kills.map(publicKill) : null
+		kills: kills ? kills.map((k) => publicKill(k, hidden)) : null
+	};
+}
+
+/**
+ * The hidden names of these kills' players who are in anonymous mode, by SteamID: as the player
+ * list has them now, and for a player no longer on it, as their newest session here saw them
+ * (one read, and only when the kills name someone who has left).
+ */
+export async function hiddenNamesFor(
+	env: Env,
+	serverId: string,
+	live: LiveView | null,
+	kills: KillView[]
+): Promise<Map<string, string>> {
+	const on = new Map((live?.players ?? []).map((p) => [String(p.steamId), p]));
+	const hidden = new Map<string, string>();
+	const gone: string[] = [];
+	for (const k of kills)
+		for (const who of [k.killer, k.victim]) {
+			const id = who?.steamId;
+			if (!id) continue;
+			const p = on.get(id);
+			if (!p) gone.push(id);
+			else if (p.hiddenName) hidden.set(id, p.hiddenName);
+		}
+	if (gone.length)
+		for (const [id, name] of await latestHiddenNames(env.db, [serverId], gone))
+			hidden.set(id, name);
+	return hidden;
+}
+
+/**
+ * A match as its public page shows it. A player who played it in the game's anonymous mode (their
+ * line carries the hidden name) is on it as the game showed them to the others: under the hidden
+ * name in the lines and the awards, and in place of their SteamID a stand-in that is the address
+ * of no career page. `hidden` is for the match's kills (publicKill).
+ */
+export function publicMatch(view: MatchView): { view: MatchView; hidden: Map<string, string> } {
+	const hidden = new Map<string, string>();
+	const standIn = new Map<string, string>();
+	for (const l of view.lines)
+		if (l.hiddenName) {
+			hidden.set(l.steamId, l.hiddenName);
+			standIn.set(l.steamId, `anon-${standIn.size + 1}`);
+		}
+	if (!hidden.size) return { view, hidden };
+	return {
+		view: {
+			...view,
+			lines: view.lines.map((l) => {
+				const name = hidden.get(l.steamId);
+				if (!name) return l;
+				const line: MatchLine = { ...l, steamId: standIn.get(l.steamId)!, name };
+				delete line.hiddenName;
+				return line;
+			}),
+			awards: view.awards.map((a) => {
+				const name = hidden.get(a.steamId);
+				return name ? { ...a, steamId: standIn.get(a.steamId)!, name } : a;
+			})
+		},
+		hidden
+	};
+}
+
+/**
+ * A career's kill-feed record as its public page shows it. Its most killed and its nemeses name
+ * players and link their careers, counted from the kills as they come in; a player who is in the
+ * game's anonymous mode on these servers, or was when last seen there, is left out of both: a
+ * line that grows as a hidden name kills the career's player says whose that name is. One read
+ * of those players' newest sessions (which a player who turns the mode on mid-session reaches at
+ * their next heartbeat).
+ */
+export async function publicCombat(
+	env: Env,
+	serverIds: string[],
+	combat: CombatSummary | null
+): Promise<CombatSummary | null> {
+	if (!combat || !(combat.victims.length + combat.nemeses.length)) return combat;
+	const hidden = await latestHiddenNames(env.db, serverIds, [
+		...combat.victims.map((v) => v.steamId),
+		...combat.nemeses.map((n) => n.steamId)
+	]);
+	if (!hidden.size) return combat;
+	return {
+		...combat,
+		victims: combat.victims.filter((v) => !hidden.has(v.steamId)),
+		nemeses: combat.nemeses.filter((n) => !hidden.has(n.steamId))
 	};
 }
 
@@ -176,7 +291,9 @@ export async function readPublicStatus(env: Env, ps: PublicServer): Promise<Publ
 		readLiveRows(env, [ps.server.id]),
 		ps.server.publicKills ? recentKills(env, ps.server.id, null, PUBLIC_KILLS, EMPTY_FILTER) : null
 	]);
-	return publicStatus(ps, rows.get(ps.server.id) ?? null, kills);
+	const live = rows.get(ps.server.id) ?? null;
+	const hidden = kills ? await hiddenNamesFor(env, ps.server.id, live, kills) : undefined;
+	return publicStatus(ps, live, kills, hidden);
 }
 
 /** What the public shell shows above every page of a server. */
