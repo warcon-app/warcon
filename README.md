@@ -1058,8 +1058,11 @@ A board shows one season at a time, or a range: the **Showing** menu above it li
 WARDOGS seasons, the organisation's own, and the 7, 30 and 90-day and all-time ranges. A season
 is a name and a start, and runs until the next season of its kind starts. The official ones ship
 with Warcon, each from the moment it launched: Season 1 from the early-access release on
-10 September 2026, Season 2 from 15 October 2026 at 16:00 UTC. A new one is added when Bulkhead
-announces it, and starts on its real date even when it is added late. An org owner adds the
+10 September 2026, Season 2 from 15 October 2026 at 16:00 UTC, and Season 3 from its scheduled
+start on 12 November 2026 at 15:00 UTC, after the maintenance window in
+[Bulkhead's Season 3 announcement](https://steamcommunity.com/gid/103582791475494490/announcements/detail/688648135317127222).
+A new one is added when Bulkhead announces it, and starts on its real date even when it is added
+late. An org owner adds the
 organisation's own on its **Seasons** tab, each from midnight UTC on a day still to come; a
 season that has started can be renamed but not moved or deleted, so its standings stay put, and
 to end one early you start the next. Nothing is reset or deleted: a season's board is a window

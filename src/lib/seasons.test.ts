@@ -9,7 +9,7 @@ import {
 	seasonSpan
 } from './seasons';
 import { boardQueryParams, DEFAULT_BOARD_QUERY, parseBoardQuery } from './leaderboard';
-import { resolveWindow, type OrgSeasons } from './server/seasons';
+import { pickable, resolveWindow, type OrgSeasons } from './server/seasons';
 
 const SEP = '2026-09-01T00:00:00.000Z';
 const OCT = '2026-10-01T00:00:00.000Z';
@@ -92,6 +92,49 @@ describe('a board’s range', () => {
 		expect(boardQueryParams(q)).toEqual({ range: 's:wardogs-1' });
 		expect(parseBoardQuery(new URLSearchParams(boardQueryParams(q)))).toEqual(q);
 		expect(boardQueryParams(DEFAULT_BOARD_QUERY)).toEqual({});
+	});
+});
+
+describe('Season 3 boards', () => {
+	const start = at('2026-11-12T15:00:00.000Z');
+	const os: OrgSeasons = {
+		seasons: chainSeasons('official', OFFICIAL_SEASONS),
+		opens: 'official',
+		hidden: []
+	};
+
+	test('the default board and picker switch at the scheduled start, never before', () => {
+		for (const range of ['current', 's:wardogs-3'] as const) {
+			expect(resolveWindow(range, os, start - 1)).toMatchObject({
+				range: 's:wardogs-2',
+				to: null,
+				finished: false
+			});
+			expect(resolveWindow(range, os, start)).toMatchObject({
+				range: 's:wardogs-3',
+				from: new Date(start),
+				to: null,
+				finished: false
+			});
+		}
+		expect(pickable(os, start - 1).map((s) => s.key)).not.toContain('wardogs-3');
+		expect(pickable(os, start)[0]?.key).toBe('wardogs-3');
+	});
+
+	test('a later update still closes Season 2 and reads Season 3 from the scheduled boundary', () => {
+		const later = start + 7 * 86_400_000;
+		expect(resolveWindow('s:wardogs-2', os, later)).toMatchObject({
+			range: 's:wardogs-2',
+			from: new Date('2026-10-15T16:00:00.000Z'),
+			to: new Date(start),
+			finished: true
+		});
+		expect(resolveWindow('current', os, later)).toMatchObject({
+			range: 's:wardogs-3',
+			from: new Date(start),
+			to: null,
+			finished: false
+		});
 	});
 });
 
