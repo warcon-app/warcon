@@ -10,8 +10,9 @@ export type MapArtVariant = '720' | 'square' | 'wide';
  * The folders under static/maps are named by map id (Kavkazi); a live server reports the
  * display name (Bakurani), and a rotation entry the id. Both spellings resolve, id first.
  */
-const ID_OF: Record<string, string> = Object.fromEntries(
-	Object.entries(MAP_DISPLAY).map(([id, name]) => [name, id])
+const ID_OF: Record<string, string> = Object.assign(
+	Object.create(null),
+	Object.fromEntries(Object.entries(MAP_DISPLAY).map(([id, name]) => [name, id]))
 );
 
 const FALLBACK_LIGHTING = 'DayClear';

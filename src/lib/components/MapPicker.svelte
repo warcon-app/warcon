@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import { rconGet, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
-	import { expLabel, isMod, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
+	import { expLabel, isMod, lightingLabel, lightingsOn, mapLabel, zoneLabel } from '$lib/format';
 	import MapArt from './MapArt.svelte';
 	import type { Catalog, CatalogItem, MapSelection } from '$lib/types';
 
@@ -20,13 +20,28 @@
 	let modes = $state<CatalogItem[]>([]);
 	let modOptions = $state<CatalogItem[]>([]);
 	let zones = $state<{ tag: string; display: string }[]>([]);
+	/** the map whose game modes and modifiers are the ones listed */
+	let listedFor = $state<string | null>(null);
 	let seq = 0;
+
+	// A map that takes only some of the lightings (Sabatulo) is offered those alone, and a lighting
+	// it does not take gives way to one it does when the map is picked. A server that lists none of
+	// them is offered its whole list rather than an empty one.
+	let lightings = $derived.by(() => {
+		const own = lightingsOn(map, catalog.lightings);
+		return own.length ? own : catalog.lightings;
+	});
+	function fitLighting() {
+		if (!lightings.some((l) => l.id === lighting)) lighting = lightings[0]?.id ?? '';
+	}
 
 	async function loadMap(keep?: Partial<MapSelection>) {
 		const my = ++seq;
 		const m = map;
+		fitLighting();
 		let exps: CatalogItem[] = [];
 		let alts: { tag: string; display: string }[] = [];
+		let read = true;
 		try {
 			[exps, alts] = await Promise.all([
 				rconGet<{ experiences: CatalogItem[] }>(serverId, 'experiences', { map: m }).then(
@@ -39,12 +54,14 @@
 					.catch(() => [])
 			]);
 		} catch (err) {
+			read = false;
 			toast(errorMessage(err), 'err');
 		}
 		if (my !== seq) return;
 		modes = exps.filter((x) => !isMod(x.id));
 		modOptions = exps.filter((x) => isMod(x.id));
 		zones = alts;
+		listedFor = read ? m : null;
 		const wanted = (keep?.experiences || []).find((i) => !isMod(i));
 		mode = wanted && modes.some((x) => x.id === wanted) ? wanted : (modes[0]?.id ?? '');
 		mods = (keep?.experiences || []).filter((i) => modOptions.some((x) => x.id === i));
@@ -89,18 +106,32 @@
 			{#each catalog.maps as m (m.id)}<option value={m.id}>{mapLabel(catalog, m.id)}</option>{/each}
 		</select>
 	</label>
-	<label class="block">
-		<span class="label-sm">Game mode</span>
-		<select class="input" bind:value={mode} {disabled}>
-			{#each modes as e (e.id)}<option value={e.id}>{e.display}</option>{/each}
-		</select>
-	</label>
-	<label class="block">
-		<span class="label-sm">Time of day &amp; weather</span>
-		<select class="input" bind:value={lighting} {disabled}>
-			{#each catalog.lightings as l (l.id)}<option value={l.id}>{l.display}</option>{/each}
-		</select>
-	</label>
+	<div>
+		<label class="block">
+			<span class="label-sm">Game mode</span>
+			<select class="input" bind:value={mode} {disabled}>
+				{#each modes as e (e.id)}<option value={e.id}>{e.display}</option>{/each}
+			</select>
+		</label>
+		{#if map && listedFor === map && !modes.length}
+			<p class="note text-warn">
+				This server lists no game mode for {mapLabel(catalog, map)}.
+			</p>
+		{/if}
+	</div>
+	<div>
+		<label class="block">
+			<span class="label-sm">Time of day &amp; weather</span>
+			<select class="input" bind:value={lighting} {disabled}>
+				{#each lightings as l (l.id)}<option value={l.id}>{l.display}</option>{/each}
+			</select>
+		</label>
+		{#if lightings.length < catalog.lightings.length}
+			<p class="note">
+				{mapLabel(catalog, map)} takes these {lightings.length} only.
+			</p>
+		{/if}
+	</div>
 	<label class="block">
 		<span class="label-sm">Control zone</span>
 		<select class="input" bind:value={zone} {disabled}>

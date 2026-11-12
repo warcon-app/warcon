@@ -208,6 +208,10 @@
 			'The server started without a feed.',
 			"bEventFeedEnabled=True was not in its file when it last started: add this panel's lines and restart the server."
 		],
+		terms: () => [
+			'The game is holding the feed back until the chat terms are accepted.',
+			"From Season 3 a server sends no events, kills included, until its chat terms have been accepted. Whoever runs the server reads and accepts them in the official RCON console, under Chat; nothing in the server's file needs changing."
+		],
 		empty: () => [
 			'The feed is on, but lists no endpoint.',
 			"Add this panel's EventFeedEndpoints line and restart the server."
@@ -608,7 +612,9 @@
 							: 'switched off'} in the server's file · {report.endpointCount} endpoint{report.endpointCount ===
 						1
 							? ''
-							: 's'} · read {fmtAgo(reportAt)}{/if}
+							: 's'}{report.pausedForTerms ? ' · held back until the chat terms are accepted' : ''} ·
+						read
+						{fmtAgo(reportAt)}{/if}
 				</span>
 				{#if !reportUnserved}
 					<button class="ml-auto btn btn-sm" disabled={reportBusy} onclick={readReport}

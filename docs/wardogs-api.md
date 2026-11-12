@@ -1,7 +1,7 @@
 # WARDOGS dedicated-server RCON API (WDRCON)
 
 Reverse-engineered on 2026-09-08 from the official web console at `http://rcon.wardogs.com`, re-checked
-against the 2026-09-10 and 2026-09-14 redeploys of the site
+against the 2026-09-10, 2026-09-14 and 2026-11-12 (Season 3) redeploys of the site
 (`js/api.js`, `js/mock-server.js`, `js/config-editor.js`, `ServerSettings.ini`) and against live builds
 CL-501228 on 2026-09-14 and CL-507060 (update 0.1.2) on 2026-09-30. The console is a
 static, plain-HTTP-only site that talks to the game server **directly from the browser**, which is
@@ -54,9 +54,9 @@ Warcon, and Warcon's own process talks plain HTTP to the listener.
 | GET | `/v1/reserved-slots` | | `{ reservedSlots:[steamId], count }` | Permanent only on real servers (the console carries a `reservedExpiry` flag and `expiresAtUtc`, but only its mock sets them). The list has no length limit: anyone on it skips the join queue; `MaxReservedSlots` only says how many player slots are held back for them. |
 | POST | `/v1/reserved-slots` | `{ steamId }` | `{ message }` | **Not served by live builds CL-499480 / CL-501228.** Both the console (since 2026-09-14) and Warcon then edit `DefaultReservedPlayerIds` in the config document instead: `GET /v1/config`, add the id, `PUT /v1/config` with `If-Match` (`src/lib/reserved-doc.ts`, `reservedViaConfig` in `actions.ts`); Warcon keeps the live-route error codes (`already_reserved`, `reserved_not_found`) so the org list sync behaves the same either way. The console's mock refused adds beyond `MaxReservedSlots` with a `reserved_full` 409; no real server does, and Warcon no longer imitates it. **The running server does not re-read the array until it restarts** (seen 2026-09-15 on a CL-501228 host: withdrawn from the document, still returned by `GET /v1/reserved-slots` five minutes later, and the 24-hour self-restart is when it clears). Warcon re-reads the live list after every document edit and reports `pendingRestart`; the slots page badges such ids "leaves at restart" / "arrives at restart" and offers no second Withdraw. `MOCK_LIVE_BUILD` reproduces it. |
 | DELETE | `/v1/reserved-slots/{steamId}` | | `{ message }` | **Not served by live builds**; same document fallback. |
-| GET | `/v1/catalog/maps` | | `{ maps:[{id, displayName}] }` | Map ids: `Kavkazi` (Bakurani), `Europe` (Ozeti), `NorthAmerica` (Zestafona). |
-| GET | `/v1/catalog/lightings` | | `{ lightings:[{id, displayName}] }` | `DayStartClear`, `DayEarlyClear`, `DayEarlyFog`, `DayClear`, `DayLateClear`, `DayLateGray`, `DayLateGrayFog`, `DayEndClear`; Season 2 (CL-516586) adds the rain preset `DayLateRain` (the official console's demo data and map art have it since 2026-10-15). Warcon's pickers list whatever the server sends. |
-| GET | `/v1/catalog/experiences` | | `{ experiences:[{id, displayName}] }` | Game modes (`*_KOTH_01`) and modifiers (`KOTH_InfantryOnly`, `KOTH_Hardcore`). |
+| GET | `/v1/catalog/maps` | | `{ maps:[{id, displayName}] }` | Map ids: `Kavkazi` (Bakurani), `Europe` (Ozeti), `NorthAmerica` (Zestafona) and, from Season 3, `Russia` (Sabatulo). |
+| GET | `/v1/catalog/lightings` | | `{ lightings:[{id, displayName}] }` | `DayStartClear`, `DayEarlyClear`, `DayEarlyFog`, `DayClear`, `DayLateClear`, `DayLateGray`, `DayLateGrayFog`, `DayEndClear`; Season 2 (CL-516586) adds the rain preset `DayLateRain` (the official console's demo data and map art have it since 2026-10-15). Warcon's pickers list whatever the server sends, less what the map picked does not take: the list is one for every map, though Sabatulo takes four of them (Season 3, below). |
+| GET | `/v1/catalog/experiences` | | `{ experiences:[{id, displayName}] }` | Game modes (`*_KOTH_01`; Season 3's `Moscow_KOTH_01` is Sabatulo's) and modifiers (`KOTH_InfantryOnly`, `KOTH_Hardcore`, Season 3's `KOTH_LimitedGear`). Nothing in the answer says which an id is: a game mode is named for its place, a modifier for the mode it changes (`isMod` in `src/lib/format.ts`). |
 | GET | `/v1/catalog/maps/{map}/experiences` | | `{ map, experiences:[id], count }` | |
 | GET | `/v1/catalog/maps/{map}/alternators` | | `{ map, alternators:[{index, tag, displayName}], count }` | Control-zone alternators, e.g. `ZoneAlternator.Bakurani.Default.Circle`; `index`/`map`/`count` appeared in CL-501228. |
 | POST | `/v1/match/map` | `{ map, experiences?, lighting?, zoneAlternator? }` | `{ message }` | Travels when the match-end screen finishes. |
@@ -124,6 +124,100 @@ player list's fields were not seen (the server was empty). The RCON block's `all
 `bWriteAuditLogFile`. The daily restart time the update adds is not a key the document takes: no
 section allows one, so hosts set it outside `ServerSettings.ini`, and no route reports it.
 Whispers and broadcasts are capped (see `/v1/broadcast` above).
+
+### Season 3, live build CL-533689 (the team's server notes, the console's redeploy and a first live read, all 2026-11-12)
+
+**The rotation.** From the notes the WARDOGS team sent server admins on 2026-11-12:
+
+- A new map, **Sabatulo**: `Map="Russia"`, game mode `Moscow_KOTH_01`.
+- A new modifier, **Limited Gear** (`KOTH_LimitedGear`): it limits the vendor to a fixed list of
+  items and turns off some stationary weapons and the hot-zone magnet buildable. It is not a game
+  mode: it goes on a game mode as Infantry Only and Hardcore do, the game mode first, on any map
+  and beside other modifiers, as in
+  `+RotationEntries=(Map="Europe",Experiences="Madrid_KOTH_01+KOTH_InfantryOnly+KOTH_LimitedGear",Lighting="DayClear")`.
+  An entry with the modifier alone has no game mode and starts no match. (The notes say this of
+  Limited Gear. Whether an Infantry Only or Hardcore entry needs a game mode too has not been seen:
+  the console's demo rotation has an Infantry Only entry with none, so Warcon marks only the first.)
+- **Allow lists.** A server plays only the maps and experiences on its allow lists,
+  `+AllowedMaps=Russia`, `+AllowedExperiences=Moscow_KOTH_01` and
+  `+AllowedExperiences=KOTH_LimitedGear` under `[/Script/WDGame.WDServerMapRotationSettings]` in the
+  hosting provider's patch `Game.ini`. A host cannot set them in `ServerSettings.ini`, and a
+  rotation entry that names a map, game mode or lighting not on the lists is skipped. (Rain was
+  the same in Season 2: a server lists `DayLateRain` only where it is allowed.)
+- **Sabatulo takes four lightings**: `DayClear`, `DayLateClear`, `DayLateGray` and `DayLateRain`.
+  The notes spell the third `DayLateGrey`; the console's table, its demo data and its art
+  (`img/maps/Russia/`, those four alone) all have `DayLateGray`, so an entry written as the notes
+  have it names a lighting no server lists. No route reports which lightings a map takes: the
+  console hard-codes it (`MAP_LIGHTINGS` in its `js/app.js`) and narrows its lighting picker by
+  it, and Warcon does the same (`takesLighting` in `src/lib/format.ts`). What the game answers
+  when asked for another lighting on Sabatulo (a rotation entry, `POST /v1/match/map`,
+  `PUT /v1/world/lighting`) has not been seen; the demo server refuses it and denies the entry.
+
+What Warcon does with it: the pickers offer Sabatulo its four lightings and treat Limited Gear as a
+modifier; the Map rotation tab marks an entry that names something the server does not list, a
+lighting its map does not take, or Limited Gear with no game mode, and shows `denied` from
+`GET /v1/rotation` beside the staged entries too; the Weather cycle rule passes over the lightings
+Sabatulo does not take while the server is on it, and holds back a change decided before the
+server moved there. `MOCK_LIVE_BUILD` or not, the demo server lists
+the Season 3 map, game mode and modifier.
+
+**Live servers that day.** At 14:22 to 14:32 UTC every hosted server that answered (79) still
+ran Season 2's `++Wardogs+Live-CL-516586`; by 14:53 UTC five reported
+**`++Wardogs+Live-CL-533689`**. One of those, read through the panel (`capabilities`, the raw
+status and the catalog):
+
+- **34 routes**: Season 2's 31 and exactly `GET /v1/chat`, `GET /v1/chat/terms` and
+  `POST /v1/chat/terms`. Nothing else in the document changed (`apiVersion` 1, the same limits).
+- **Status** gains `welcomeMessage: { maxLines: 128, maxLineLength: 128, minFontSize: 8,
+  maxFontSize: 24, maxCloseDelaySeconds: 60 }` and `afk: { timeoutSeconds: 600,
+  minTimeoutSeconds: 300, maxTimeoutSeconds: 1800 }`.
+- **Catalog**: the map `Russia`, the game mode `Moscow_KOTH_01` and the modifier
+  `KOTH_LimitedGear`, and beside it a second id, `LimitedGear`, without the mode's prefix (Warcon
+  reads both as the modifier). That server listed seven lightings (the two fog presets were not
+  among them, the grey one is `DayLateGray`) and no `Bakurani_KOTH_01`: what a server lists is
+  its own.
+- What a live catalog's names look like, which the demo's do not: a map's `displayName` is its id
+  (`Kavkazi`, `Russia`), an experience's is `Moscow KOTH 01` or `KOTH LimitedGear`, a lighting's
+  is its id, and the status names the map as players know it (`Bakurani`). So "Sabatulo" comes
+  from Warcon's own table (`MAP_DISPLAY`), not from the game.
+
+**The rest of the redeploy** (13:22 UTC, the console's build stamp `eb816a7`). Read from the
+console's own client and demo code, so the shapes are what the console expects of a Season 3
+server. The live read above confirms the three chat routes and the two status fields; what the
+chat routes answer, the feed's flag and the players' new fields have not been seen from a live
+server. Warcon uses none of it but the feed's flag:
+
+- **Chat.** `GET /v1/chat/terms` answers `{ requiredVersion, acceptedVersion, accepted, text }` and
+  `POST /v1/chat/terms { version }` accepts them (`{ ok, pending, message }`; 400 `missing_version`
+  or `terms_version_mismatch`). Until then `GET /v1/chat` answers 409 `chat_terms_not_accepted`;
+  after, `GET /v1/chat?after=<seq>&limit=<n>` answers `{ latestSeq, messages:[{ seq, sentUtc,
+  channel, faction, steamId, realName, hiddenName, anonymous, text, rawText, ping }], count }`:
+  `text` as players saw it (the chat filter's stars), `rawText` as typed, `ping` for a ping
+  callout, channels such as Team, Global, Squad, Proximity and Vehicle. The console shows its Chat
+  view when `capabilities` lists all three routes, reads 200 messages at a time every 3 s, and
+  keeps 1,000 rows. Its bundled terms (version 1; a server may send its own text): chat is shown
+  only so that the server can be moderated, is live and held only in the server's memory for the
+  current map, and "You must not record, store, export, publish or share players' chat or
+  identities beyond what moderating this server requires."
+- **The event feed waits on those terms.** `GET /v1/feed` gains `pausedForTerms`, which the console
+  shows as "Paused: the event feed sends nothing until the chat terms are accepted." Whether an
+  acceptance outlasts a restart is not known. This one Warcon reads (`feedReportOf` and the `terms`
+  fault in `src/lib/feed-report.ts`): a silent feed's warning on the Config card says the game is
+  holding the feed back, before any fault of the file's lines (a feed switched off in the file
+  comes first). Warcon has no action that accepts the terms.
+- **Players** gain `hiddenName` (the name other players see) and `anonymous` (anonymous mode: other
+  players see only the hidden name) in `GET /v1/players`.
+- **Status** gains `welcomeMessage: { maxLines, maxLineLength, minFontSize, maxFontSize,
+  maxCloseDelaySeconds }` (128, 128, 8, 24 and 60 in the demo) and `afk: { timeoutSeconds,
+  minTimeoutSeconds, maxTimeoutSeconds }` (600, 300 and 1800 in the demo).
+- **Config.** `[/Script/WDGame.WDGameStateSession]` gains the welcome popup a player sees on first
+  deploying: `bServerWelcomeMessageEnabled`, `ServerWelcomeMessageCloseDelaySeconds`,
+  `bServerWelcomeMessageSkipForStreamers` and the array `ServerWelcomeMessageLines` (styled with
+  `<Bold>`, `<Italic>`, `<Header>` or `<text color="#RRGGBB" size="8-24" fontface="Bold">`, each
+  closed by `</>`), read when a match starts. A new section
+  `[/Script/BHAFKDetection.BHAFKDetectionSettings]` holds `DefaultAFKTimeOutSeconds`, the idle time
+  before the game kicks a player, also from the next match. A quoted value now escapes `"` and `\`
+  with a backslash, which is how a welcome line carries its own quotes.
 
 ## ServerSettings.ini keys the server honours
 

@@ -3,7 +3,9 @@
 // each change in the trail as the rule's. A lighting the server does not list is kept as skipped,
 // with no audit row, and nothing is sent; a change the game refuses is told in the panel's own words.
 // Switched off, or edited, before it is sent, a change is dropped. The dry run replays the samples. Saving it needs Match control as well as Automation
-// (access.test.ts); its changes that land stay off Discord (two-teams-discord.test.ts).
+// (access.test.ts); its changes that land stay off Discord (two-teams-discord.test.ts). On Sabatulo,
+// which takes four of the lightings, the rule passes over the rest, so the game is never asked for
+// one it would refuse.
 import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { join } from 'node:path';
 import { and, eq } from 'drizzle-orm';
@@ -227,6 +229,86 @@ describe.skipIf(!hasTestDb)('Weather cycle', () => {
 		expect(await t.lighting()).toBe('DayLateRain');
 	}, 30_000);
 
+	test('on Sabatulo the lightings it does not take are passed over, so the game refuses nothing', async () => {
+		const t = await setup(['DayClear', 'DayEarlyFog', 'DayLateRain']);
+		const game = gameOf(t.id);
+		await game.json('POST', '/v1/match/map', {
+			map: 'Russia',
+			experiences: ['Moscow_KOTH_01'],
+			lighting: 'DayLateClear'
+		});
+		await t.look();
+		let rows = await t.rowsOf();
+		expect(rows.map((x) => x.target)).toEqual(['Day Clear']);
+		expect((await t.done(rows[0].id)).state).toBe('delivered');
+		expect(await t.lighting()).toBe('DayClear');
+		// fog is the next in the rule's order, and the demo's Sabatulo refuses it, as asked by hand
+		expect(
+			await game.json('PUT', '/v1/world/lighting', { lighting: 'DayEarlyFog' }).then(
+				() => 'sent',
+				() => 'refused'
+			)
+		).toBe('refused');
+		// so the rule's turn goes to rain, the next that Sabatulo takes
+		await t.wait(5 * MIN);
+		await t.look();
+		rows = await t.rowsOf();
+		expect(rows.map((x) => x.target)).toEqual(['Day Clear', 'Day Late Rain']);
+		const r = await t.done(rows[1].id);
+		expect([r.state, r.outcome]).toEqual(['delivered', 'Changed the weather to Day Late Rain.']);
+		expect(await t.lighting()).toBe('DayLateRain');
+		expect((await t.rule()).state).toEqual({ index: 2 });
+		// and round to clear again, fog never sent: nothing failed, nothing skipped
+		await t.wait(5 * MIN);
+		await t.look();
+		rows = await t.rowsOf();
+		expect((await t.done(rows[2].id)).state).toBe('delivered');
+		expect((await t.rowsOf()).map((x) => [x.target, x.state])).toEqual([
+			['Day Clear', 'delivered'],
+			['Day Late Rain', 'delivered'],
+			['Day Clear', 'delivered']
+		]);
+		// on the next map the same rule puts fog on
+		await game.json('POST', '/v1/match/map', {
+			map: 'Europe',
+			experiences: ['Madrid_KOTH_01'],
+			lighting: 'DayClear'
+		});
+		await t.wait(5 * MIN);
+		await t.look();
+		rows = await t.rowsOf();
+		expect(rows[3].target).toBe('Day Early Fog');
+		expect((await t.done(rows[3].id)).state).toBe('delivered');
+		expect(await t.lighting()).toBe('DayEarlyFog');
+	}, 30_000);
+
+	test('decided on another map, then the server moves to Sabatulo: held back, nothing sent', async () => {
+		const t = await setup(['DayEarlyFog', 'DayLateRain']);
+		const game = gameOf(t.id);
+		// decided on Bakurani, where fog is the rule's first lighting
+		await t.look();
+		const [row] = await t.rowsOf();
+		expect([row.target, row.state]).toEqual(['Day Early Fog', 'pending']);
+		// the match ends and the next map is Sabatulo; the worker sees it before the change goes
+		await game.json('POST', '/v1/match/map', {
+			map: 'Russia',
+			experiences: ['Moscow_KOTH_01'],
+			lighting: 'DayClear'
+		});
+		await t.look();
+		const r = await t.done(row.id);
+		expect([r.state, r.outcome]).toEqual(['skipped', 'Sabatulo does not take Day Early Fog.']);
+		expect(await t.lighting()).toBe('DayClear');
+		expect(await t.audited()).toEqual([]);
+		// its next turn there is the next lighting, which Sabatulo takes
+		await t.wait(5 * MIN);
+		await t.look();
+		const rows = await t.rowsOf();
+		expect(rows[1].target).toBe('Day Late Rain');
+		expect((await t.done(rows[1].id)).state).toBe('delivered');
+		expect(await t.lighting()).toBe('DayLateRain');
+	}, 30_000);
+
 	test('a change the game refuses is told in the panel’s own words, never the game’s', async () => {
 		const t = await setup(['DayClear', 'DayLateRain']);
 		refusing.add(t.id);
@@ -355,5 +437,54 @@ describe.skipIf(!hasTestDb)('Weather cycle', () => {
 			[45, 'weather (10 on): Day Late Gray → Day Clear']
 		]);
 		expect(dry.fires).toBe(5);
+	}, 30_000);
+
+	test('the dry run on Sabatulo passes over what it does not take, under either name of the map', async () => {
+		const t = await setup(['DayClear', 'DayEarlyFog', 'DayLateRain']);
+		const t0 = Date.now() - 3 * 60 * MIN;
+		const at = (minute: number, map: string, lighting: string) => ({
+			ts: new Date(t0 + minute * MIN),
+			serverId: t.id,
+			ok: true,
+			playerCount: 10,
+			maxPlayers: 98,
+			map,
+			experiences: '',
+			lighting,
+			scores: []
+		});
+		await env.db.insert(samples).values([
+			...[0, 5, 10, 15].map((m) => at(m, 'Russia', 'DayClear')),
+			// the same map as a live server names it, come up again on its entry's own lighting
+			...[20, 25, 30, 35].map((m) => at(m, 'Sabatulo', 'DayLateGray')),
+			...[40, 45, 50].map((m) => at(m, 'Europe', 'DayClear'))
+		]);
+		const run = async (config: Record<string, unknown>) => {
+			const res = await t.api('owner', 'POST api/servers/[id]/triggers/dry-run', {
+				body: { kind: 'weather_cycle', config: { everyMinutes: 10, ...config } }
+			});
+			expect(res.status).toBe(200);
+			const dry = (res.body as { result: { items: { at: string; text: string }[] } }).result;
+			return dry.items.map((i) => [(Date.parse(i.at) - t0) / MIN, i.text]);
+		};
+		expect(await run({ lightings: ['DayClear', 'DayEarlyFog', 'DayLateRain'] })).toEqual([
+			// fog is next after clear, and Sabatulo takes none: rain
+			[0, 'weather (10 on): Day Clear → Day Late Rain'],
+			[10, 'weather (10 on): Day Late Rain → Day Clear'],
+			[20, 'weather (10 on): Day Late Gray → Day Late Rain'],
+			[30, 'weather (10 on): Day Late Rain → Day Clear'],
+			// Ozeti takes fog
+			[40, 'weather (10 on): Day Clear → Day Early Fog'],
+			[50, 'weather (10 on): Day Early Fog → Day Late Rain']
+		]);
+		// a rule with nothing Sabatulo takes waits the map out, in order or at random
+		expect(await run({ lightings: ['DayEarlyFog', 'DayStartClear'] })).toEqual([
+			[40, 'weather (10 on): Day Clear → Day Early Fog'],
+			[50, 'weather (10 on): Day Early Fog → Day Start Clear']
+		]);
+		expect(await run({ lightings: ['DayEarlyFog', 'DayStartClear'], random: true })).toEqual([
+			[40, 'weather (10 on): Day Clear → another at random'],
+			[50, 'weather (10 on): Day Clear → another at random']
+		]);
 	}, 30_000);
 });

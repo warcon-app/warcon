@@ -3,14 +3,17 @@
 // no restart. The rule asks every few minutes while the server has its players on, going through its
 // lightings in its own order, or picking one at random, and never the one the server shows already.
 // The next map starts on its rotation entry's own lighting, and the rule changes that at its next
-// turn. At delivery the server's own list of lightings is read first, so one it does not offer (rain
-// is allowed on some servers only, and read at startup) is kept as skipped rather than sent. No
+// turn. A map that takes only some of the lightings (Sabatulo) is not asked for another: the rule
+// passes over those while the server is on it, and a change decided on another map is held back
+// when the worker has seen the server move to such a map since (skipReason in outbox.ts). At
+// delivery the server's own list of lightings is read first, so one it does not offer (rain is
+// allowed on some servers only, and read at startup) is kept as skipped rather than sent. No
 // database here.
 import { ApiError, int, str } from './http';
 import { ACTIONS } from './actions';
 import { settingsFingerprint } from './fingerprint';
 import type { WardogsClient } from './rcon';
-import { prettify } from '../format';
+import { prettify, takesLighting } from '../format';
 import type { CatalogItem } from '../types';
 
 /** The outbox action that changes the weather for the rule (not in ACTIONS). */
@@ -81,26 +84,29 @@ export const lightingName = (id: string): string => prettify(id) || id;
 /**
  * The lighting the rule puts on next and its place in the list: in order, the one after the last
  * it put on (the top the first time), passing over the one the server shows; at random, any but the
- * one the server shows. Null only when the list holds nothing else.
+ * one the server shows. Either way never one the map the server is on (`map`) does not take. Null
+ * when the list holds nothing else for that map.
  */
 export function nextLighting(
 	cfg: Pick<WeatherCycleConfig, 'lightings' | 'random'>,
 	last: number,
 	showing: string,
-	rand: () => number = Math.random
+	rand: () => number = Math.random,
+	map = ''
 ): { index: number; lighting: string } | null {
 	const n = cfg.lightings.length;
+	const fits = (lighting: string) => !same(lighting, showing) && takesLighting(map, lighting);
 	if (cfg.random) {
 		const others = cfg.lightings
 			.map((lighting, index) => ({ index, lighting }))
-			.filter((l) => !same(l.lighting, showing));
+			.filter((l) => fits(l.lighting));
 		return others.length
 			? others[Math.min(others.length - 1, Math.floor(rand() * others.length))]
 			: null;
 	}
 	for (let step = 1; step <= n; step++) {
 		const index = (last + step) % n;
-		if (!same(cfg.lightings[index], showing)) return { index, lighting: cfg.lightings[index] };
+		if (fits(cfg.lightings[index])) return { index, lighting: cfg.lightings[index] };
 	}
 	return null;
 }

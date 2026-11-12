@@ -12,5 +12,6 @@ fork Warcon for another purpose, delete this directory. BULKHEAD may ask for the
 any time, in which case Warcon degrades to text labels without them.
 
 Layout: one folder per server map id (`Kavkazi` = Bakurani, `Europe` = Ozeti, `NorthAmerica` =
-Zestafona), one file per lighting preset and crop: `720` (1280×720), `square` (576×720) and
-`wide` (1920×149).
+Zestafona, `Russia` = Sabatulo), one file per lighting preset and crop: `720` (1280×720), `square`
+(576×720) and `wide` (1920×149). Sabatulo takes four of the lighting presets (`DayClear`,
+`DayLateClear`, `DayLateGray`, `DayLateRain`) and has art for those alone.

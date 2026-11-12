@@ -1,5 +1,6 @@
 // The Weather cycle rule: its settings, which lighting comes next (nextLighting), what the worker
 // queues at a look (evaluateTriggers), and the change itself, against a stand-in game and the mock.
+// Sabatulo takes four of the lightings: the rule passes over the rest while the server is on it.
 import { describe, expect, test } from 'bun:test';
 import type { Env } from './env';
 import { ApiError } from './http';
@@ -15,6 +16,7 @@ import {
 } from './weather-cycle';
 import { evaluateTriggers, SETTINGS_KEYS, validateConfig, type TickContext } from './triggers';
 import type { TriggerRow } from './db/schema';
+import { takesLighting } from '../format';
 import type { Status } from '../types';
 
 const MIN = 60_000;
@@ -131,6 +133,38 @@ describe('nextLighting', () => {
 			expect(nextLighting({ lightings: ['DayClear'], random }, -1, 'DayClear')).toBeNull();
 	});
 
+	test('on a map that takes only some lightings, the rest are passed over', () => {
+		const four = ['DayClear', 'DayEarlyFog', 'DayLateGray', 'DayLateRain'];
+		const inOrder = { lightings: four, random: false };
+		// Sabatulo takes no fog, by its id or the name players know: the turn goes to the next it takes
+		for (const map of ['Russia', 'Sabatulo'])
+			expect(nextLighting(inOrder, 0, 'DayClear', undefined, map)).toEqual({
+				index: 2,
+				lighting: 'DayLateGray'
+			});
+		// the same turn on another map is fog's
+		expect(nextLighting(inOrder, 0, 'DayClear', undefined, 'Kavkazi')).toEqual({
+			index: 1,
+			lighting: 'DayEarlyFog'
+		});
+		// at random: never fog there, and never the one on
+		const picks = new Set<string>();
+		for (let i = 0; i < 200; i++)
+			picks.add(
+				nextLighting({ lightings: four, random: true }, 0, 'DayClear', undefined, 'Russia')!
+					.lighting
+			);
+		expect([...picks].sort()).toEqual(['DayLateGray', 'DayLateRain']);
+		// nothing while the map takes none of the others
+		for (const random of [false, true]) {
+			const fog = { lightings: ['DayEarlyFog', 'DayStartClear'], random };
+			expect(nextLighting(fog, -1, 'DayClear', undefined, 'Russia')).toBeNull();
+			expect(nextLighting(fog, -1, 'DayClear', undefined, 'Europe')).not.toBeNull();
+			const one = { lightings: ['DayEarlyFog', 'DayClear'], random };
+			expect(nextLighting(one, -1, 'DayClear', undefined, 'Russia')).toBeNull();
+		}
+	});
+
 	test('reads back only a place it wrote', () => {
 		expect(weatherCycleIndex(null)).toBe(-1);
 		expect(weatherCycleIndex({ index: 'x' })).toBe(-1);
@@ -232,6 +266,31 @@ describe('at the look', () => {
 		expect(out.intents.map((i) => i.params.lighting)).toEqual(['DayLateGray']);
 	});
 
+	test('on Sabatulo: only the lightings it takes, and nothing while the rule has none of them', async () => {
+		const fog = ['DayClear', 'DayEarlyFog', 'DayLateRain'];
+		// the status names the map by its id or by the name players know
+		for (const map of ['Russia', 'Sabatulo']) {
+			const row = rule({ lightings: fog });
+			const out = await look(row, NOW, { map, lighting: 'DayClear' });
+			expect(out.intents.map((i) => i.params.lighting)).toEqual(['DayLateRain']);
+			expect(row.state).toEqual({ index: 2 });
+		}
+		// on another map the same turn is fog's
+		const elsewhere = rule({ lightings: fog });
+		const there = await look(elsewhere, NOW, { map: 'Europe', lighting: 'DayClear' });
+		expect(there.intents.map((i) => i.params.lighting)).toEqual(['DayEarlyFog']);
+		// a rule Sabatulo takes nothing of waits the map out, its cadence not moved on, and changes
+		// at the first look on the next map
+		const row = rule({ lightings: ['DayEarlyFog', 'DayStartClear'] });
+		expect(await look(row, NOW, { map: 'Russia', lighting: 'DayClear' })).toEqual({
+			intents: [],
+			updates: []
+		});
+		expect(row.lastFiredAt).toBeNull();
+		const next = await look(row, NOW + MIN, { map: 'Kavkazi', lighting: 'DayClear' });
+		expect(next.intents.map((i) => i.params.lighting)).toEqual(['DayEarlyFog']);
+	});
+
 	test('at random: never the lighting on', async () => {
 		const row = rule({ lightings: THREE, random: true });
 		for (let i = 0; i < 20; i++) {
@@ -294,5 +353,33 @@ describe('changeWeather', () => {
 		expect((await status()).lighting).toBe(to);
 		expect((await changeWeather(client, { lighting: 'NightStorm' })).skipped).toBe(true);
 		expect((await status()).lighting).toBe(to);
+	});
+
+	test('the mock game on Sabatulo refuses the lightings the panel passes over there, and no other', async () => {
+		const client = new WardogsClient(
+			{} as Env,
+			{ id: 'weather-sabatulo', host: 'demo', port: 1, scheme: 'http' },
+			'demo',
+			`weather-sabatulo-${Date.now()}`
+		);
+		await client.json('POST', '/v1/match/map', {
+			map: 'Russia',
+			experiences: ['Moscow_KOTH_01'],
+			lighting: 'DayClear'
+		});
+		const { lightings } = (await client.json('GET', '/v1/catalog/lightings')) as {
+			lightings: { id: string }[];
+		};
+		expect(lightings).toHaveLength(9);
+		const taken: string[] = [];
+		for (const { id } of lightings) {
+			const sent = await client.json('PUT', '/v1/world/lighting', { lighting: id }).then(
+				() => true,
+				() => false
+			);
+			expect([id, sent]).toEqual([id, takesLighting('Russia', id)]);
+			if (sent) taken.push(id);
+		}
+		expect(taken).toEqual(['DayClear', 'DayLateClear', 'DayLateGray', 'DayLateRain']);
 	});
 });

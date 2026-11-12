@@ -1676,7 +1676,13 @@ function evalWeatherCycle(
 	if (ctx.status.playerCount < cfg.minPlayers) return;
 	if (row.lastFiredAt && ctx.ts.getTime() - row.lastFiredAt.getTime() < cfg.everyMinutes * 60_000)
 		return;
-	const next = nextLighting(cfg, weatherCycleIndex(row.state), ctx.status.lighting);
+	const next = nextLighting(
+		cfg,
+		weatherCycleIndex(row.state),
+		ctx.status.lighting,
+		Math.random,
+		ctx.status.map
+	);
 	if (!next) return;
 	const name = lightingName(next.lighting);
 	out.intents.push({
@@ -3496,20 +3502,20 @@ export async function dryRun(
 			if ((r.count ?? 0) < c.minPlayers) continue;
 			if (last && r.ts.getTime() - last.getTime() < c.everyMinutes * 60_000) continue;
 			const from = showing ? lightingName(showing) : 'the lighting on';
+			// nothing while the map on takes none of the rule's other lightings
+			const next = nextLighting(c, index, showing, undefined, r.map ?? '');
+			if (!next) continue;
+			last = r.ts;
 			if (c.random) {
-				last = r.ts;
 				push(r.ts, `weather (${r.count} on): ${from} → another at random`);
 				continue;
 			}
-			const next = nextLighting(c, index, showing);
-			if (!next) continue;
-			last = r.ts;
 			index = next.index;
 			showing = next.lighting;
 			push(r.ts, `weather (${r.count} on): ${from} → ${lightingName(next.lighting)}`);
 		}
 		result.notes.push(
-			`Times shown are the samples a change fell due at, with at least ${c.minPlayers} on. A new map comes up on its rotation entry's own lighting, which the rule changes at its next turn; a lighting the server does not list is not sent.`
+			`Times shown are the samples a change fell due at, with at least ${c.minPlayers} on. A new map comes up on its rotation entry's own lighting, which the rule changes at its next turn; a lighting the server does not list is not sent, and one the map on does not take is passed over.`
 		);
 		return result;
 	}

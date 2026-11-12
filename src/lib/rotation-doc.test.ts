@@ -3,17 +3,20 @@ import {
 	formatRotationEntry,
 	parseRotationEntry,
 	alignRotation,
+	entryFlags,
 	entryKey,
 	keepApart,
 	mapsInOrder,
+	nearLighting,
 	setModifierOnAll,
 	shuffleFor,
 	shuffleRotation,
 	rotationFromText,
-	rotationIntoText
+	rotationIntoText,
+	type EntryFlags
 } from './rotation-doc';
 import { getArray, parseIni, setArrayInText } from './config-doc';
-import type { MapSelection } from './types';
+import type { Catalog, MapSelection } from './types';
 
 // A slice of the TLR server's document (live build CL-499480), as GET /v1/config returns it.
 const TEXT = [
@@ -146,6 +149,211 @@ test('setModifierOnAll takes a modifier off every entry, in any case, and keeps 
 		changed: 0,
 		skipped: 1
 	});
+});
+
+// The Season 3 server notes' own examples: Sabatulo (map Russia), and the Limited Gear modifier
+// stacked on a game mode, alone and with another modifier.
+const SEASON_3 = [
+	'(Map="Russia",Experience="Moscow_KOTH_01",Lighting="DayClear")',
+	'(Map="Russia",Experiences="Moscow_KOTH_01+KOTH_LimitedGear",Lighting="DayLateRain")',
+	'(Map="Kavkazi",Experiences="Bakurani_KOTH_02+KOTH_LimitedGear",Lighting="DayLateClear")',
+	'(Map="Europe",Experiences="Madrid_KOTH_01+KOTH_InfantryOnly+KOTH_LimitedGear",Lighting="DayClear")'
+];
+
+test('reads the Season 3 examples and writes them back as they came, the game mode first', () => {
+	const entries = SEASON_3.map((line) => parseRotationEntry(line)!);
+	expect(entries[0]).toEqual({
+		map: 'Russia',
+		experiences: ['Moscow_KOTH_01'],
+		lighting: 'DayClear',
+		zoneAlternator: ''
+	});
+	expect(entries[1].experiences).toEqual(['Moscow_KOTH_01', 'KOTH_LimitedGear']);
+	expect(entries[3].experiences).toEqual([
+		'Madrid_KOTH_01',
+		'KOTH_InfantryOnly',
+		'KOTH_LimitedGear'
+	]);
+	expect(entries.map(formatRotationEntry)).toEqual(SEASON_3);
+});
+
+test('setModifierOnAll adds Limited Gear after the game mode and beside another modifier', () => {
+	const entries = [
+		SEASON_3[0],
+		SEASON_3[2],
+		'(Map="Europe",Experiences="Madrid_KOTH_01+KOTH_InfantryOnly")'
+	].map((line) => parseRotationEntry(line)!);
+	const out = setModifierOnAll(entries, 'KOTH_LimitedGear', true, () => true);
+	expect(out.changed).toBe(2);
+	expect(out.entries.map((e) => e.experiences)).toEqual([
+		['Moscow_KOTH_01', 'KOTH_LimitedGear'],
+		['Bakurani_KOTH_02', 'KOTH_LimitedGear'],
+		['Madrid_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_LimitedGear']
+	]);
+	// taken off again, the other modifier stays
+	const off = setModifierOnAll(out.entries, 'KOTH_LimitedGear', false, () => true);
+	expect(off.entries.map((e) => e.experiences)).toEqual([
+		['Moscow_KOTH_01'],
+		['Bakurani_KOTH_02'],
+		['Madrid_KOTH_01', 'KOTH_InfantryOnly']
+	]);
+});
+
+// ---- what a server would not play of an entry ----
+
+const listOf = (...ids: string[]) => ids.map((id) => ({ id, display: id }));
+/** A server whose hosting provider has allowed Season 3's map, game mode and modifier. */
+const SEASON_3_SERVER: Catalog = {
+	maps: listOf('Kavkazi', 'Europe', 'NorthAmerica', 'Russia'),
+	lightings: listOf(
+		'DayStartClear',
+		'DayEarlyClear',
+		'DayEarlyFog',
+		'DayClear',
+		'DayLateClear',
+		'DayLateGray',
+		'DayLateGrayFog',
+		'DayEndClear',
+		'DayLateRain'
+	),
+	experiences: listOf(
+		'Bakurani_KOTH_01',
+		'Bakurani_KOTH_02',
+		'Madrid_KOTH_01',
+		'Detroit_KOTH_01',
+		'Moscow_KOTH_01',
+		'KOTH_InfantryOnly',
+		'KOTH_Hardcore',
+		'KOTH_LimitedGear'
+	)
+};
+/** One whose provider has not: Season 2's lists. */
+const SEASON_2_SERVER: Catalog = {
+	maps: SEASON_3_SERVER.maps.filter((m) => m.id !== 'Russia'),
+	lightings: SEASON_3_SERVER.lightings,
+	experiences: SEASON_3_SERVER.experiences.filter(
+		(e) => e.id !== 'Moscow_KOTH_01' && e.id !== 'KOTH_LimitedGear'
+	)
+};
+const SOUND: EntryFlags = { map: false, mode: '', lighting: '', unlisted: [] };
+const entry = (line: string) => parseRotationEntry(line)!;
+
+test('entryFlags: the Season 3 examples are sound on a server that lists them', () => {
+	for (const line of SEASON_3) expect(entryFlags(entry(line), SEASON_3_SERVER)).toEqual(SOUND);
+	// ids are the game's whatever their letter case, and no lighting or zone is no fault
+	expect(
+		entryFlags(
+			entry('(Map="russia",Experience="moscow_koth_01",Lighting="daylaterain")'),
+			SEASON_3_SERVER
+		)
+	).toEqual(SOUND);
+	expect(
+		entryFlags(entry('(Map="Kavkazi",Experience="Bakurani_KOTH_01")'), SEASON_3_SERVER)
+	).toEqual(SOUND);
+	expect(
+		entryFlags(
+			entry('(Map="Kavkazi",Experience="Bakurani_KOTH_01",Lighting="None")'),
+			SEASON_3_SERVER
+		)
+	).toEqual(SOUND);
+	// an entry that names no experience at all is left to the game
+	expect(entryFlags(entry('(Map="Kavkazi",Lighting="DayClear")'), SEASON_3_SERVER)).toEqual(SOUND);
+});
+
+test('entryFlags: what a server does not list is named, part by part', () => {
+	// a server whose provider has not added Sabatulo or Limited Gear to its allow lists
+	expect(entryFlags(entry(SEASON_3[1]), SEASON_2_SERVER)).toEqual({
+		map: true,
+		mode: 'unlisted',
+		lighting: '',
+		unlisted: ['Russia', 'Moscow_KOTH_01', 'KOTH_LimitedGear']
+	});
+	expect(entryFlags(entry(SEASON_3[2]), SEASON_2_SERVER)).toEqual({
+		map: false,
+		mode: 'unlisted',
+		lighting: '',
+		unlisted: ['KOTH_LimitedGear']
+	});
+	// the notes spell the grey lighting DayLateGrey; the game lists DayLateGray and does not know it
+	expect(
+		entryFlags(
+			entry('(Map="Russia",Experience="Moscow_KOTH_01",Lighting="DayLateGrey")'),
+			SEASON_3_SERVER
+		)
+	).toEqual({ map: false, mode: '', lighting: 'unlisted', unlisted: ['DayLateGrey'] });
+});
+
+test('entryFlags: a lighting Sabatulo does not take, and Limited Gear with no game mode', () => {
+	const fog = entry('(Map="Russia",Experience="Moscow_KOTH_01",Lighting="DayEarlyFog")');
+	expect(entryFlags(fog, SEASON_3_SERVER)).toEqual({ ...SOUND, lighting: 'map' });
+	// the same lighting on another map is sound
+	expect(
+		entryFlags(
+			entry('(Map="Europe",Experience="Madrid_KOTH_01",Lighting="DayEarlyFog")'),
+			SEASON_3_SERVER
+		)
+	).toEqual(SOUND);
+	const bare = entry('(Map="Russia",Experience="KOTH_LimitedGear",Lighting="DayClear")');
+	expect(entryFlags(bare, SEASON_3_SERVER)).toEqual({ ...SOUND, mode: 'none' });
+	expect(
+		entryFlags(
+			entry('(Map="Europe",Experiences="KOTH_InfantryOnly+KOTH_LimitedGear",Lighting="DayClear")'),
+			SEASON_3_SERVER
+		).mode
+	).toBe('none');
+	// Infantry Only alone is not known to fail (the demo's own rotation has it), so it is not marked
+	expect(
+		entryFlags(
+			entry('(Map="Europe",Experience="KOTH_InfantryOnly",Lighting="DayEarlyFog")'),
+			SEASON_3_SERVER
+		)
+	).toEqual(SOUND);
+});
+
+test('entryFlags: an entry as the game sends it, parts missing or oddly named, never throws', () => {
+	const partial = (e: Record<string, unknown>) =>
+		entryFlags(e as unknown as MapSelection, SEASON_3_SERVER);
+	// a live rotation entry is passed through as the game gave it
+	expect(partial({ experiences: ['Bakurani_KOTH_01'], lighting: 'DayClear' })).toEqual(SOUND);
+	expect(partial({ map: null, experiences: null, lighting: null })).toEqual(SOUND);
+	expect(partial({ map: 'Kavkazi' })).toEqual(SOUND);
+	expect(partial({ map: 'Kavkazi', experiences: [7, null, 'Bakurani_KOTH_01'] })).toEqual(SOUND);
+	// a map named like one of Object's own members is only a map the server does not list
+	for (const odd of ['constructor', '__proto__', 'toString'])
+		expect(
+			entryFlags(
+				entry(`(Map="${odd}",Experience="Bakurani_KOTH_01",Lighting="DayEarlyFog")`),
+				SEASON_3_SERVER
+			)
+		).toEqual({ map: true, mode: '', lighting: '', unlisted: [odd] });
+});
+
+test('entryFlags: a server that could not be asked flags nothing as unlisted', () => {
+	const none: Catalog = { maps: [], lightings: [], experiences: [] };
+	for (const line of SEASON_3) expect(entryFlags(entry(line), none)).toEqual(SOUND);
+	expect(entryFlags(entry('(Map="Mars",Experience="Mars_KOTH_01",Lighting="Dusk")'), none)).toEqual(
+		SOUND
+	);
+	// what needs no list is still told
+	expect(
+		entryFlags(entry('(Map="Russia",Experience="KOTH_LimitedGear",Lighting="DayEarlyFog")'), none)
+	).toEqual({ ...SOUND, mode: 'none', lighting: 'map' });
+});
+
+test('nearLighting: the lighting a mistyped one meant, a letter or two off', () => {
+	const lightings = SEASON_3_SERVER.lightings;
+	// the Season 3 notes' spelling of the grey one
+	expect(nearLighting('DayLateGrey', lightings)).toBe('DayLateGray');
+	expect(nearLighting('daylategreyfog', lightings)).toBe('DayLateGrayFog');
+	expect(nearLighting('DayLateRian', lightings)).toBe('DayLateRain');
+	expect(nearLighting('DayClera', lightings)).toBe('DayClear');
+	// nothing for one that is listed, one that is far off, or a map or game mode
+	expect(nearLighting('DayLateGray', lightings)).toBeNull();
+	expect(nearLighting('NightStorm', lightings)).toBeNull();
+	expect(nearLighting('Russia', lightings)).toBeNull();
+	expect(nearLighting('Moscow_KOTH_01', lightings)).toBeNull();
+	expect(nearLighting('KOTH_LimitedGear', lightings)).toBeNull();
+	expect(nearLighting('DayLateGrey', [])).toBeNull();
 });
 
 // A rotation of `counts[m]` entries on map m, with `zones` control zones each, told apart by lighting.

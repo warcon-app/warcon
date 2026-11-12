@@ -3,7 +3,8 @@
 // config document's [/Script/WDGame.WDServerMapRotationSettings] section.
 import { getArray, getScalar, parseIni, setArrayInText, setScalarInText } from './config-doc';
 import { S_ROTATION } from './config-fields';
-import type { MapSelection } from './types';
+import { lacksGameMode, takesLighting } from './format';
+import type { Catalog, MapSelection } from './types';
 
 export interface RotationDoc {
 	enabled: boolean;
@@ -192,6 +193,80 @@ export function entryKey(e: MapSelection): string {
 	const v = (x: string | undefined) => (!x || /^none$/i.test(x) ? '' : x.toLowerCase());
 	const exps = e.experiences.map((x) => x.toLowerCase()).sort();
 	return [v(e.map), exps.join('+'), v(e.lighting), v(e.zoneAlternator)].join('|');
+}
+
+export interface EntryFlags {
+	/** the server does not list the entry's map */
+	map: boolean;
+	/** `none`: a modifier that needs a game mode, and none; `unlisted`: one the server does not list */
+	mode: '' | 'none' | 'unlisted';
+	/** `unlisted`: the server does not list the lighting; `map`: the entry's map does not take it */
+	lighting: '' | 'unlisted' | 'map';
+	/** the ids of the entry that the server does not list, as the entry spells them */
+	unlisted: string[];
+}
+
+/**
+ * What a server would not play of a rotation entry. It skips an entry that names a map, game mode,
+ * modifier or lighting it does not list (`catalog`: the server's own lists, which its hosting
+ * provider's allow lists decide; a list that is empty, from a server that could not be asked, flags
+ * nothing) or a lighting its map does not take, and Limited Gear with no game mode starts no match
+ * (`lacksGameMode`). Ids are compared ignoring case. The entry may come straight from the game, so
+ * a part it leaves out is read as empty.
+ */
+export function entryFlags(e: MapSelection, catalog: Catalog): EntryFlags {
+	const text = (v: unknown) => (typeof v === 'string' ? v : '');
+	const listed = (items: { id: string }[], id: string) =>
+		!items.length || items.some((x) => x.id.toLowerCase() === id.toLowerCase());
+	const map = text(e.map);
+	const experiences = (Array.isArray(e.experiences) ? e.experiences : []).map(text).filter(Boolean);
+	const out: EntryFlags = {
+		map: !!map && !listed(catalog.maps, map),
+		mode: '',
+		lighting: '',
+		unlisted: []
+	};
+	if (out.map) out.unlisted.push(map);
+	const strange = experiences.filter((id) => !listed(catalog.experiences, id));
+	out.unlisted.push(...strange);
+	if (lacksGameMode(experiences)) out.mode = 'none';
+	else if (strange.length) out.mode = 'unlisted';
+	const lighting = /^none$/i.test(text(e.lighting)) ? '' : text(e.lighting);
+	if (lighting && !listed(catalog.lightings, lighting)) {
+		out.lighting = 'unlisted';
+		out.unlisted.push(lighting);
+	} else if (lighting && !takesLighting(map, lighting)) out.lighting = 'map';
+	return out;
+}
+
+/** The letters to change, add or drop to turn one text into the other, counted no further than `max`. */
+function editsApart(a: string, b: string, max: number): number {
+	if (Math.abs(a.length - b.length) > max) return max + 1;
+	let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+	for (let i = 1; i <= a.length; i++) {
+		const next = [i];
+		for (let j = 1; j <= b.length; j++)
+			next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+		if (Math.min(...next) > max) return max + 1;
+		row = next;
+	}
+	return row[b.length];
+}
+
+/**
+ * The lighting a mistyped one most likely meant: the one of `lightings` a letter or two off it,
+ * ignoring case (DayLateGrey for the game's DayLateGray), or null. Lightings only: a server's
+ * list of them is short and the same everywhere, where a map or a game mode it does not list is
+ * more likely one its host has not been given.
+ */
+export function nearLighting(id: string, lightings: { id: string }[]): string | null {
+	const typed = id.toLowerCase();
+	let best: { id: string; edits: number } | null = null;
+	for (const l of lightings) {
+		const edits = editsApart(typed, l.id.toLowerCase(), 2);
+		if (edits && edits <= 2 && (!best || edits < best.edits)) best = { id: l.id, edits };
+	}
+	return best?.id ?? null;
 }
 
 /** The maps of a rotation in the order it first has them, spelled as they first are. */

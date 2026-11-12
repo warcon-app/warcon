@@ -1,11 +1,23 @@
 <script lang="ts">
 	import { api, rconGet, rconPost, errorMessage } from '$lib/api';
-	import { expLabel, expSetLabel, isMod, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
+	import {
+		andList,
+		expLabel,
+		expSetLabel,
+		isMod,
+		lightingLabel,
+		lightingsOn,
+		mapLabel,
+		zoneLabel
+	} from '$lib/format';
 	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import {
+		entryFlags,
+		entryKey,
 		mapsInOrder,
+		nearLighting,
 		rotationFromText,
 		rotationIntoText,
 		setModifierOnAll,
@@ -117,15 +129,33 @@
 	});
 
 	// The rows shown: the live rotation, or the staged document. Now/next badges come from the
-	// live rotation and only make sense while the staged list still matches it.
+	// live rotation and only make sense while the staged list still matches it. Denied is the
+	// server's word on an entry, whichever place it has in the list: a staged entry the same as one
+	// the live rotation denies carries it.
+	let deniedLive = $derived(
+		new Set((rotation?.entries ?? []).filter((e) => e.denied).map(entryKey))
+	);
 	let rows = $derived.by((): RotationEntry[] => {
 		if (!viaDoc) return rotation?.entries ?? [];
 		return staged.entries.map((e, i) => ({
 			...e,
-			denied: false,
+			denied: deniedLive.has(entryKey(e)),
 			status: !dirty && rotation?.entries[i] ? rotation.entries[i].status : ''
 		}));
 	});
+	// What the server would not play of each row (entryFlags), and for the note under the table:
+	// the ids it does not list, the maps given a lighting they do not take, and whether an entry
+	// has no game mode.
+	let flags = $derived(rows.map((e) => entryFlags(e, data.catalog)));
+	let unlisted = $derived([...new Set(flags.flatMap((f) => f.unlisted))]);
+	let offMaps = $derived([
+		...new Set(rows.filter((_, i) => flags[i].lighting === 'map').map((e) => e.map))
+	]);
+	let noMode = $derived(flags.some((f) => f.mode === 'none'));
+	let anyDenied = $derived(rows.some((e) => e.denied));
+	/** The lightings of the server's list that a map takes, by name. */
+	const lightingsOf = (map: string): string =>
+		andList(lightingsOn(map, data.catalog.lightings).map((l) => l.display));
 	let nowIndex = $derived(
 		viaDoc ? (dirty ? -1 : (rotation?.nowIndex ?? -1)) : (rotation?.nowIndex ?? -1)
 	);
@@ -581,6 +611,7 @@
 			>
 			<tbody>
 				{#each rows as e, i (i)}
+					{@const f = flags[i]}
 					<tr
 						class="clickable {selected === i ? 'selected' : ''} {i === nowIndex ? 'now' : ''}"
 						onclick={() => (selected = selected === i ? -1 : i)}
@@ -600,9 +631,22 @@
 							{#if i === nowIndex}<Badge tone="accent" class="ml-1">now</Badge
 								>{:else if i === nextIndex}<Badge tone="info" class="ml-1">next</Badge>{/if}
 							{#if e.denied}<Badge tone="err" class="ml-1">denied</Badge>{/if}
+							{#if f?.map}<Badge tone="warn" class="ml-1">not listed</Badge>{/if}
 						</td>
-						<td>{expSetLabel(data.catalog, e.experiences)}</td>
-						<td>{lightingLabel(data.catalog, e.lighting)}</td>
+						<td
+							>{expSetLabel(data.catalog, e.experiences)}
+							{#if f?.mode}<Badge tone="warn" class="ml-1"
+									>{f.mode === 'none' ? 'no game mode' : 'not listed'}</Badge
+								>{/if}</td
+						>
+						<td
+							>{lightingLabel(data.catalog, e.lighting)}
+							{#if f?.lighting}<Badge tone="warn" class="ml-1"
+									>{f.lighting === 'map'
+										? `not on ${mapLabel(data.catalog, e.map)}`
+										: 'not listed'}</Badge
+								>{/if}</td
+						>
 						<td>{zoneLabel(e.zoneAlternator)}</td>
 					</tr>
 				{:else}
@@ -615,6 +659,42 @@
 			</tbody>
 		</table>
 	</div>
+	{#if unlisted.length}
+		<p class="note">
+			<span class="text-warn">Not listed:</span>
+			{#each unlisted.slice(0, 8) as u (u)}
+				{@const near = nearLighting(u, data.catalog.lightings)}
+				<span class="chip">{u}</span>
+				{#if near}(this server lists <span class="chip">{near}</span>){/if}
+			{/each}
+			{#if unlisted.length > 8}and {unlisted.length - 8} more{/if}
+			<br />A server skips a rotation entry that names a map, game mode or lighting it does not
+			allow. What it allows is its hosting provider's to set (AllowedMaps and AllowedExperiences in
+			the provider's Game.ini), and ServerSettings.ini cannot add to it: ask your host for what is
+			missing.
+		</p>
+	{/if}
+	{#if offMaps.length}
+		<p class="note">
+			{#each offMaps as m (m)}
+				{@const names = lightingsOf(m)}
+				<span class="text-warn">Not on {mapLabel(data.catalog, m)}:</span>
+				{mapLabel(data.catalog, m)} takes {names ? `${names} only` : 'only some of the lightings'}.
+			{/each}
+		</p>
+	{/if}
+	{#if noMode}
+		<p class="note">
+			<span class="text-warn">No game mode:</span> Limited Gear starts no match on its own. Remove the
+			entry and add it again with a game mode.
+		</p>
+	{/if}
+	{#if anyDenied}
+		<p class="note">
+			<span class="text-danger">Denied</span> is the server's own word on an entry: it will not travel
+			to it.
+		</p>
+	{/if}
 	<p class="note">
 		{#if viaDoc}
 			{#if dirty}Unapplied edits: {staged.entries.length} entries staged against the server's {base
