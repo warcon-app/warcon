@@ -116,6 +116,8 @@
 					matches(
 						search,
 						r.p.name,
+						// the name the other players see for one in anonymous mode: what a report names
+						r.p.hiddenName,
 						r.p.steamId,
 						r.s.marks[r.p.steamId]?.steamName,
 						several ? r.s.name : null
@@ -348,7 +350,15 @@
 							class="font-medium text-mist-100 underline decoration-mist-600 underline-offset-[3px] hover:text-accent hover:decoration-accent"
 							>{p.name}</a
 						>
+						{#if p.hiddenName}<Badge
+								tone="info"
+								title="Anonymous mode: the other players see {p.hiddenName}, not this name"
+								>anon</Badge
+							>{/if}
 						<span class="font-mono text-[12px] text-mist-600">{p.steamId}</span>
+						{#if p.hiddenName}<span class="block text-[12.5px] text-mist-400"
+								>In game · <span class="text-mist-100">{p.hiddenName}</span></span
+							>{/if}
 						{#if steam}<span class="block text-[12.5px] text-mist-400"
 								>Steam · <span class="text-mist-100">{steam}</span></span
 							>{/if}</td

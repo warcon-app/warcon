@@ -17,6 +17,7 @@
 	import SavedMessages from '$lib/components/SavedMessages.svelte';
 	import { sponsor, loadSponsor } from '$lib/sponsor.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
+	import Badge from '$lib/components/Badge.svelte';
 	import CashChart from '$lib/components/CashChart.svelte';
 	import { cashByFaction } from '$lib/cash';
 	import { api } from '$lib/api';
@@ -593,7 +594,15 @@
 			<tbody>
 				{#each board as p (p.steamId)}
 					<tr>
-						<td>{p.name} <span class="font-mono text-[12px] text-mist-600">{p.steamId}</span></td>
+						<td
+							>{p.name}
+							{#if p.hiddenName}<Badge
+									tone="info"
+									title="Anonymous mode: the other players see {p.hiddenName}, not this name"
+									>anon</Badge
+								>{/if}
+							<span class="font-mono text-[12px] text-mist-600">{p.steamId}</span></td
+						>
 						<td><FactionChip faction={p.faction} scores={status?.scores} /></td>
 						<td class="num">{p.kills}</td><td class="num">{p.deaths}</td>
 						<td class="num">{fmtNum(p.cash)}</td><td class="num">{p.ping ?? '—'}</td>

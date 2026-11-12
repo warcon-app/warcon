@@ -253,6 +253,19 @@
 											>{/if}
 										{#if p.watched}<Badge tone="warn">watch</Badge>{/if}
 									</div>
+									{#if p.hiddenNames.length}
+										{@const hid = feedNamesLine(p.hiddenNames, f.q)}
+										<div
+											class="truncate text-[12px] text-mist-400"
+											title={p.hiddenNames.join(', ')}
+										>
+											in anonymous mode as {#each hid.names as h, i (h.name)}<span
+													class={h.hit ? 'font-semibold text-accent' : ''}>{h.name}</span
+												>{i < hid.names.length - 1
+													? ', '
+													: ''}{/each}{#if hid.more}{` and ${hid.more} more`}{/if}
+										</div>
+									{/if}
 									{#if p.feedNames.length}
 										{@const line = feedNamesLine(p.feedNames, f.q)}
 										<div class="truncate text-[12px] text-mist-400" title={p.feedNames.join(', ')}>

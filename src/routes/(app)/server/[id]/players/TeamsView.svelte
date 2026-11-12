@@ -366,6 +366,10 @@
 			<span class="truncate font-medium text-mist-100">{p.name}</span>
 			<span class="flex items-center gap-1.5 text-[12px] whitespace-nowrap text-mist-400">
 				<span class="font-mono text-[11.5px] tabular sm:hidden">{p.kills}–{p.deaths}</span>
+				{#if p.hiddenName}<Badge
+						tone="info"
+						title="Anonymous mode: the other players see {p.hiddenName}, not this name">anon</Badge
+					>{/if}
 				{#if marks[p.steamId]?.firstVisit}<Badge tone="info">new</Badge>{/if}
 				{#if moved}
 					<span class="inline-flex items-center gap-1.5 text-accent"
