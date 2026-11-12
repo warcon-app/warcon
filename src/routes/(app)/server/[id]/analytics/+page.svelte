@@ -110,7 +110,7 @@
 		range;
 		if (perPeriod) return poll(loadPeriods, 60000);
 	});
-	let periodWord = $derived(range === '24h' ? 'hour' : 'day');
+	let periodWord = $derived(range === '24h' || range === '48h' ? 'hour' : 'day');
 	const SHOWN = [
 		['online', 'Players online'],
 		['players', 'Players per'],
@@ -149,6 +149,8 @@
 
 	const RANGES: { key: Range; label: string }[] = [
 		{ key: '24h', label: '24 hours' },
+		{ key: '48h', label: '48 hours' },
+		{ key: '3d', label: '3 days' },
 		{ key: '7d', label: '7 days' },
 		{ key: '30d', label: '30 days' }
 	];
