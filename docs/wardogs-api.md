@@ -269,6 +269,19 @@ routes:
   that numbers from the start again is told as the console tells it, by a `latestSeq` below the
   last line read, and also by its start time moving on. The demo server serves the three routes,
   with its own stand-in terms and a scripted chat.
+  The worker reads `GET /v1/chat` too, for the rules that answer what players type
+  (`src/lib/server/chat-look.ts`; a Chat command and a Staff call): only on a server with such a
+  rule switched on and players on it, after its look, every two seconds, with three seconds for the
+  answer. It finds its place before it acts on anything: a read of `after=0&limit=1`, for
+  `latestSeq` alone, then `after=<latestSeq>&limit=200`, which must bring nothing (a read that
+  does bring lines moves the place on and is made again). From then on it acts on the lines after
+  the place, 200 at a time; a full page, or a `latestSeq` below the place, sends it back to
+  finding. It depends on `latestSeq` being the server's newest line, as the console's own client
+  does: an answer without one, or with one below a line it carries, counts as a failed read, and
+  the rules' rows say the chat cannot be read. Seeing one real answer would settle this. A 409
+  `chat_terms_not_accepted` is asked again once a minute; a 429 holds the server, as at any
+  request. What it reads is answered in the same look and kept nowhere. The demo's scripted chat
+  has a `!rules` and an `!admin` line for these rules.
 - **The event feed waits on those terms.** `GET /v1/feed` gains `pausedForTerms`, which the console
   shows as "Paused: the event feed sends nothing until the chat terms are accepted." Whether an
   acceptance outlasts a restart is not known. This one Warcon reads (`feedReportOf` and the `terms`
