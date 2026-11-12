@@ -18,12 +18,14 @@ export interface Season {
 
 /**
  * WARDOGS's seasons, from the moment each began. Season 1 is the early-access release
- * (10 September 2026); Season 2 launches on 15 October 2026 at 9:00 Pacific (16:00 UTC). A season
- * added here after it began still starts on its real date: the boards read the kept history.
+ * (10 September 2026); Season 2 launched on 15 October 2026 at 9:00 Pacific (16:00 UTC), Season 3
+ * on 12 November 2026 at 08:00 UTC. A season added here after it began still starts on its real
+ * date: the boards read the kept history.
  */
 export const OFFICIAL_SEASONS: readonly { key: string; name: string; startsAt: string }[] = [
 	{ key: 'wardogs-1', name: 'Season 1', startsAt: '2026-09-10T00:00:00.000Z' },
-	{ key: 'wardogs-2', name: 'Season 2', startsAt: '2026-10-15T16:00:00.000Z' }
+	{ key: 'wardogs-2', name: 'Season 2', startsAt: '2026-10-15T16:00:00.000Z' },
+	{ key: 'wardogs-3', name: 'Season 3', startsAt: '2026-11-12T08:00:00.000Z' }
 ];
 
 /** How a season is named in a board's range: `s:<key>`. */
