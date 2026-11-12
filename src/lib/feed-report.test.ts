@@ -3,7 +3,13 @@ import type { Env } from '$lib/server/env';
 import { ACTIONS } from '$lib/server/actions';
 import { setMockFeed } from '$lib/server/mockgame';
 import { WardogsClient } from '$lib/server/rcon';
-import { feedDiagnosis, feedReportOf, isPanel, type FeedEndpoint } from './feed-report';
+import {
+	feedDiagnosis,
+	feedReportOf,
+	isPanel,
+	type FeedEndpoint,
+	type FeedReport
+} from './feed-report';
 
 const ORIGIN = 'https://console.warcon.app';
 
@@ -83,7 +89,9 @@ describe('feedReportOf', () => {
 					lastHttpStatus: 200,
 					lastSuccessAt: '2026-10-18T08:03:26.000Z'
 				}
-			]
+			],
+			// Season 2 sends no such field: not held back
+			pausedForTerms: false
 		});
 	});
 
@@ -96,14 +104,22 @@ describe('feedReportOf', () => {
 		expect(feedReportOf({ enabled: false, endpointCount: 0, endpoints: [] })).toEqual({
 			enabled: false,
 			endpointCount: 0,
-			endpoints: []
+			endpoints: [],
+			pausedForTerms: false
 		});
 		// the console's reader allows `endpoints` to be absent
 		expect(feedReportOf({ enabled: true, endpointCount: 2 })).toEqual({
 			enabled: true,
 			endpointCount: 2,
-			endpoints: []
+			endpoints: [],
+			pausedForTerms: false
 		});
+	});
+
+	test('Season 3: a feed held back until the chat terms are accepted, only on the game’s plain word', () => {
+		expect(feedReportOf({ ...TLR, pausedForTerms: true })!.pausedForTerms).toBe(true);
+		for (const said of [false, undefined, null, 'true', 1, {}])
+			expect(feedReportOf({ ...TLR, pausedForTerms: said })!.pausedForTerms).toBe(false);
 	});
 
 	test('odd values come out as nothing rather than as what they claim', () => {
@@ -173,6 +189,24 @@ describe('feedDiagnosis', () => {
 		expect([elsewhere.fault, elsewhere.others]).toEqual(['elsewhere', 1]);
 	});
 
+	test('Season 3: held back for the chat terms comes before anything the counters say', () => {
+		const held = (raw: Record<string, unknown>) =>
+			diagnose(feedReportOf({ ...raw, pausedForTerms: true }));
+		// TLR #1's answer would otherwise read as a wrong path
+		expect(held(TLR)).toEqual({ fault: 'terms', endpoint: null, others: 2 });
+		// nor does a healthy line, an empty list or one that posts elsewhere change it
+		const healthy = { ...TLR.endpoints[0], healthy: true, lastHttpStatus: 200, sentTotal: 9 };
+		expect(held({ enabled: true, endpointCount: 1, endpoints: [healthy] }).fault).toBe('terms');
+		expect(held({ enabled: true, endpointCount: 0 }).fault).toBe('terms');
+		expect(held({ enabled: true, endpointCount: 1, endpoints: [TLR.endpoints[1]] }).fault).toBe(
+			'terms'
+		);
+		// a feed that is off is off: the file comes first
+		expect(held({ enabled: false, endpointCount: 0 }).fault).toBe('off');
+		// and once they are accepted the report reads as before
+		expect(diagnose(feedReportOf({ ...TLR, pausedForTerms: false })).fault).toBe('path');
+	});
+
 	test("sent here since the start while nothing came for this server: another server's token", () => {
 		// the game's counters start again at its start; sent counts batches the panel took
 		const sent = (sentTotal: number, lastSuccessUnixSeconds: number | null) =>
@@ -217,11 +251,19 @@ describe('the feed action', () => {
 		expect(await ACTIONS.feed.run(client('feed-report-a'), {})).toEqual(feedReportOf(TLR)!);
 	});
 
+	test('Season 3: the action carries the game’s word that the feed is held back', async () => {
+		setMockFeed('feed-report-d', { ...TLR, pausedForTerms: true });
+		const report = (await ACTIONS.feed.run(client('feed-report-d'), {})) as FeedReport;
+		expect(report.pausedForTerms).toBe(true);
+		expect(feedDiagnosis(report, ORIGIN, 'silent').fault).toBe('terms');
+	});
+
 	test('a feed that is off by default, and an answer that is not a report refused', async () => {
 		expect(await ACTIONS.feed.run(client('feed-report-b'), {})).toEqual({
 			enabled: false,
 			endpointCount: 0,
-			endpoints: []
+			endpoints: [],
+			pausedForTerms: false
 		});
 		setMockFeed('feed-report-c', { nope: true });
 		await expect(ACTIONS.feed.run(client('feed-report-c'), {})).rejects.toMatchObject({

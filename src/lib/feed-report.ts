@@ -12,6 +12,10 @@
 // The answer names the host only, so which line is wrong is told from what this panel answered:
 // it knows its own routes (src/hooks.server.ts), so 405 is a page of the panel (the site alone),
 // 404 a wrong path under /api/ingest/, 401 a token it does not know.
+//
+// Season 3 adds `pausedForTerms`: the game sends nothing to any endpoint until the server's chat
+// terms have been accepted (the official console's reader and its "Paused" line, 2026-11-12; not
+// yet seen from a live server).
 import type { FeedState } from './feed-health';
 
 export interface FeedEndpoint {
@@ -35,6 +39,8 @@ export interface FeedReport {
 	enabled: boolean;
 	endpointCount: number;
 	endpoints: FeedEndpoint[];
+	/** Season 3: the game holds every event back until the server's chat terms are accepted */
+	pausedForTerms: boolean;
 }
 
 /** The game takes up to four endpoints; anything past this many is not a feed list. */
@@ -80,7 +86,8 @@ export function feedReportOf(raw: unknown): FeedReport | null {
 	return {
 		enabled: o.enabled,
 		endpointCount: Math.max(count(o.endpointCount), endpoints.length),
-		endpoints
+		endpoints,
+		pausedForTerms: o.pausedForTerms === true
 	};
 }
 
@@ -99,6 +106,8 @@ export function isPanel(e: Pick<FeedEndpoint, 'host'>, origin: string): boolean 
 export type FeedFault =
 	/** bEventFeedEnabled was not on when the game started */
 	| 'off'
+	/** Season 3: on, and held back by the game until the server's chat terms are accepted */
+	| 'terms'
 	/** on, with no endpoint */
 	| 'empty'
 	/** endpoints, none of them this panel */
@@ -128,6 +137,8 @@ export interface FeedDiagnosis {
 
 /**
  * What the game's report says is wrong with the feed to this panel; fault null when nothing is.
+ * A feed the game is holding back for the chat terms is told first: nothing reaches any endpoint
+ * until they are accepted, whatever the lines in the file say.
  * `state` is the panel's own verdict ($lib/feed-health), and must be read after the report: the
  * game counts a batch as sent only once the panel has answered it, and the panel stamps the
  * server's last batch before it answers, so a verdict read after the report has seen every batch
@@ -139,6 +150,8 @@ export interface FeedDiagnosis {
 export function feedDiagnosis(report: FeedReport, origin: string, state: FeedState): FeedDiagnosis {
 	const none = { endpoint: null, others: report.endpointCount };
 	if (!report.enabled) return { fault: 'off', ...none };
+	// The game's own word that nothing is sent, so it comes before anything its counters say.
+	if (report.pausedForTerms) return { fault: 'terms', ...none };
 	if (!report.endpointCount) return { fault: 'empty', ...none };
 	const ours = report.endpoints.filter((e) => isPanel(e, origin));
 	if (!ours.length) return { fault: 'elsewhere', ...none };
