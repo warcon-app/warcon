@@ -336,7 +336,7 @@ site owner hold every capability on every server in scope.
 | Capability         | Unlocks                                                                                                                                                                                                    | viewer | operator | admin |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----- |
 | View               | what is happening on the server: status, players, kills, rotation, who is banned and who holds a reserved slot, analytics, leaderboards, player stats. Every role has it.                                  | ✓      | ✓        | ✓     |
-| Chat               | broadcast; whisper one player, several, or everyone on a faction; pick from the organisation's saved messages                                                                                              |        | ✓        | ✓     |
+| Chat               | broadcast; whisper one player, several, or everyone on a faction; pick from the organisation's saved messages; read the current map's in-game chat (Season 3)                                              |        | ✓        | ✓     |
 | Kick               | kick a player; the rules that kick or flag players                                                                                                                                                         |        | ✓        | ✓     |
 | Kill               | kill a player's character; AFK protection, and a Kill distance watch that kills                                                                                                                            |        | ✓        | ✓     |
 | Move               | move a player to another team, which kills them so they respawn on it (a move to the side they are on is refused); arrange the teams on the Players tab, which moves without the kill; a Team balance rule |        | ✓        | ✓     |
@@ -504,6 +504,20 @@ channels, as one sent from its Overview would be. The rows of one announcement c
 their detail, which tells them from another sending of the same text, and a search of the trail for
 the message finds them. Each server counts as one of the 120 game actions a minute a person or key
 may send.
+
+### In-game chat
+
+A server on Season 3 or later serves what its players say, and its **Chat** tab shows it: the
+current map's lines, newest last, each with its time, channel, faction, the player's real name
+(a link to their dossier) and the anonymised name other players see. The tab reads new lines every
+5 seconds while it is open, and starts empty again when the map changes, because that is when the
+game server empties its own. Warcon does not store chat: it is read from the game server while
+someone has the tab open, and the audit trail keeps no line of it.
+
+Reading chat needs _Chat_, the capability that broadcasts and whispers, so a role with View alone
+cannot. Bulkhead gives chat only on terms, which each server accepts once: until then the tab shows
+the terms, with **Accept** for those whose role includes _Config & settings_ (the game server saves
+the acceptance in its config), and everyone else is told an admin has to accept them.
 
 ### Players online
 
@@ -1442,6 +1456,8 @@ game's (a 401 or a 5xx from it becomes a 502), and `error` carries the game's `c
 | `broadcast`                         | Chat              | `message`                                                                                                          |
 | `whisper`                           | Chat              | `steamId`, `message`                                                                                               |
 | `whisperMany`                       | Chat              | `message`, and either `faction` or `steamIds` (a list, up to 200)                                                  |
+| `chat`                              | Chat              | `after` (optional: only the lines numbered above it); the current map's in-game chat, Season 3 builds              |
+| `chatTerms`                         | Chat              | none (Bulkhead's terms for reading chat, and whether they are accepted)                                            |
 | `kick`                              | Kick              | `steamId`, `reason` (optional)                                                                                     |
 | `kill`                              | Kill              | `steamId`                                                                                                          |
 | `changeTeam`                        | Move              | `steamId`, `faction`; the player is killed so they respawn on that side, unless `kill` is `false` (the move alone) |
@@ -1460,6 +1476,7 @@ game's (a 401 or a 5xx from it becomes a 502), and `error` carries the game's `c
 | `settings`                          | Config & settings | `scoreTick` (1 to 600), `rotationEnabled`, `rotationMode`                                                          |
 | `config`                            | Config & settings | none (the config document, credentials as `(hidden)`)                                                              |
 | `feed`                              | Config & settings | none (the game's report on its kill feed, Season 2 builds; see [Kill feed](#kill-feed))                            |
+| `chatTermsAccept`                   | Config & settings | `version` (the `requiredVersion` that `chatTerms` reads)                                                           |
 | `configValidate`, `configApply`     | Config & settings | `text`; apply also `revision`, `force`, `fullApply`                                                                |
 | `serverLog`                         | Audit trail       | `limit` (1 to 500, default 50)                                                                                     |
 | `raw`                               | Raw RCON          | `method`, `path` (a `/v1` route), `body`                                                                           |
@@ -1946,11 +1963,11 @@ GET  /api/steam/profiles?ids=a,b      GET /api/health
 
 Actions, by the capability each needs: `capabilities status health serverId players maps lightings
 experiences alternators catalog rotation bans reserved sponsor` (View) ·
-`broadcast whisper whisperMany` (Chat) · `kick` (Kick) · `kill` (Kill) · `changeTeam` (Move) · `endMatch restartMatch
+`broadcast whisper whisperMany chat chatTerms` (Chat) · `kick` (Kick) · `kill` (Kill) · `changeTeam` (Move) · `endMatch restartMatch
 changeMap setWeather setNextMap` (Match control) · `rotationAdd rotationRemove rotationMove
 rotationReorder` (Live rotation) · `ban unban` (Bans) · `reservedAdd reservedRemove` (Reserved
-slots) · `rotationSave rotationSettings` (Save rotation) · `config feed settings configValidate configApply` (Config &
-settings) · `serverLog` (Audit trail) · `raw` (Raw RCON).
+slots) · `rotationSave rotationSettings` (Save rotation) · `config feed chatTermsAccept settings configValidate configApply`
+(Config & settings) · `serverLog` (Audit trail) · `raw` (Raw RCON).
 
 ## Notes and limits
 

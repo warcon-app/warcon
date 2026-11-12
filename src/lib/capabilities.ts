@@ -54,7 +54,7 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
 	},
 	'chat.send': {
 		label: 'Chat',
-		hint: 'Broadcast to everyone; whisper a player, several, or a faction.',
+		hint: "Broadcast to everyone; whisper a player, several, or a faction; read the current map's in-game chat.",
 		group: 'play'
 	},
 	'players.kick': { label: 'Kick', hint: 'Kick a player off the server.', group: 'play' },

@@ -1003,3 +1003,148 @@ test('setNextMap on the live build answers 404 no_route and leaves the rotation 
 		else process.env.MOCK_LIVE_BUILD = before;
 	}
 });
+
+// ---- in-game chat (Season 3) --------------------------------------------------------------------
+
+// What GET /v1/chat answered on a live Season 3 server (CL-533689, 2026-11-12), one line of it.
+const CHAT_LINE = {
+	seq: 7,
+	sentUtc: '2026-11-12T15:39:29.145Z',
+	channel: 'Global',
+	faction: 'Manticore',
+	steamId: '76561198872197128',
+	realName: 'sandyparrot3552',
+	hiddenName: 'Pig',
+	anonymous: false,
+	text: 'howdy, and yeah',
+	rawText: 'howdy, and yeah',
+	ping: false
+};
+
+function chatClient(answer: unknown) {
+	const calls: { method: string; path: string; body?: unknown }[] = [];
+	const client: any = {
+		json: async (method: string, path: string, body?: unknown) => {
+			calls.push({ method, path, body });
+			return structuredClone(answer);
+		}
+	};
+	return { client, calls };
+}
+
+test('chat reads the lines after the number given and keeps the known fields', async () => {
+	const { client, calls } = chatClient({
+		latestSeq: 7,
+		messages: [CHAT_LINE, { seq: '8', text: 'gg', extra: 'x' }],
+		count: 2
+	});
+	const r: any = await ACTIONS.chat.run(client, { after: '5' });
+	expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /v1/chat?after=5']);
+	const { ping: _, ...kept } = CHAT_LINE;
+	expect(r.latestSeq).toBe(7);
+	expect(r.messages[0]).toEqual(kept);
+	expect(r.messages[1]).toEqual({
+		seq: 8,
+		sentUtc: '',
+		channel: '',
+		faction: '',
+		steamId: '',
+		realName: '',
+		hiddenName: '',
+		anonymous: false,
+		text: 'gg',
+		rawText: 'gg'
+	});
+});
+
+test('chat asks from the start without an after, and never for a negative or odd one', async () => {
+	for (const after of [undefined, '', '-3', 'abc']) {
+		const { client, calls } = chatClient({ latestSeq: 0, messages: [] });
+		await ACTIONS.chat.run(client, { after });
+		expect(calls[0].path).toBe('/v1/chat?after=0');
+	}
+});
+
+test('an answer that is not chat is an error, not an empty map', async () => {
+	const { client } = chatClient({ error: 'proxy page' });
+	const err: any = await ACTIONS.chat.run(client, {}).catch((e) => e);
+	expect(err).toBeInstanceOf(GameError);
+	expect(err.code).toBe('bad_response');
+});
+
+test('chatTerms reads the terms, and only accepted:true counts as accepted', async () => {
+	const terms = {
+		requiredVersion: 1,
+		acceptedVersion: 0,
+		accepted: false,
+		text: 'Read these terms before viewing this server chat.'
+	};
+	const { client, calls } = chatClient(terms);
+	expect(await ACTIONS.chatTerms.run(client, {})).toEqual(terms);
+	expect(calls[0].path).toBe('/v1/chat/terms');
+	const odd = chatClient({ accepted: 'yes' });
+	expect(((await ACTIONS.chatTerms.run(odd.client, {})) as any).accepted).toBe(false);
+});
+
+test('chatTermsAccept posts the version, and refuses without one', async () => {
+	const { client, calls } = chatClient({
+		ok: true,
+		pending: false,
+		message: 'OK: chat terms accepted and saved.'
+	});
+	const r: any = await ACTIONS.chatTermsAccept.run(client, { version: 1 });
+	expect(calls).toEqual([{ method: 'POST', path: '/v1/chat/terms', body: { version: 1 } }]);
+	expect(r.message).toContain('accepted');
+	expect(ACTIONS.chatTermsAccept.target!({ version: 1 })).toBe('1');
+	for (const version of [undefined, 0, 'x']) {
+		const none = chatClient({});
+		await expect(ACTIONS.chatTermsAccept.run(none.client, { version })).rejects.toThrow(
+			'version is required'
+		);
+		expect(none.calls.length).toBe(0);
+	}
+});
+
+test('a 200 that says ok:false is a refusal, not an acceptance', async () => {
+	const { client } = chatClient({ ok: false, message: 'Error: terms version 1 is not current.' });
+	const err: any = await ACTIONS.chatTermsAccept.run(client, { version: 1 }).catch((e) => e);
+	expect(err).toBeInstanceOf(GameError);
+	expect([err.code, err.message]).toEqual([
+		'terms_refused',
+		'Error: terms version 1 is not current.'
+	]);
+});
+
+test('reading chat needs Chat and accepting the terms Config & settings; a viewer has neither', async () => {
+	const { BUILTIN_CAPABILITIES } = await import('../capabilities');
+	expect([ACTIONS.chat.cap, ACTIONS.chatTerms.cap, ACTIONS.chatTermsAccept.cap]).toEqual([
+		'chat.send',
+		'chat.send',
+		'config.apply'
+	]);
+	expect(ACTIONS.chat.mutating || ACTIONS.chatTerms.mutating).toBe(false);
+	expect(ACTIONS.chatTermsAccept.mutating).toBe(true);
+	expect(BUILTIN_CAPABILITIES.viewer).not.toContain('chat.send');
+	expect(BUILTIN_CAPABILITIES.operator).toContain('chat.send');
+});
+
+test('on the demo server chat stays empty until the terms are accepted, and a pre-Season 3 build has none', async () => {
+	const { WardogsClient } = await import('./rcon');
+	const server = { id: 'chat-demo', host: 'demo', port: 1, scheme: 'http' as const };
+	const client = new WardogsClient({} as any, server, 'demo', 'chat-demo');
+	expect(await ACTIONS.chat.run(client, {})).toEqual({ latestSeq: 0, messages: [] });
+	const terms: any = await ACTIONS.chatTerms.run(client, {});
+	expect([terms.accepted, terms.requiredVersion]).toEqual([false, 1]);
+	await ACTIONS.chatTermsAccept.run(client, { version: terms.requiredVersion });
+	expect(((await ACTIONS.chatTerms.run(client, {})) as any).accepted).toBe(true);
+
+	const before = process.env.MOCK_LIVE_BUILD;
+	process.env.MOCK_LIVE_BUILD = 'true';
+	try {
+		const err: any = await ACTIONS.chat.run(client, {}).catch((e) => e);
+		expect([err.status, err.code]).toEqual([404, 'no_route']);
+	} finally {
+		if (before === undefined) delete process.env.MOCK_LIVE_BUILD;
+		else process.env.MOCK_LIVE_BUILD = before;
+	}
+});

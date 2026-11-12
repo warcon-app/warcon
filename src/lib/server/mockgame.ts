@@ -83,6 +83,11 @@ interface State {
 	startedAt: number;
 	/** what GET /v1/feed reports (setMockFeed); null: a feed that is off */
 	feedReport: Record<string, unknown> | null;
+	/** the current map's chat, numbered from 1 again at every map load, as Season 3's GET /v1/chat */
+	chat: Record<string, unknown>[];
+	chatSeq: number;
+	/** the chat terms version accepted (POST /v1/chat/terms); 0 until then */
+	chatTerms: number;
 }
 
 const MAPS = [
@@ -119,6 +124,17 @@ const ALTERNATORS_BY_MAP: Record<string, { tag: string; displayName: string }[]>
 		{ tag: 'ZoneAlternator.Factory.Split', displayName: 'Bakurani Factory Split' }
 	]
 };
+const CHAT_LINES = [
+	'gg',
+	'need a medic at B',
+	'push the hill',
+	'tank on the road',
+	'o7',
+	'who has the drone'
+];
+/** The anonymised names Season 3 shows other players in chat. */
+const HIDDEN_NAMES = ['Pig', 'Fox', 'Crow', 'Mule', 'Hare', 'Owl'];
+const CHAT_TERMS_VERSION = 1;
 const JOINERS = [
 	'Copperhead',
 	'Late_to_the_party',
@@ -144,7 +160,11 @@ const LIVE_BUILD_MISSING = new Set([
 	'POST /v1/rotation/save',
 	'PATCH /v1/settings',
 	// Season 2 (CL-516586) on
-	'GET /v1/feed'
+	'GET /v1/feed',
+	// Season 3 (CL-533689) on
+	'GET /v1/chat',
+	'GET /v1/chat/terms',
+	'POST /v1/chat/terms'
 ]);
 const liveBuild = () => /^(1|true|yes)$/i.test(process.env.MOCK_LIVE_BUILD || '');
 // With MOCK_LIVE_ADDS=now as well, a slot added to the document is reserved at once while one taken
@@ -231,7 +251,10 @@ const CAPABILITY_ROUTES = [
 	'GET /v1/config',
 	'POST /v1/config/validate',
 	'PUT /v1/config',
-	'GET /v1/feed'
+	'GET /v1/feed',
+	'GET /v1/chat',
+	'GET /v1/chat/terms',
+	'POST /v1/chat/terms'
 ];
 
 // The schema live build CL-501228 reports from GET /v1/config (captured 2026-09-14; CL-499480's
@@ -478,7 +501,10 @@ function seed(name: string): State {
 		matchState: '',
 		matchId: crypto.randomUUID(),
 		startedAt: STARTED,
-		feedReport: null
+		feedReport: null,
+		chat: [],
+		chatSeq: 0,
+		chatTerms: 0
 	};
 	state.configText = seedConfig(state);
 	return state;
@@ -636,6 +662,27 @@ function tick(s: State): void {
 		}
 		p.pingMs = Math.max(5, p.pingMs + Math.floor(Math.random() * 9) - 4);
 	}
+	// Someone says something every 8 s of the clock, picked without Math.random so the demo's other
+	// draws come out as they did before.
+	if (s.players.length && Math.floor(now / 8000) !== Math.floor((now - dt * 1000) / 8000)) {
+		const n = s.chatSeq + s.nextJoiner;
+		const p = s.players[n % s.players.length];
+		const text = CHAT_LINES[n % CHAT_LINES.length];
+		s.chat.push({
+			seq: ++s.chatSeq,
+			sentUtc: utc(),
+			channel: n % 3 ? 'Team' : 'Global',
+			faction: p.faction,
+			steamId: p.steamId,
+			realName: p.name,
+			hiddenName: HIDDEN_NAMES[Number(BigInt(p.steamId) % BigInt(HIDDEN_NAMES.length))],
+			anonymous: false,
+			text,
+			rawText: text,
+			ping: false
+		});
+		if (s.chat.length > 200) s.chat.splice(0, s.chat.length - 200);
+	}
 	// One of the drifters leaves now and then once the server is busy, so a full demo server keeps
 	// turning over (the seeded regulars stay, so tests can rely on them).
 	if (s.players.length > 8 && Math.random() < 0.03) {
@@ -769,6 +816,9 @@ function resetScores(s: State): void {
 		p.deaths = 0;
 		p.cash = 0;
 	}
+	// A map load empties the game's chat and numbers it from 1 again.
+	s.chat = [];
+	s.chatSeq = 0;
 	feedState(s, PRE_MATCH);
 }
 
@@ -1204,6 +1254,31 @@ export function mockHandle(
 	if (route === 'PUT sponsor') {
 		// Real listeners no longer have this route; ServerImageURL goes through PUT /v1/config.
 		return fail(405, 'PUT is not supported on this endpoint', 'method_not_allowed');
+	}
+	// Season 3's chat: empty until the terms are accepted.
+	if (route === 'GET chat') {
+		const after = Number(qs.get('after')) || 0;
+		const messages = s.chatTerms ? s.chat.filter((m) => Number(m.seq) > after) : [];
+		return ok({ latestSeq: s.chatTerms ? s.chatSeq : 0, messages, count: messages.length });
+	}
+	if (route === 'GET chat/terms') {
+		return ok({
+			requiredVersion: CHAT_TERMS_VERSION,
+			acceptedVersion: s.chatTerms,
+			accepted: s.chatTerms >= CHAT_TERMS_VERSION,
+			text: "Read these terms before viewing this server's chat. (Demo server: Bulkhead's text stands here.)"
+		});
+	}
+	if (route === 'POST chat/terms') {
+		if (b.version !== CHAT_TERMS_VERSION)
+			return fail(
+				400,
+				`Error: the terms to accept are version ${CHAT_TERMS_VERSION}.`,
+				'bad_request'
+			);
+		s.chatTerms = CHAT_TERMS_VERSION;
+		log(s, 'COMMAND', `chat terms accepted v${CHAT_TERMS_VERSION}`);
+		return ok({ ok: true, pending: false, message: 'OK: chat terms accepted and saved.' });
 	}
 	if (route === 'GET audit') {
 		const limit = Math.min(500, Math.max(1, Number(qs.get('limit')) || 50));

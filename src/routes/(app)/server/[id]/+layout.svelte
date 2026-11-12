@@ -18,6 +18,7 @@
 		['', 'Overview'],
 		['/players', 'Players'],
 		['/kills', 'Kills'],
+		['/chat', 'Chat', 'chat.send'],
 		['/matches', 'Matches'],
 		['/bans', 'Bans'],
 		['/slots', 'Reserved slots'],

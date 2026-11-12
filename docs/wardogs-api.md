@@ -76,6 +76,9 @@ Warcon, and Warcon's own process talks plain HTTP to the listener.
 | GET | `/v1/config` | | `{ revision, writable, text, sections:[{section, appliesWhen, description, allowedKeys[], keyOverrides:[{key, appliesWhen, description, writable, lockedBy}]}], warnings[] }` (+ `ETag`) | Whole `ServerSettings.ini`. **CL-501228** adds `writable` and `lockedBy` per key override: a key pinned by a launch argument (`ServerName` by `-RCON_FixedServerName`, `Port` by `-RCONPort` on the TLR host) comes back `writable:false` with the switch in `lockedBy` and "Pinned by -RCONPort on this server's command line. The value is shown but cannot be changed here." The console shows a "Fixed" badge and disables the input; Warcon does the same (`lockedFor` / `lockedKeys` in `src/lib/config-fields.ts`) and lists pinned keys under the document. CL-499480's schema (mirrored in `mockgame.ts`): `WDGameSession` applied (`ServerImageURL` pending, password and join limits applied on the next session update), `Engine.GameSession` next-restart, `WDGameStateSession` / `KOTH` / `PreMatch` next-match, rotation applied ("rebuilt immediately; used from the next map change"), `WDRCONSettings` and `WDServerFeed` next-restart. |
 | POST | `/v1/config/validate` | text/plain ini | apply result | Dry run. |
 | PUT | `/v1/config?force=true&fullApply=true` | text/plain ini, `If-Match: "rev"` | `{ ok, revision, outcomes:[{section,state,detail}], shadowed[], stripped[], errors[], changed[], conflict[], warnings[], timingsMs }` | `state` ∈ `applied`, `next-match`, `next-restart`, `pending`. 412 on revision mismatch unless `force`. |
+| GET | `/v1/chat?after=N` | | `{ latestSeq, messages:[{seq, sentUtc, channel, faction, steamId, realName, hiddenName, anonymous, text, rawText, ping}], count }` | **New in Season 3 (CL-533689).** The current map's chat, from the server's memory: a map load empties it and `seq` starts again at 1. Empty until the chat terms are accepted. See [Season 3](#season-3-live-build-cl-533689-read-2026-11-12). Warcon action `chat`. |
+| GET | `/v1/chat/terms` | | `{ requiredVersion, acceptedVersion, accepted, text }` | **Season 3.** Bulkhead's terms for reading chat. Warcon action `chatTerms`. |
+| POST | `/v1/chat/terms` | `{ version }` | `{ ok, pending, message }` | **Season 3.** Accepts the terms; saved as `AcceptedChatTermsVersion`. Warcon action `chatTermsAccept`. |
 
 "Set as next map" is not a route: the console finds (or adds) the selection in the rotation and
 moves it into the slot after the `now` entry with repeated `/move` calls. Warcon does the same server-side.
@@ -125,6 +128,48 @@ player list's fields were not seen (the server was empty). The RCON block's `all
 section allows one, so hosts set it outside `ServerSettings.ini`, and no route reports it.
 Whispers and broadcasts are capped (see `/v1/broadcast` above).
 
+### Season 3, live build CL-533689 (read 2026-11-12)
+
+Season 3 serves what players say in chat. `GET /v1/capabilities` lists three new routes,
+`GET /v1/chat`, `GET /v1/chat/terms` and `POST /v1/chat/terms`. Read on a live server:
+
+```
+GET /v1/chat
+{ "latestSeq": 7, "count": 6, "messages": [
+  { "seq": 7, "sentUtc": "2026-11-12T15:39:29.145Z", "channel": "Global", "faction": "Manticore",
+    "steamId": "7656119…", "realName": "…", "hiddenName": "Pig", "anonymous": false,
+    "text": "howdy, and yeah", "rawText": "howdy, and yeah", "ping": false } ] }
+```
+
+* `channel` was `Team` or `Global`. `hiddenName` is the anonymised name other players see;
+  `realName` is the player's own. What `anonymous`, `rawText` (beside `text`) and `ping` mean was
+  not seen: every line read had `anonymous:false`, `ping:false` and `rawText` the same as `text`.
+* `?after=N` answers only the lines with `seq` above N (`after=5` gave 6 and 7). `?limit=n`
+  answers the **oldest** n, so it is no way to read the newest. `since`, `afterSeq`, `sinceSeq`
+  and `fromSeq` are ignored.
+* The lines are held in the server's memory for the **current map only**. A map load empties
+  them and `seq` starts again at 1 (after a match restart, seq 1 was a new line). Nothing is kept
+  for the host by Bulkhead. A reader polling with `after` must notice the numbering going back:
+  Warcon asks from one before the last line it holds and checks that line comes back
+  (`mergeChat` in `src/lib/chat.ts`), which also catches a new map that has already passed the
+  old one's count.
+* Reading chat is gated by Bulkhead's terms. `GET /v1/chat/terms` answers
+  `{ requiredVersion:1, acceptedVersion:0, accepted:false, text }`, the text beginning "Read these
+  terms before viewing this server's chat." and saying that chat is given only to moderate the
+  server, is not stored for the host, must not be recorded, stored, exported, published or shared
+  beyond what moderation needs, and that access may be revoked for misuse.
+  `POST /v1/chat/terms` with `{ "version": 1 }` answered
+  `{ ok:true, pending:false, message:"OK: chat terms accepted and saved." }`. Until then
+  `GET /v1/chat` is empty and `GET /v1/feed` reports `"pausedForTerms": true`. The accepted
+  version is kept as `AcceptedChatTermsVersion` under `[/Script/WDRCON.WDRCONSettings]`
+  (`next-restart` in `GET /v1/config`'s sections).
+
+Warcon reads chat with the `chat` action (Chat capability, the one that broadcasts and whispers),
+shows it on the server's Chat tab while the tab is open, and stores none of it. The terms are
+read with `chatTerms` (Chat) and accepted with `chatTermsAccept` (Config & settings). The demo
+server serves the three routes (a line every 8 seconds, emptied at each map change) and
+`MOCK_LIVE_BUILD=true` leaves them out.
+
 ## ServerSettings.ini keys the server honours
 
 ```
@@ -136,7 +181,8 @@ Whispers and broadcasts are capped (see `/v1/broadcast` above).
 [/Script/WDGame.WDGameStateSession]       bLockOverpopulatedTeamsConfig, OverpopulatedTeamThresholdConfig
 [/Script/WDGame.WDServerMapRotationSettings]  bEnabled, RotationMode, +RotationEntries=(Map="",Experience(s)="",Lighting="",ZoneAlternator="")
 [/Script/WDRCON.WDRCONSettings]           bEnabled, BindAddress, Port, Password, PasswordHash, AllowedOrigins, AllowedHosts (CL-507060;
-                                          CL-501228 had bWriteAuditLogFile instead)
+                                          CL-501228 had bWriteAuditLogFile instead), AcceptedChatTermsVersion
+                                          (Season 3, CL-533689; next-restart; set by POST /v1/chat/terms)
 [WDServerFeed]                            Url, Token          (CL-499480: "kill-event feed endpoint and its ingest token")
 ```
 

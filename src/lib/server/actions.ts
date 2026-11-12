@@ -658,6 +658,65 @@ export const ACTIONS: Record<string, ActionDef> = {
 					: '',
 		run: (c, p) => whisperMany(c, p)
 	},
+	// Season 3 (CL-533689) on: what players said on the current map, from the game's memory. Chat
+	// reads it, never View alone: it is players' words under their real names. Nothing of it is
+	// stored. `after` returns only the lines numbered above it, and a map load numbers from 1 again
+	// ($lib/chat mergeChat). Empty until the server's chat terms are accepted.
+	chat: {
+		cap: 'chat.send',
+		mutating: false,
+		run: async (c, p) => {
+			const d = await c.json('GET', `/v1/chat?after=${int(p.after, 0, 0, 1e9)}`);
+			if (!Array.isArray(d?.messages))
+				throw new GameError(502, 'The server did not return its chat.', 'bad_response');
+			const text = (v: unknown) => (v === null || v === undefined ? '' : String(v));
+			return {
+				latestSeq: Number(d.latestSeq) || 0,
+				messages: d.messages.map((m: any) => ({
+					seq: Number(m.seq) || 0,
+					sentUtc: text(m.sentUtc),
+					channel: text(m.channel),
+					faction: text(m.faction),
+					steamId: text(m.steamId),
+					realName: text(m.realName),
+					hiddenName: text(m.hiddenName),
+					anonymous: m.anonymous === true,
+					text: text(m.text),
+					rawText: text(m.rawText ?? m.text)
+				}))
+			};
+		}
+	},
+	// Bulkhead's terms for reading chat: the text, the version they need and the one accepted.
+	chatTerms: {
+		cap: 'chat.send',
+		mutating: false,
+		run: async (c) => {
+			const d = await c.json('GET', '/v1/chat/terms');
+			return {
+				requiredVersion: Number(d.requiredVersion) || 0,
+				acceptedVersion: Number(d.acceptedVersion) || 0,
+				accepted: d.accepted === true,
+				text: String(d.text ?? '')
+			};
+		}
+	},
+	// Accepting binds the server's operator and is saved in its config (AcceptedChatTermsVersion),
+	// so it is for those who may apply the config.
+	chatTermsAccept: {
+		cap: 'config.apply',
+		mutating: true,
+		target: (p) => String(int(p.version, 0, 0, 1e6)),
+		run: async (c, p) => {
+			const version = int(p.version, 0, 0, 1e6);
+			if (!version)
+				throw new ApiError(400, 'version is required: the requiredVersion of the terms accepted.');
+			const r = await c.json('POST', '/v1/chat/terms', { version });
+			if (r?.ok === false)
+				throw new GameError(400, r.message || 'The server refused the terms.', 'terms_refused');
+			return r;
+		}
+	},
 	kick: {
 		cap: 'players.kick',
 		mutating: true,
