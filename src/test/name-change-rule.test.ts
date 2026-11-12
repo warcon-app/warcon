@@ -4,7 +4,7 @@
 // flagged (or kicked) at that kill, on that server only; their own name with another clan tag, or
 // a player off the list, is not judged; switching the rule off or editing it stops what it had
 // queued; and the dry run finds the same in the day's kills against the sessions open at each.
-import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { and, eq } from 'drizzle-orm';
 import { join } from 'node:path';
 import type { Env } from '$lib/server/env';
@@ -21,7 +21,7 @@ import { ingestBatch } from '$lib/server/feed';
 import { onKillsIngested } from '$lib/server/feed-events';
 import { acquireOrRenew, releaseOwnership } from '$lib/server/leadership';
 import { forgetMemory, memoryFor, observeServer } from '$lib/server/observe';
-import { startDelivery, stopDelivery } from '$lib/server/outbox';
+import { deliveryStats, startDelivery, stopDelivery } from '$lib/server/outbox';
 import { WardogsClient } from '$lib/server/rcon';
 import { validateConfig } from '$lib/server/trigger-rules';
 import { dryRun, invalidateTriggers } from '$lib/server/triggers';
@@ -60,6 +60,12 @@ describe.skipIf(!hasTestDb)('the name change rule on the kill feed', () => {
 	const lists = new Map<string, Named[]>();
 	const used: string[] = [];
 	let spy: ReturnType<typeof spyOn>;
+
+	// The worker's lease lasts fifteen seconds and is taken once for the file, which runs about
+	// that long: every test starts with it renewed, so a slow machine does not lose it part-way.
+	beforeEach(async () => {
+		expect(await acquireOrRenew(env, 'name-change-live')).toBe(true);
+	});
 
 	beforeAll(async () => {
 		env = { ...(await testEnv()), STEAM_API_KEY: '' };
@@ -135,12 +141,16 @@ describe.skipIf(!hasTestDb)('the name change rule on the kill feed', () => {
 		env.db.select().from(outbox).where(eq(outbox.triggerId, triggerId)).orderBy(outbox.id);
 	const rowOf = async (id: number) =>
 		(await env.db.select().from(outbox).where(eq(outbox.id, id)))[0];
-	/** Runs the delivery loop until the rows are done. */
+	/**
+	 * Runs the delivery loop until the rows are done and their chains have ended: a row's state is
+	 * written first, the trail and the rule's count after it, and a test reads those next.
+	 */
 	const deliver = async (...ids: number[]) => {
 		startDelivery(env);
 		for (let i = 0; i < 100; i++) {
 			const rows = await Promise.all(ids.map(rowOf));
-			if (rows.every((r) => r.state !== 'pending' && r.state !== 'sending')) break;
+			const done = rows.every((r) => r.state !== 'pending' && r.state !== 'sending');
+			if (done && !deliveryStats().chains) break;
 			await Bun.sleep(50);
 		}
 		await stopDelivery();

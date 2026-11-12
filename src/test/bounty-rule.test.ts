@@ -5,7 +5,7 @@
 // and the claimer's reserved slot goes on the list the rule names. A leave or a match end lapses
 // it, a worker restart keeps it, any save of the rule calls it off. A Bounties webhook gets a card
 // for each, with names and never a SteamID. The dry run replays the day's kills the same way.
-import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { and, eq, isNull } from 'drizzle-orm';
 import { join } from 'node:path';
 import type { Env } from '$lib/server/env';
@@ -33,7 +33,7 @@ import {
 	OFFLINE_AFTER_FAILURES,
 	type ServerMemory
 } from '$lib/server/observe';
-import { startDelivery, stopDelivery } from '$lib/server/outbox';
+import { deliveryStats, startDelivery, stopDelivery } from '$lib/server/outbox';
 import { WardogsClient } from '$lib/server/rcon';
 import { closeAllSessions, LEAVE_GRACE_MS } from '$lib/server/sessions';
 import { dryRun, invalidateTriggers, validateConfig } from '$lib/server/triggers';
@@ -97,6 +97,12 @@ describe.skipIf(!hasTestDb)('Bounty rule, live', () => {
 	/** what reached Discord */
 	const posts: { title: string; description: string }[] = [];
 	const realFetch = globalThis.fetch;
+
+	// The worker's lease lasts fifteen seconds and is taken once for the file, which runs about
+	// that long: every test starts with it renewed, so a slow machine does not lose it part-way.
+	beforeEach(async () => {
+		expect(await acquireOrRenew(env, 'bounty test')).toBe(true);
+	});
 
 	beforeAll(async () => {
 		env = { ...(await testEnv()), STEAM_API_KEY: '' };
@@ -200,12 +206,16 @@ describe.skipIf(!hasTestDb)('Bounty rule, live', () => {
 		)[0].state as { open: { steamId: string; streak: number; match: string } | null } | null;
 	const rowOf = async (id: number) =>
 		(await env.db.select().from(outbox).where(eq(outbox.id, id)))[0];
-	/** Runs the delivery loop until the rows are done. */
+	/**
+	 * Runs the delivery loop until the rows are done and their chains have ended: a row's state is
+	 * written first, the trail and the rule's count after it, and a test reads those next.
+	 */
 	const deliver = async (...ids: number[]) => {
 		startDelivery(env);
 		for (let i = 0; i < 100; i++) {
 			const rows = await Promise.all(ids.map(rowOf));
-			if (rows.every((r) => r.state !== 'pending' && r.state !== 'sending')) break;
+			const done = rows.every((r) => r.state !== 'pending' && r.state !== 'sending');
+			if (done && !deliveryStats().chains) break;
 			await Bun.sleep(50);
 		}
 		await stopDelivery();

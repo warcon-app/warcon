@@ -5,7 +5,7 @@
 // ban list that the panel's own enforcement removes the player with at the next look, written only
 // while the worker is owned. A kill kills the player, then whispers them, soon or not at all. From 0 m every kill with the chosen weapons counts, one without a
 // distance too. Nothing a person or a key can call runs the rule's ban or flag.
-import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { and, eq, isNull } from 'drizzle-orm';
 import { join } from 'node:path';
 import type { Env } from '$lib/server/env';
@@ -25,7 +25,7 @@ import { onKillsIngested } from '$lib/server/feed-events';
 import { ingestBatch } from '$lib/server/feed';
 import * as listsModule from '$lib/server/lists';
 import { forgetMemory, memoryFor, observeServer } from '$lib/server/observe';
-import { startDelivery, stopDelivery } from '$lib/server/outbox';
+import { deliveryStats, startDelivery, stopDelivery } from '$lib/server/outbox';
 import { WardogsClient } from '$lib/server/rcon';
 import { dryRun, invalidateTriggers, validateConfig } from '$lib/server/triggers';
 import { KILL_DISTANCE_FLAG, KILL_DISTANCE_SKIP } from '$lib/server/kill-distance';
@@ -91,6 +91,12 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 	const sent: [string, 'kill' | 'whisper', string][] = [];
 	/** players on the server it will not kill (no living character, as far as the panel can tell) */
 	const dead = new Set<string>();
+
+	// The worker's lease lasts fifteen seconds and is taken once for the file, which runs about
+	// that long: every test starts with it renewed, so a slow machine does not lose it part-way.
+	beforeEach(async () => {
+		expect(await acquireOrRenew(env, 'kill-distance test')).toBe(true);
+	});
 
 	beforeAll(async () => {
 		env = { ...(await testEnv()), STEAM_API_KEY: '' };
@@ -189,12 +195,16 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 		env.db.select().from(outbox).where(eq(outbox.triggerId, triggerId)).orderBy(outbox.id);
 	const rowOf = async (id: number) =>
 		(await env.db.select().from(outbox).where(eq(outbox.id, id)))[0];
-	/** Runs the delivery loop until the rows are done. */
+	/**
+	 * Runs the delivery loop until the rows are done and their chains have ended: a row's state is
+	 * written first, the trail and the rule's count after it, and a test reads those next.
+	 */
 	const deliver = async (...ids: number[]) => {
 		startDelivery(env);
 		for (let i = 0; i < 100; i++) {
 			const rows = await Promise.all(ids.map(rowOf));
-			if (rows.every((r) => r.state !== 'pending' && r.state !== 'sending')) break;
+			const done = rows.every((r) => r.state !== 'pending' && r.state !== 'sending');
+			if (done && !deliveryStats().chains) break;
 			await Bun.sleep(50);
 		}
 		await stopDelivery();
