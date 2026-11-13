@@ -71,6 +71,84 @@ export function typedCommand(
 export const commandsLine = (words: readonly string[]): string =>
 	words.map((w) => COMMAND_PREFIX + w).join(' ');
 
+/** A chat rule as one line of the Automation tab's Chat commands list. */
+export interface CommandRow {
+	/**
+	 * the words players type, each with its "!": a Chat command's own word and then its others, a
+	 * Staff call's words for calling staff and then those that report a player
+	 */
+	words: string[];
+	/** those of the words that report a player; none for a Chat command */
+	reports: string[];
+	/**
+	 * the first line it answers with; for a Staff call, whose answer is a card on Discord, what it
+	 * whispers back once the call is on its way, '' for nothing
+	 */
+	reply: string;
+	/** how many lines follow the first */
+	more: number;
+	/** who gets the answer: the player who typed it, the whole server, or (a Staff call) staff */
+	to: 'player' | 'everyone' | 'staff';
+	/** the least time between two answers, in seconds */
+	seconds: number;
+}
+
+/**
+ * A chat rule's config as that line. It reads what a rule holds and judges none of it: a config
+ * the panel did not save (one with no word, say) gives an empty line, never an error.
+ */
+export function commandRow(
+	kind: 'chat_command' | 'staff_call',
+	config: Record<string, unknown>
+): CommandRow {
+	const typed = (list: unknown): string[] =>
+		(Array.isArray(list) ? (list as unknown[]) : [])
+			.map(commandWord)
+			.filter(Boolean)
+			.map((w) => COMMAND_PREFIX + w);
+	const seconds = Math.max(0, Number(config.cooldownSeconds) || 0);
+	if (kind === 'staff_call') {
+		const calls = [...new Set(typed(config.commands))];
+		// a word calls staff or reports a player, never both: one in both lists is a call here
+		const reports = [...new Set(typed(config.reports))].filter((w) => !calls.includes(w));
+		return {
+			words: [...calls, ...reports],
+			reports,
+			reply: typeof config.ack === 'string' ? config.ack.trim() : '',
+			more: 0,
+			to: 'staff',
+			seconds
+		};
+	}
+	const replies = (Array.isArray(config.replies) ? (config.replies as unknown[]) : [])
+		.map((r) => (typeof r === 'string' ? r.trim() : ''))
+		.filter(Boolean);
+	return {
+		words: [...new Set([...typed([config.command]), ...typed(config.aliases)])],
+		reports: [],
+		reply: replies[0] ?? '',
+		more: Math.max(0, replies.length - 1),
+		to: config.to === 'everyone' ? 'everyone' : 'player',
+		seconds
+	};
+}
+
+/**
+ * The order of that list: a Staff call first, then the commands by their first word, so a word is
+ * found where the alphabet puts it however many a server has. Words are a to z and digits, so they
+ * are compared as they are written: the order is the same on the server and in every browser,
+ * whatever language either runs in.
+ */
+export function byCommand(
+	a: { kind: string; row: CommandRow },
+	b: { kind: string; row: CommandRow }
+): number {
+	const staff = Number(b.kind === 'staff_call') - Number(a.kind === 'staff_call');
+	if (staff) return staff;
+	const [x, y] = [a.row.words[0] ?? '', b.row.words[0] ?? ''];
+	return x < y ? -1 : x > y ? 1 : 0;
+}
+
 const fold = (s: string): string => s.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 
 /** The player a report names, and how sure the naming is. */

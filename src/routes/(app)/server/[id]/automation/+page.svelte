@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { invalidate, invalidateAll } from '$app/navigation';
+	import { goto, invalidate, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api, errorMessage } from '$lib/api';
 	import { MAX_CHAT } from '$lib/chat';
 	import {
@@ -41,10 +42,10 @@
 		MAX_COMMAND_REPLIES,
 		MAX_COMMAND_WORD,
 		MAX_STAFF_WORDS,
-		NOT_ANSWERED,
 		STAFF_CALL_DEFAULTS
 	} from '$lib/chat-commands';
 	import RulePicker from '$lib/components/RulePicker.svelte';
+	import ChatRules from './ChatRules.svelte';
 	import { identity } from '$lib/health.svelte';
 	import { restartScheduleOf } from '$lib/uptime';
 	import { LIVE_NAME_APPEND_DEFAULT, LIVE_NAME_PLACEHOLDERS, liveName } from '$lib/live-name';
@@ -72,6 +73,28 @@
 		return `The game restarts daily at ${s.time} UTC (${from}), once the round then in progress ends.`;
 	});
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
+
+	/**
+	 * The tab's two lists. A chat rule (CHAT_KINDS) answers what players type and queues no action,
+	 * and a server soon has a dozen of them, so they have a list of their own (ChatRules.svelte) and
+	 * the Rules list, its counts and Recent actions keep to the rules that act by themselves. Which
+	 * list shows is in the address (?view=commands), so a link or a reload lands on the same one.
+	 * Both are the one read of the server's rules this page's load makes.
+	 */
+	type View = 'rules' | 'commands';
+	const isChat = (t: { kind: TriggerKind }) => CHAT_KINDS.includes(t.kind);
+	let view = $derived<View>(
+		page.url.searchParams.get('view') === 'commands' ? 'commands' : 'rules'
+	);
+	let rules = $derived(data.triggers.filter((t) => !isChat(t)));
+	let chatRules = $derived(data.triggers.filter(isChat));
+	const viewHref = (v: View) => `${page.url.pathname}${v === 'commands' ? '?view=commands' : ''}`;
+	/** To the list a rule of this kind is on: a chat rule made from Add rule's picker shows there. */
+	function showListOf(kind: TriggerKind) {
+		const to: View = isChat({ kind }) ? 'commands' : 'rules';
+		if (to !== view)
+			void goto(viewHref(to), { replaceState: true, noScroll: true, keepFocus: true });
+	}
 
 	/** A risk_kick rule's score threshold, 0 when off; rules saved with a level read as 20 or 50. */
 	const kickAtScoreOf = (c: Record<string, unknown>): number =>
@@ -105,15 +128,14 @@
 		'pending',
 		'sending'
 	];
-	// this server's rules, and the names of deleted ones still among the rows
+	// this server's rules but the chat rules, which queue no action, and the names of deleted ones
+	// still among the rows
 	let ruleNames = $derived(
-		[
-			...new Set([...data.triggers.map((t) => t.name), ...deliveries.map((d) => d.triggerName)])
-		].sort()
+		[...new Set([...rules.map((t) => t.name), ...deliveries.map((d) => d.triggerName)])].sort()
 	);
 	/** the server's rules under the chosen name, whose own rows are read from the server */
 	let ruleIds = $derived(
-		ruleFilter ? data.triggers.filter((t) => t.name === ruleFilter).map((t) => t.id) : []
+		ruleFilter ? rules.filter((t) => t.name === ruleFilter).map((t) => t.id) : []
 	);
 	/**
 	 * Those rules' own rows, the newest 40 of the last week: the server's newest 40, which the page
@@ -513,9 +535,7 @@
 		)
 	);
 	let onlyFailing = $state(false);
-	let rows = $derived(
-		onlyFailing ? data.triggers.filter((t) => health.get(t.id)?.failing) : data.triggers
-	);
+	let rows = $derived(onlyFailing ? rules.filter((t) => health.get(t.id)?.failing) : rules);
 	// The kill feed rules that are on while nothing comes from the feed ($lib/feed-health): they say
 	// so on their rows, and one notice above the list names them.
 	let feedSilent = $derived(data.feedStatus.state === 'silent');
@@ -1257,6 +1277,23 @@
 		f.cooldownSeconds = st.cooldown;
 	}
 
+	/**
+	 * The word typed into a Chat command's editor. The rule's name follows it while the name is
+	 * still the word's (or a copy's): the Chat commands list shows the word, and its switch, menu
+	 * and Delete go by the name, so the two should not part unless the author parts them.
+	 */
+	function retype(f: Form, word: string) {
+		const was = typedWords([f.command]);
+		if (!f.name.trim() || f.name === was || f.name === `${was} (copy)`) f.name = typedWords([word]);
+		f.command = word;
+	}
+
+	/** The editor for a new Chat command, filled from one of the starters. */
+	function startCommand(starter: number) {
+		open('chat_command');
+		if (form) startFrom(form, COMMAND_STARTERS[starter]);
+	}
+
 	async function run(fn: () => Promise<unknown>, done: string) {
 		busy = true;
 		try {
@@ -1280,7 +1317,10 @@
 				f.id ? api('PATCH', `${path}/${f.id}`, body) : api('POST', path, { kind: f.kind, ...body }),
 			f.id ? 'Trigger saved.' : 'Trigger added.'
 		);
-		if (ok) form = null;
+		if (ok) {
+			form = null;
+			showListOf(f.kind);
+		}
 	}
 	const toggle = (t: TriggerView) =>
 		run(
@@ -1563,22 +1603,80 @@
 	}
 </script>
 
-<p class="mb-4 text-[13px] text-mist-400">
-	Rules act on {data.server.demo ? 'the demo server' : 'this server'} as things happen: a join, a kill,
-	a quiet hour. Every action is recorded below and in the audit trail as
-	<span class="chip">trigger</span>, but for a Death whisper that went, which is only below, and
-	what the chat rules answer, which is recorded nowhere: the panel keeps nothing of what players
-	type.
-</p>
+<!-- The tab's two lists, as links: the address says which one shows. The link followed keeps the
+     focus, as a button would: this is one page, and the keyboard goes on from where it was. -->
+<nav class="join mb-4" aria-label="Automation lists">
+	<a
+		class="btn {view === 'rules' ? 'btn-primary' : ''}"
+		href={viewHref('rules')}
+		aria-current={view === 'rules' ? 'true' : undefined}
+		data-sveltekit-replacestate
+		data-sveltekit-noscroll
+		data-sveltekit-keepfocus>Rules · {rules.length}</a
+	>
+	<a
+		class="btn {view === 'commands' ? 'btn-primary' : ''}"
+		href={viewHref('commands')}
+		aria-current={view === 'commands' ? 'true' : undefined}
+		data-sveltekit-replacestate
+		data-sveltekit-noscroll
+		data-sveltekit-keepfocus>Chat commands · {chatRules.length}</a
+	>
+</nav>
 
-<div class="mb-3 flex flex-wrap items-start gap-3">
+<!-- A dry run from a row opens above its list, so the rows never change height. -->
+{#snippet rowDry()}
+	{#if dry && dryFor !== 'form' && !form && isChat(dry) === (view === 'commands')}
+		<div class="mb-3 rounded-ctl border border-l-2 border-black border-l-accent bg-ink-900 p-3">
+			{@render dryResult(dry, dryTitle)}
+		</div>
+	{/if}
+{/snippet}
+
+{#if view === 'commands'}
+	<p class="mb-4 text-[13px] text-mist-400">
+		Chat commands answer what players type in the in-game chat of {data.server.demo
+			? 'the demo server'
+			: 'this server'}: <span class="font-mono">{COMMAND_PREFIX}</span> and a word. What they answer is
+		recorded nowhere, not under Recent actions and not in the audit trail: the panel keeps nothing of
+		what players type.
+	</p>
+	<ChatRules
+		rules={chatRules}
+		serverId={id}
+		chat={data.features.chat}
+		{canReadChat}
+		staffHooks={data.staffHooks}
+		{admin}
+		{busy}
+		{dryBusy}
+		{now}
+		lacks={needs('chat_command')}
+		starters={COMMAND_STARTERS}
+		above={rowDry}
+		onadd={(kind) => open(kind)}
+		onstart={startCommand}
+		onedit={(t, copy) => open(t.kind, t, copy)}
+		ontoggle={toggle}
+		onremove={remove}
+		onpreview={(t) => dryRun(t.kind, t.config, t.id, t.name)}
+	/>
+{:else}
+	<p class="mb-4 text-[13px] text-mist-400">
+		Rules act on {data.server.demo ? 'the demo server' : 'this server'} as things happen: a join, a kill,
+		a quiet hour. Every action is recorded below and in the audit trail as
+		<span class="chip">trigger</span>, but for a Death whisper that went, which is only below.
+	</p>
+{/if}
+
+<!-- The Rules list from here down stays where it is while the other list shows, hidden: what it
+     was narrowed to is there again on the way back. -->
+<div class="mb-3 flex flex-wrap items-start gap-3" hidden={view !== 'rules'}>
 	<div class="min-w-0 grow">
 		<span class="label-sm mb-0">Rules</span>
 		<div class="mt-0.5 text-[12.5px] text-mist-400">
-			{#if data.triggers.length}
-				{data.triggers.length} rule{data.triggers.length === 1 ? '' : 's'} · {data.triggers.filter(
-					(t) => t.enabled
-				).length} on
+			{#if rules.length}
+				{rules.length} rule{rules.length === 1 ? '' : 's'} · {rules.filter((t) => t.enabled).length} on
 				{#if lastAction}· last action <span title={fmtTime(lastAction)}
 						>{fmtAgo(lastAction, now)}</span
 					>{/if}
@@ -1595,7 +1693,7 @@
 					>
 				{/if}
 			{:else}
-				No rules on this server yet
+				No {chatRules.length ? 'other ' : ''}rules on this server yet
 			{/if}
 		</div>
 	</div>
@@ -1606,7 +1704,7 @@
 	{/if}
 </div>
 
-{#if waitingOnFeed.length}
+{#if view === 'rules' && waitingOnFeed.length}
 	<div
 		class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-ctl border border-warn/30 bg-warn/10 px-3 py-2 text-[13px]"
 	>
@@ -1622,14 +1720,9 @@
 	</div>
 {/if}
 
-<!-- A dry run from a row opens here, above the list, so the rows never change height. -->
-{#if dry && dryFor !== 'form' && !form}
-	<div class="mb-3 rounded-ctl border border-l-2 border-black border-l-accent bg-ink-900 p-3">
-		{@render dryResult(dry, dryTitle)}
-	</div>
-{/if}
+{#if view === 'rules'}{@render rowDry()}{/if}
 
-<div class="space-y-2">
+<div class="space-y-2" hidden={view !== 'rules'}>
 	{#each rows as t (t.id)}
 		{@const h = health.get(t.id)}
 		<!-- An off row fades its contents, not the panel: opacity on the panel would fade the ⋯ menu
@@ -1719,50 +1812,6 @@
 							{:else}
 								Nothing written yet{#if needs(t.kind)}
 									· {needs(t.kind)}{/if}
-							{/if}
-						</div>
-					{:else if CHAT_KINDS.includes(t.kind)}
-						<!-- A chat rule queues no actions: its row says what it waits for, that its calls
-						     reach nobody, that its last answer did not go out, or how often it answered. Never
-						     who typed what. -->
-						{@const lost = t.kind === 'staff_call' && !data.staffHooks}
-						{@const unsent = t.lastResult.startsWith(NOT_ANSWERED)}
-						<div
-							class="mt-0.5 text-[12px] {t.enabled &&
-							(t.chatWait || lost || unsent || !data.features.chat)
-								? 'text-warn'
-								: 'text-mist-600'}"
-						>
-							{#if !t.enabled}
-								Off · {#if t.lastFiredAt}last answered <span title={fmtTime(t.lastFiredAt)}
-										>{fmtAgo(t.lastFiredAt, now)}</span
-									>{:else}never answered{/if}
-							{:else if !data.features.chat || t.chatWait === 'build'}
-								Waiting: this server's build does not serve the in-game chat
-							{:else if t.chatWait === 'terms'}
-								Waiting: the game's chat terms have not been accepted on this server{#if canReadChat}
-									·
-									<a class="text-accent underline" href="/server/{encodeURIComponent(id)}/chat"
-										>Chat tab</a
-									>{/if}
-							{:else if t.chatWait === 'failing'}
-								Waiting: the chat cannot be read right now · it answers again once it can
-							{:else if lost}
-								No working Discord webhook takes Staff calls for this server, so a call reaches
-								nobody · under Organisation → Webhooks an owner ticks the box on one, or mends the
-								one Discord refuses
-							{:else if unsent}
-								{t.lastResult}{#if t.lastFiredAt}
-									· last answered <span title={fmtTime(t.lastFiredAt)}
-										>{fmtAgo(t.lastFiredAt, now)}</span
-									>{/if}
-							{:else if t.lastFiredAt}
-								{t.kind === 'staff_call' ? 'Last call passed on' : 'Answered'}
-								<span title={fmtTime(t.lastFiredAt)}>{fmtAgo(t.lastFiredAt, now)}</span>
-								· {t.fireCount}
-								{t.kind === 'staff_call' ? 'call' : 'time'}{t.fireCount === 1 ? '' : 's'} so far
-							{:else}
-								Not used yet · nothing a player types is kept
 							{/if}
 						</div>
 					{:else}
@@ -1856,7 +1905,9 @@
 			{:else if onlyFailing}
 				<p class="text-mist-600">No rule is failing.</p>
 			{:else}
-				<p class="text-mist-600">No rules on this server yet.</p>
+				<p class="text-mist-600">
+					No {chatRules.length ? 'other ' : ''}rules on this server yet.
+				</p>
 			{/if}
 		</div>
 	{/each}
@@ -3736,7 +3787,8 @@
 									class="input font-mono"
 									type="text"
 									data-plain
-									bind:value={f.command}
+									value={f.command}
+									oninput={(e) => retype(f, e.currentTarget.value)}
 									maxlength={MAX_COMMAND_WORD + 1}
 									placeholder="rules"
 									autocapitalize="off"
@@ -3975,7 +4027,7 @@
 	</Modal>
 {/if}
 
-{#if data.triggers.length || deliveries.length}
+{#if view === 'rules' && (rules.length || deliveries.length)}
 	<div class="mt-4 scroll-mt-4 panel" bind:this={actionsPanel}>
 		<div class="mb-3 flex flex-wrap items-center gap-2">
 			<span class="label-sm mb-0">Recent actions</span>

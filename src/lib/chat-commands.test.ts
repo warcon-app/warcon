@@ -1,12 +1,15 @@
 // What counts as a command in the in-game chat, and whom a report names: one line read on its own.
 import { describe, expect, test } from 'bun:test';
 import {
+	byCommand,
+	commandRow,
 	commandsLine,
 	commandWord,
 	MAX_COMMAND_WORD,
 	namedPlayer,
 	readCommand,
-	typedCommand
+	typedCommand,
+	type CommandRow
 } from './chat-commands';
 
 const line = (text: string, over: Record<string, unknown> = {}) => ({
@@ -163,5 +166,128 @@ describe('whom a report names', () => {
 		expect(namedPlayer(`${KOVACS.steamId} aimbot`, on, ME)).toEqual(outright(KOVACS));
 		expect(namedPlayer('76561198000000999 aimbot', on, ME)).toBeNull();
 		expect(namedPlayer(`${ME} aimbot`, on, ME)).toBeNull();
+	});
+});
+
+describe('a rule as a line of the Chat commands list', () => {
+	test('a Chat command: its word first, its first line, the lines after it counted', () => {
+		expect(
+			commandRow('chat_command', {
+				command: 'rules',
+				aliases: ['r', 'regeln'],
+				replies: ['No team killing.', 'Respect the staff.', 'More on our Discord.'],
+				to: 'player',
+				cooldownSeconds: 10
+			})
+		).toEqual({
+			words: ['!rules', '!r', '!regeln'],
+			reports: [],
+			reply: 'No team killing.',
+			more: 2,
+			to: 'player',
+			seconds: 10
+		});
+		expect(
+			commandRow('chat_command', { command: 'top', replies: ['{top}'], to: 'everyone' })
+		).toEqual({
+			words: ['!top'],
+			reports: [],
+			reply: '{top}',
+			more: 0,
+			to: 'everyone',
+			seconds: 0
+		});
+	});
+
+	test('a Staff call: the words that call staff, then those that report, and what it whispers back', () => {
+		expect(
+			commandRow('staff_call', {
+				commands: ['admin', 'staff'],
+				reports: ['report'],
+				ack: ' On its way. ',
+				usage: 'Say what is wrong.',
+				cooldownSeconds: 60
+			})
+		).toEqual({
+			words: ['!admin', '!staff', '!report'],
+			reports: ['!report'],
+			reply: 'On its way.',
+			more: 0,
+			to: 'staff',
+			seconds: 60
+		});
+		// one that whispers nothing back, and reports only
+		expect(
+			commandRow('staff_call', { commands: [], reports: ['report', 'cheater'], ack: '' })
+		).toEqual({
+			words: ['!report', '!cheater'],
+			reports: ['!report', '!cheater'],
+			reply: '',
+			more: 0,
+			to: 'staff',
+			seconds: 0
+		});
+	});
+
+	test('a config the panel did not save gives an empty line, never an error', () => {
+		const empty: CommandRow = {
+			words: [],
+			reports: [],
+			reply: '',
+			more: 0,
+			to: 'player',
+			seconds: 0
+		};
+		expect(commandRow('chat_command', {})).toEqual(empty);
+		expect(
+			commandRow('chat_command', {
+				command: 'two words',
+				aliases: 'r',
+				replies: [' ', 7, null],
+				to: 'nobody',
+				cooldownSeconds: -5
+			})
+		).toEqual(empty);
+		expect(commandRow('staff_call', { commands: null, reports: [{}], ack: 7 })).toEqual({
+			...empty,
+			to: 'staff'
+		});
+		// a word listed twice is one word, and one in both of a Staff call's lists calls staff
+		expect(commandRow('chat_command', { command: 'r', aliases: ['r', 'R'] }).words).toEqual(['!r']);
+		const both = commandRow('staff_call', {
+			commands: ['admin', 'admin'],
+			reports: ['admin', 'x']
+		});
+		expect(both.words).toEqual(['!admin', '!x']);
+		expect(both.reports).toEqual(['!x']);
+	});
+
+	test('the list starts with the Staff call, then goes by the first word', () => {
+		const rule = (kind: 'chat_command' | 'staff_call', config: Record<string, unknown>) => ({
+			kind,
+			row: commandRow(kind, config)
+		});
+		// by the first word, not the least or the last of a rule's words: !zeta has !alpha too, !beta
+		// has !zz; and by the letters as written, digits before letters
+		const sorted = [
+			rule('chat_command', { command: 'zeta', aliases: ['alpha'] }),
+			rule('chat_command', {}),
+			rule('staff_call', { commands: ['zulu'] }),
+			rule('chat_command', { command: 'beta', aliases: ['zz'] }),
+			rule('chat_command', { command: 'b2' }),
+			rule('chat_command', { command: '9lives' })
+		].sort(byCommand);
+		expect(sorted.map((r) => r.row.words[0] ?? '')).toEqual([
+			'!zulu',
+			'',
+			'!9lives',
+			'!b2',
+			'!beta',
+			'!zeta'
+		]);
+		// two that start alike stay in the order they came
+		expect(
+			byCommand(rule('chat_command', { command: 'a' }), rule('chat_command', { command: 'a' }))
+		).toBe(0);
 	});
 });
