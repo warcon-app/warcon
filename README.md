@@ -1054,7 +1054,8 @@ itself keeps only the last lines of the map being played. Raw RCON does not serv
 
 The one other reader of a server's chat is the panel itself, for the rules that answer what
 players type: a **Chat command** and a **Staff call** (see [Automation](#automation-triggers);
-the Automation tab lists them under **Chat commands**).
+the Automation tab lists them under **Chat commands**). A Staff call's card can ping roles in
+the channel it goes to: see [Discord webhooks](#discord-webhooks).
 While a server has such a rule switched on, players on it and its chat terms accepted, the worker
 reads the chat after its look at the server, every two seconds (_Chat rules: chat_ under **Admin →
 Settings**; one more request to the game server each time), and answers in that same look, so a
@@ -1222,6 +1223,27 @@ tick the kinds, grouped as on the Automation tab, so a channel for kicks and ban
 welcome whispers and scheduled broadcasts. A rule added later posts to every webhook that carries
 its kind. Team balance, AFK protection, Weather cycle and Death whisper post only what fails; the audit trail keeps every action
 whatever goes to Discord, but for a Death whisper that went. The Live server name rule and the two chat rules take no actions, so they are not offered: a Staff call's cards go to the webhooks with _Staff calls_ ticked.
+
+**Roles pinged for staff calls.** A webhook with _Staff calls_ ticked can ping Discord roles when
+a call arrives: under the box, an owner pastes a role's ID, or up to five with spaces between (in
+Discord: Server settings → Roles → ⋯ on the role → Copy Role ID, with Developer Mode on under
+Advanced; the mention as Discord writes it, `<@&…>`, is taken too). The message that carries the
+call then opens with those roles' mentions and the words "A player is calling staff." (a phone's
+notification shows a message's text and not its cards). A webhook pings at most once in five
+minutes, all of its roles at once: the first call brings staff, and calls that follow sooner
+arrive without a ping, so a busy server is not a stream of them. The count is the worker's own
+and starts at a ping Discord confirmed, so a restart of the worker, or a message Discord took and
+did not answer for, can let one more through; two webhooks into one channel each keep their own
+count. The roles are the only thing any message of the panel's can ping: Discord is told to act
+on those roles and on no other mention, so nothing a player types or calls themselves
+(`@everyone`, a role, a person) notifies anyone, and no other card pings at all. A call is never
+lost to its ping: a message Discord refuses with the ping in it is sent again without, and the
+webhook's row on the organisation page says the ping was refused. The roles belong to the
+webhook, so only the organisation's owners choose who is pinged; whoever sets up the Staff call
+rule on a server does not. A change of roles reaches the worker within half a minute. **Test**
+names the roles inside its card, where Discord shows each by name (or as unknown, when the ID is
+not one of that server's) and notifies nobody. Whether a ping reaches a person is Discord's to
+decide: each member's notification settings there apply.
 
 Posts carry the name and picture the webhook has in Discord (the channel's settings →
 Integrations → Webhooks). A status card keeps the name it was posted under: after renaming the
@@ -2225,7 +2247,7 @@ GET  /api/servers/:id/leaderboard?scope=server|org&range=current|s:<season>|7d|3
 GET  /api/servers/:id/leaderboard/export?<same query>   the board as CSV, every row from the top, up to 10,000
 POST /api/servers/:id/players/:steamId/notes {body}     DELETE .../notes/:noteId   PUT .../watch {watched,reason}
 GET/POST /api/servers/:id/triggers {kind,name,enabled,config}   PATCH/DELETE .../:triggerId   POST .../dry-run {kind,config}
-GET/POST /api/orgs/:id/webhooks {label,url,events,triggerKinds[]|null,serverIds,enabled,statusEnabled,statusStyle,statusIntervalS,linkStatus,linkLeaderboard,linkPanel}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
+GET/POST /api/orgs/:id/webhooks {label,url,events,triggerKinds[]|null,serverIds,staffRoleIds[]|null,enabled,statusEnabled,statusStyle,statusIntervalS,linkStatus,linkLeaderboard,linkPanel}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
 GET  /api/public/servers/:id   .../leaderboard (same query as above, page 20 at most)   .../players/:steamId      the public pages' JSON: no session, 404 while the page is off, limited per address
 GET  /api/orgs/:id/lists                                 the org lists the caller edits (kinds), with counts, and the caller's role on them; for ban list editors, the ban message and quick reasons
 GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt}   PATCH {reason,expiresAt} / DELETE .../entries/:steamId   (kind = ban | reserve, needing Org ban list or Org reserved slots; ?includeRemoved=1)
