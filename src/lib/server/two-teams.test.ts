@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
 	emptyTwoTeamsState,
+	chooseExcludedFaction,
+	teamConfigForMap,
 	TWO_TEAMS_ASK_WINDOW_MS,
 	TWO_TEAMS_FORGET_MS,
 	TWO_TEAMS_MAX_ASKS,
@@ -609,3 +611,71 @@ test("a rule's settings fingerprint does not depend on key order, and changes wi
 	expect(twoTeamsSettingsKey({ ...cfg, closedFaction: 'Valkyra' })).not.toBe(key);
 	expect(twoTeamsSettingsKey({ ...cfg, message: '' })).not.toBe(key);
 });
+
+describe('excluded faction selection', () => {
+	test('allows random mode without a manually closed faction', () => {
+		expect(validateTwoTeams({ randomClosedFaction: true }).randomClosedFaction).toBe(true);
+		expect(() => validateTwoTeams({ randomClosedFaction: 'true' })).toThrow('boolean');
+	});
+	test('keeps the choice until a boundary, regardless of score order', () => {
+		const factions = ['Valkyra', 'Lonestar', 'Manticore'];
+		expect(chooseExcludedFaction(undefined, factions, false, () => 0)).toBe('Lonestar');
+		expect(chooseExcludedFaction('Lonestar', factions.reverse(), false, () => 0.99)).toBe(
+			'Lonestar'
+		);
+		expect(chooseExcludedFaction('Lonestar', factions, true, () => 0.99)).toBe('Valkyra');
+		expect(chooseExcludedFaction(undefined, ['Lonestar'], true)).toBeNull();
+	});
+});
+
+describe('map team settings', () => {
+	const selection = {
+		map: 'Map',
+		experiences: ['mode', 'modifier'],
+		lighting: 'Day',
+		zoneAlternator: 'A'
+	};
+	test('matches the full map settings and preserves server defaults elsewhere', () => {
+		const config = validateTwoTeams({
+			closedFaction: 'Lonestar',
+			mapOverrides: [{ selection, mode: 'manual', closedFaction: 'Manticore' }]
+		});
+		expect(
+			teamConfigForMap(config, { ...selection, experiences: ['modifier', 'mode'] })?.closedFaction
+		).toBe('Manticore');
+		for (const changed of [
+			{ ...selection, map: 'Other' },
+			{ ...selection, lighting: 'Night' },
+			{ ...selection, zoneAlternator: 'B' },
+			{ ...selection, experiences: ['mode'] }
+		])
+			expect(teamConfigForMap(config, changed)?.closedFaction).toBe('Lonestar');
+	});
+	test('standard mode overrides a global closure; map-only settings stay inactive elsewhere', () => {
+		const config = validateTwoTeams({
+			closedFaction: 'Lonestar',
+			mapOverrides: [{ selection, mode: 'standard' }]
+		});
+		expect(teamConfigForMap(config, selection)).toBeNull();
+		expect(
+			teamConfigForMap({ ...config, mapOnly: true }, { ...selection, map: 'Other' })
+		).toBeNull();
+		const only = validateTwoTeams({ mapOverrides: [{ selection, mode: 'random' }] });
+		expect(teamConfigForMap(only, selection)?.randomClosedFaction).toBe(true);
+		expect(teamConfigForMap(only, { ...selection, map: 'Other' })).toBeNull();
+	});
+	test('rejects invalid, duplicate and oversized map overrides', () => {
+		const override = { selection, mode: 'manual', closedFaction: 'Manticore' };
+		expect(() => validateTwoTeams({ mapOverrides: [override, override] })).toThrow('Duplicate');
+		expect(() =>
+			validateTwoTeams({ mapOverrides: [{ ...override, closedFaction: 'unknown' }] })
+		).toThrow('excluded');
+		expect(() =>
+			validateTwoTeams({
+				mapOverrides: [{ ...override, selection: { ...selection, experiences: 1 } }]
+			})
+		).toThrow('Invalid');
+		expect(() => validateTwoTeams({ mapOverrides: Array(101).fill(override) })).toThrow('100');
+	});
+});
+
