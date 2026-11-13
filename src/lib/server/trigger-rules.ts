@@ -226,6 +226,8 @@ export interface SeedRewardConfig {
  * builds send no score cap, so the winner is whoever led when the scores reset.
  */
 export interface MatchBroadcastConfig {
+	leadersAt100?: boolean;
+	leadersMessage?: string;
 	/** sent for the match that ended; '' for none */
 	endMessage: string;
 	/** sent for the match now starting; '' for none */
@@ -435,12 +437,12 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 		case 'match_broadcast': {
 			const endMessage = str(c.endMessage, MAX_CHAT);
 			const startMessage = str(c.startMessage, MAX_CHAT);
-			if (!endMessage && !startMessage)
+			if (!endMessage && !startMessage && c.leadersAt100 !== true)
 				throw new ApiError(
 					400,
 					'Add a message for the match ending, the next one starting, or both.'
 				);
-			return { endMessage, startMessage, minPlayers: int(c.minPlayers, 1, 0, 1000) };
+			return { endMessage, startMessage, minPlayers: int(c.minPlayers, 1, 0, 1000), ...(c.leadersAt100 === true ? { leadersAt100: true } : {}), ...(str(c.leadersMessage, MAX_CHAT) ? { leadersMessage: str(c.leadersMessage, MAX_CHAT) } : {}) };
 		}
 		case 'name_filter':
 			return validateNameFilter(c);
