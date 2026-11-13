@@ -379,6 +379,13 @@
       "when": 1794517619967,
       "tag": "0053_hidden_names",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1794600491104,
+      "tag": "0054_webhook_staff_roles",
+      "breakpoints": true
     }
   ]
 }

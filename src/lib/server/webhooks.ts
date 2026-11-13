@@ -24,6 +24,13 @@ import { servers } from './db/schema';
 import { cardLinks, clampInterval, statusMessage } from './webhook-status-core';
 import { effectiveFeatures } from '$lib/features';
 import { isTriggerKind, TRIGGER_KINDS } from './trigger-rules';
+import {
+	MAX_STAFF_ROLES,
+	parseRoleIds,
+	roleMention,
+	rolesToPing,
+	STAFF_PING_MINUTES
+} from '$lib/discord-role';
 
 export { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS } from './webhook-delivery';
 
@@ -81,6 +88,30 @@ function parseTriggerKinds(raw: unknown): TriggerKind[] | null {
 	return TRIGGER_KINDS.filter((k) => raw.includes(k));
 }
 
+/**
+ * The roles a Staff call's card pings: a list of Discord role IDs, or one text holding them (the
+ * mention Discord writes for a role is taken too). null, '' or an empty list is no ping, and has
+ * to be said. Anything else has to be role IDs through and through, a handful at most, refused
+ * otherwise rather than kept as something that pings fewer than were meant, or somebody else.
+ */
+function parseStaffRoles(raw: unknown): string[] | null {
+	if (raw === null) return null;
+	const ids = parseRoleIds(raw);
+	if (!ids)
+		throw new ApiError(
+			400,
+			'That is not a Discord role ID. In Discord: Server settings → Roles → ⋯ on the role → Copy Role ID (Developer Mode on, under Advanced), then paste the number here: 17 to 19 digits, with a space between two roles.',
+			'bad_role'
+		);
+	if (ids.length > MAX_STAFF_ROLES)
+		throw new ApiError(
+			400,
+			`A webhook pings ${MAX_STAFF_ROLES} roles at most. A role that several belong to does the work of many.`,
+			'bad_role'
+		);
+	return ids.length ? ids : null;
+}
+
 function parseStyle(raw: unknown): StatusStyle {
 	if (!isStatusStyle(raw))
 		throw new ApiError(400, 'Pick a card style: banner, compact or scoreboard.');
@@ -103,6 +134,7 @@ const shape = (w: WebhookRow): WebhookView => ({
 	events: (w.events as string[]) || [],
 	triggerKinds: (w.triggerKinds as TriggerKind[] | null) ?? null,
 	serverIds: (w.serverIds as string[] | null) ?? null,
+	staffRoleIds: rolesToPing(w.staffRoleIds),
 	enabled: w.enabled,
 	statusEnabled: w.statusEnabled,
 	statusStyle: w.statusStyle,
@@ -149,6 +181,7 @@ export async function createWebhook(
 	const events = parseEvents(body.events, statusEnabled);
 	const triggerKinds = parseTriggerKinds(body.triggerKinds);
 	const serverIds = await parseServerScope(env, org.id, body.serverIds);
+	const staffRoleIds = body.staffRoleIds === undefined ? null : parseStaffRoles(body.staffRoleIds);
 	const label = str(body.label, 60) || 'Discord';
 	const card = {
 		statusIntervalS: clampInterval(body.statusIntervalS),
@@ -167,6 +200,7 @@ export async function createWebhook(
 			events,
 			triggerKinds,
 			serverIds,
+			staffRoleIds,
 			enabled: body.enabled === undefined ? true : !!body.enabled,
 			statusEnabled,
 			statusStyle,
@@ -190,6 +224,7 @@ export async function createWebhook(
 			events,
 			triggerKinds,
 			serverIds,
+			staffRoleIds,
 			statusEnabled,
 			statusStyle,
 			...card
@@ -244,6 +279,8 @@ export async function updateWebhook(
 		changes.triggerKinds = set.triggerKinds = parseTriggerKinds(body.triggerKinds);
 	if (body.serverIds !== undefined)
 		changes.serverIds = set.serverIds = await parseServerScope(env, org.id, body.serverIds);
+	if (body.staffRoleIds !== undefined)
+		changes.staffRoleIds = set.staffRoleIds = parseStaffRoles(body.staffRoleIds);
 	if (body.enabled !== undefined) {
 		changes.enabled = set.enabled = !!body.enabled;
 		if (!set.enabled) dropMessage = true;
@@ -302,7 +339,12 @@ export async function deleteWebhook(
 	});
 }
 
-/** Posts a test message right away and records the outcome on the row. */
+/**
+ * Posts a test message right away and records the outcome on the row. Where the webhook pings
+ * roles for Staff calls the message names them, inside the card: Discord shows a role there by its
+ * name (or as unknown, when the ID is not one of that server's) and notifies nobody, so an owner
+ * sees whom a call would ping without pinging them.
+ */
 export async function testWebhook(
 	env: Env,
 	req: Request,
@@ -311,11 +353,16 @@ export async function testWebhook(
 	id: string
 ): Promise<PostResult> {
 	const row = await webhookOf(env, org.id, id);
+	const roles = rolesToPing(row.staffRoleIds);
 	const result = await postDiscord(env, row, {
 		embeds: [
 			{
 				title: 'Webhook test',
-				description: `**${user.username}** connected ${org.name} to this channel. Events: ${(row.events as string[]).join(', ')}.`,
+				description:
+					`**${user.username}** connected ${org.name} to this channel. Events: ${(row.events as string[]).join(', ')}.` +
+					((row.events as string[]).includes('staffcalls') && roles.length
+						? `\nA Staff call here pings ${roles.map(roleMention).join(' ')}, at most once every ${STAFF_PING_MINUTES} minutes. This test pings nobody.`
+						: ''),
 				color: 0xd4a843,
 				timestamp: new Date().toISOString(),
 				footer: { text: env.APP_NAME || 'Warcon' }
