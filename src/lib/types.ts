@@ -656,6 +656,8 @@ export interface WebhookView {
 	/** with Automation ticked, the kinds of rule it carries; null is every kind */
 	triggerKinds: TriggerKind[] | null;
 	serverIds: string[] | null;
+	/** the Discord roles a Staff call's card pings in this channel (their IDs); empty is no ping */
+	staffRoleIds: string[];
 	enabled: boolean;
 	/** keeps a live status card per covered server in the channel, edited in place */
 	statusEnabled: boolean;

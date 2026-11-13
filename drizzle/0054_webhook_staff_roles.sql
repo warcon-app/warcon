@@ -1,0 +1,1 @@
+ALTER TABLE "webhooks" ADD COLUMN "staff_role_ids" jsonb;

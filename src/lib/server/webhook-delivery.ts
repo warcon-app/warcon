@@ -12,6 +12,7 @@ import { escapeMarkdown } from './webhook-status-core';
 import { KILL_DISTANCE_SKIP } from './kill-distance';
 import { causeLabel } from '$lib/causes';
 import { MAX_CHAT } from '$lib/chat';
+import { roleMention, rolesToPing, STAFF_PING_MINUTES } from '$lib/discord-role';
 import { mapName } from '$lib/format';
 import { oneLine } from '$lib/saved-messages';
 import type { BountyLapse } from './bounty';
@@ -487,7 +488,9 @@ export async function notifyStaffCall(
 		const hooks = await staffCallHooksOf(env, server);
 		if (!hooks.length) return 0;
 		const embed = buildStaffCallEmbed(env.APP_NAME || 'Warcon', env.ORIGIN, server, card);
-		for (const hook of hooks) enqueue(env, hook, embed);
+		// each channel's own roles, where its owner gave any: the message that carries the card
+		// pings them
+		for (const hook of hooks) enqueue(env, hook, embed, rolesToPing(hook.staffRoleIds));
 		return hooks.length;
 	} catch (err) {
 		console.error('[warcon] webhook staff calls', forLog(err));
@@ -532,9 +535,31 @@ const MAX_EMBEDS = 10;
  *  descriptions, fields, footers and authors counted together. */
 const MAX_CHARS = 6000;
 const MAX_QUEUE = 100;
+/**
+ * The least time between two pings of a webhook's roles. A Staff call is one player's to send every
+ * minute or so, and a full server has many players: the first call brings staff, and the cards that
+ * follow it within these minutes arrive without a ping, so a busy hour is not a stream of them.
+ */
+export const STAFF_PING_MS = STAFF_PING_MINUTES * 60_000;
+/**
+ * What a pinging message says after the role, the panel's own words and always these: a phone shows
+ * a notification's text and not its cards, and a bare mention there says nothing of why.
+ */
+export const STAFF_PING_WORDS = 'A player is calling staff.';
+/** What a webhook's row says when Discord took a call's card only without its ping. */
+export const PING_REFUSED =
+	'Discord refused the role ping, so the card went without it. Check the roles under Staff calls.';
 
 interface Queue {
 	embeds: Embed[];
+	/**
+	 * The roles a queued card asks to have pinged with the message that carries it: a Staff call's,
+	 * on a webhook whose owner gave some. Kept beside the card, not in it, since one card goes to
+	 * several webhooks and each has its own roles or none.
+	 */
+	pings: WeakMap<Embed, string[]>;
+	/** when this webhook's roles were last pinged, as far as this process knows; 0 for not yet */
+	pingedAt: number;
 	timer: ReturnType<typeof setTimeout> | null;
 	/** serialises flushes for one webhook */
 	chain: Promise<void>;
@@ -544,16 +569,17 @@ const queues = new Map<string, Queue>();
 function queueFor(id: string): Queue {
 	let q = queues.get(id);
 	if (!q) {
-		q = { embeds: [], timer: null, chain: Promise.resolve() };
+		q = { embeds: [], pings: new WeakMap(), pingedAt: 0, timer: null, chain: Promise.resolve() };
 		queues.set(id, q);
 	}
 	return q;
 }
 
-function enqueue(env: Env, hook: WebhookRow, embed: Embed): void {
+function enqueue(env: Env, hook: WebhookRow, embed: Embed, ping?: string[] | null): void {
 	const q = queueFor(hook.id);
 	if (q.embeds.length >= MAX_QUEUE) q.embeds.shift();
 	q.embeds.push(embed);
+	if (ping?.length) q.pings.set(embed, ping);
 	if (q.embeds.length >= MAX_EMBEDS) {
 		if (q.timer) clearTimeout(q.timer);
 		q.timer = null;
@@ -597,8 +623,26 @@ export function nextBatch(embeds: Embed[]): Embed[] {
 async function flush(env: Env, hook: WebhookRow, q: Queue): Promise<void> {
 	while (q.embeds.length) {
 		const batch = nextBatch(q.embeds);
-		const result = await postDiscord(env, hook, { embeds: batch });
-		await recordResult(env, hook.id, result);
+		// One ping for a message however many of its cards ask, and one in STAFF_PING_MS for the
+		// webhook: a card that comes sooner goes out without. The count starts at a ping Discord
+		// took, so a message it did not take, or holds back (429: the batch is tried again, and
+		// asks again), costs the next call nothing: where Discord's answer is lost, a second ping
+		// is the lesser harm than none. It is this process's count: a worker that starts or takes
+		// over may ping once sooner.
+		const asked = batch.map((e) => q.pings.get(e)).find((roles) => roles?.length);
+		const ping = asked && Date.now() - q.pingedAt >= STAFF_PING_MS ? asked : null;
+		let result = ping
+			? await postDiscord(env, hook, { content: STAFF_PING_WORDS, embeds: batch }, ping)
+			: await postDiscord(env, hook, { embeds: batch });
+		// A call is never lost to its ping. A message Discord refuses as malformed (400) with a ping
+		// in it goes once more without: whatever it has against the role, the cards are what a
+		// player was told is on its way. The webhook's row says the ping was refused.
+		let note = '';
+		if (ping && result.status === 400) {
+			result = await postDiscord(env, hook, { embeds: batch });
+			if (result.ok) note = PING_REFUSED;
+		} else if (ping && result.ok) q.pingedAt = Date.now();
+		await recordResult(env, hook.id, result, note);
 		// gone for good: whoever counts on this webhook (a Staff call) reads its row again
 		if (REFUSED_FOR_GOOD.has(result.status)) invalidateWebhookCache(hook.orgId);
 		if (result.retryAfterMs) {
@@ -699,15 +743,27 @@ async function discordCall(
 /**
  * Posts a new message; the result carries its id. It names no one, so Discord shows the name and
  * picture its owner gave the webhook there: a name sent here would take their place. Never throws.
+ *
+ * No message pings anyone but through `pingRoles`: Discord is told to act on no mention it finds
+ * (`parse: []`), in the text or anywhere else, so nothing a player typed and nothing a card holds
+ * notifies a soul. With `pingRoles`, the IDs of the roles the webhook's owner chose, the message
+ * opens with those roles' mentions, built here from the IDs alone (what is not a role's ID is left
+ * out, and the handful a webhook may hold is the most), and Discord is allowed those roles and
+ * nothing more: never @everyone, a user, or a role besides. What Discord is allowed is written
+ * last, so nothing in a payload can widen it.
  */
 export function postDiscord(
 	env: Env,
 	hook: Pick<WebhookRow, 'urlEnc'>,
-	payload: DiscordPayload
+	payload: DiscordPayload,
+	pingRoles?: readonly string[] | null
 ): Promise<PostResult> {
+	const roles = rolesToPing(pingRoles);
+	const mentions = roles.map(roleMention).join(' ');
 	return discordCall(env, hook, 'POST', '?wait=true', {
-		allowed_mentions: { parse: [] },
-		...payload
+		...payload,
+		...(roles.length ? { content: [mentions, payload.content].filter(Boolean).join(' ') } : {}),
+		allowed_mentions: roles.length ? { parse: [], roles } : { parse: [] }
 	});
 }
 
@@ -719,8 +775,8 @@ export function editDiscord(
 	payload: DiscordPayload
 ): Promise<PostResult> {
 	return discordCall(env, hook, 'PATCH', `/messages/${encodeURIComponent(messageId)}`, {
-		allowed_mentions: { parse: [] },
-		...payload
+		...payload,
+		allowed_mentions: { parse: [] }
 	});
 }
 
@@ -733,14 +789,23 @@ export function deleteDiscord(
 	return discordCall(env, hook, 'DELETE', `/messages/${encodeURIComponent(messageId)}`);
 }
 
-export async function recordResult(env: Env, id: string, result: PostResult): Promise<void> {
+/**
+ * Writes what Discord answered on the webhook's row. `note` is for a message that went, though
+ * not as it was meant to (a ping Discord refused): the row shows it where an error would be.
+ */
+export async function recordResult(
+	env: Env,
+	id: string,
+	result: PostResult,
+	note = ''
+): Promise<void> {
 	try {
 		await env.db
 			.update(webhooks)
 			.set({
 				lastSentAt: result.ok ? new Date() : undefined,
 				lastStatus: result.status,
-				lastError: result.ok ? '' : result.error.slice(0, 300)
+				lastError: result.ok ? note : result.error.slice(0, 300)
 			})
 			.where(eq(webhooks.id, id));
 	} catch (err) {

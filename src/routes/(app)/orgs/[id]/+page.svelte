@@ -22,6 +22,7 @@
 	import CardOptions from '$lib/components/CardOptions.svelte';
 	import { FEATURE_LABELS, PUBLIC_FEATURES, allowed } from '$lib/features';
 	import { FAILURES_ONLY, NO_ACTIONS, RULE_GROUPS, RULE_KINDS } from '$lib/rule-kinds';
+	import { MAX_STAFF_ROLES, parseRoleIds, STAFF_PING_MINUTES } from '$lib/discord-role';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -56,6 +57,8 @@
 				/** with Automation ticked: every kind of rule, or only those ticked in `kinds` */
 				everyKind: boolean;
 				kinds: Record<string, boolean>;
+				/** with Staff calls ticked: the Discord roles a call pings, as typed; '' for none */
+				staffRoles: string;
 				status: boolean;
 				style: StatusStyle;
 				interval: number;
@@ -239,7 +242,23 @@
 		inv.maxUses === null ? `${inv.uses}` : `${inv.uses} / ${inv.maxUses}`;
 
 	// --- Discord webhooks ---
+	/**
+	 * What is typed for the roles a Staff call pings: a handful of role IDs. Anything else stops the
+	 * save while the box is ticked, and says why once the field is left: not at the first digit of a
+	 * number still being typed.
+	 */
+	let roleLeft = $state(false);
+	const rolesWrong = (d: { events: Record<string, boolean>; staffRoles: string }): string => {
+		if (!d.events.staffcalls) return '';
+		const ids = parseRoleIds(d.staffRoles);
+		return !ids
+			? 'That is not a role ID: each is a number of 17 to 19 digits, with a space between two.'
+			: ids.length > MAX_STAFF_ROLES
+				? `A webhook pings ${MAX_STAFF_ROLES} roles at most.`
+				: '';
+	};
 	const openWebhook = (w: WebhookView | null) => {
+		roleLeft = false;
 		const events: Record<string, boolean> = {};
 		for (const e of data.webhookEvents)
 			events[e.key] = w
@@ -257,6 +276,7 @@
 			events,
 			everyKind: !w?.triggerKinds,
 			kinds,
+			staffRoles: (w?.staffRoleIds ?? []).join(' '),
 			status: w?.statusEnabled ?? false,
 			style: w?.statusStyle ?? 'banner',
 			interval: w?.statusIntervalS ?? 60,
@@ -266,6 +286,11 @@
 			allServers: !w?.serverIds,
 			servers
 		};
+	};
+	/** The roles to save: what is typed while it holds, else none. */
+	const staffRolesOf = (d: { staffRoles: string }): string[] | null => {
+		const ids = parseRoleIds(d.staffRoles);
+		return ids && ids.length && ids.length <= MAX_STAFF_ROLES ? ids : null;
 	};
 	function saveWebhook() {
 		const d = dialog;
@@ -279,6 +304,9 @@
 				!d.events.triggers || d.everyKind
 					? null
 					: RULE_KINDS.filter((k) => d.kinds[k.kind]).map((k) => k.kind),
+			// kept while Staff calls is unticked (they ping nobody then, and are there when ticked
+			// again), but for something typed there that is no list of roles
+			staffRoleIds: staffRolesOf(d),
 			statusEnabled: d.status,
 			statusStyle: d.style,
 			statusIntervalS: d.interval,
@@ -329,8 +357,13 @@
 	}
 	const eventLabel = (key: string) =>
 		data.webhookEvents.find((e) => e.key === key)?.label.split(' (')[0] ?? key;
-	/** "Automation (4 kinds)" for a webhook that carries only some kinds of rule */
+	/**
+	 * "Automation (4 kinds)" for a webhook that carries only some kinds of rule, "Staff calls (pings
+	 * 2 roles)" for one that pings
+	 */
 	const eventSummary = (w: WebhookView, key: string) => {
+		if (key === 'staffcalls' && w.staffRoleIds.length)
+			return `${eventLabel(key)} (pings ${w.staffRoleIds.length === 1 ? 'a role' : `${w.staffRoleIds.length} roles`})`;
 		const n = key === 'triggers' ? w.triggerKinds?.length : undefined;
 		return n ? `${eventLabel(key)} (${n} kind${n === 1 ? '' : 's'})` : eventLabel(key);
 	};
@@ -1083,6 +1116,37 @@
 								{/if}
 							</div>
 						{/if}
+						{#if e.key === 'staffcalls' && d.events.staffcalls}
+							{@const wrong = roleLeft ? rolesWrong(d) : ''}
+							<div class="space-y-1 pt-0.5 pb-1 pl-5">
+								<label class="block text-[13px]"
+									>Ping roles with a call <span class="text-mist-600">(optional)</span><input
+										class="mt-1 input font-mono text-[12.5px] {wrong ? 'border-danger!' : ''}"
+										type="text"
+										bind:value={d.staffRoles}
+										placeholder="Role ID, e.g. 123456789012345678"
+										maxlength="200"
+										autocomplete="off"
+										spellcheck="false"
+										aria-invalid={!!wrong}
+										aria-describedby="staff-role-wrong staff-role-help"
+										onblur={() => (roleLeft = true)}
+									/></label
+								>
+								<!-- always there, so a screen reader hears it fill -->
+								<p id="staff-role-wrong" class="text-[12px] text-danger" role="alert">
+									{wrong}
+								</p>
+								<p id="staff-role-help" class="note mt-0">
+									A role's ID, or up to {MAX_STAFF_ROLES} with spaces between. In Discord: Server settings
+									→ Roles → ⋯ on the role → Copy Role ID (turn on Developer Mode under Advanced first).
+									The message that carries a call pings them, at most once every {STAFF_PING_MINUTES}
+									minutes for this webhook: calls that follow sooner arrive without a ping. Only these
+									roles are ever pinged, never anything a player writes. <b>Test</b> names them in the
+									channel without pinging anyone.
+								</p>
+							</div>
+						{/if}
 					{/each}
 				</div>
 			</div>
@@ -1114,8 +1178,8 @@
 					class="btn btn-primary"
 					disabled={busy ||
 						(!d.allServers && !Object.values(d.servers).some(Boolean)) ||
-						(d.events.triggers && !d.everyKind && !Object.values(d.kinds).some(Boolean))}
-					>{d.id ? 'Save' : 'Add webhook'}</button
+						(d.events.triggers && !d.everyKind && !Object.values(d.kinds).some(Boolean)) ||
+						!!rolesWrong(d)}>{d.id ? 'Save' : 'Add webhook'}</button
 				>
 			</div>
 		</form>
