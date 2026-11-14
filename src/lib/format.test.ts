@@ -14,6 +14,8 @@ import {
 	mapId,
 	mapLabel,
 	mapName,
+	modifierChoices,
+	modKey,
 	saneScores,
 	steamNameBeside,
 	takesLighting
@@ -128,6 +130,58 @@ describe('game modes and modifiers', () => {
 			'King of the Hill + Limited Gear'
 		);
 		expect(lacksGameMode(['LimitedGear'])).toBe(true);
+	});
+
+	test('modKey: a modifier with or without the mode’s prefix is the same one', () => {
+		expect(modKey('KOTH_LimitedGear')).toBe(modKey('LimitedGear'));
+		expect(modKey('koth_limitedgear')).toBe(modKey('LimitedGear'));
+		expect(modKey('KOTH_InfantryOnly')).not.toBe(modKey('KOTH_LimitedGear'));
+	});
+
+	test('modifierChoices offers each modifier once, Limited Gear too, though a live server lists it twice', () => {
+		// a live Season 3 server's list for a map, in the order it gave it
+		const live = [
+			'Moscow_KOTH_01',
+			'KOTH_InfantryOnly',
+			'KOTH_Hardcore',
+			'LimitedGear',
+			'KOTH_LimitedGear'
+		].map((id) => ({ id, display: id }));
+		const ids = (has?: string[]) => modifierChoices(live, has).map((x) => x.id);
+		// no game mode, one of each modifier in the game's order, the prefixed Limited Gear
+		expect(ids()).toEqual(['KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear']);
+		expect(ids().map((id) => expLabel(NO_CATALOG, id))).toEqual([
+			'Infantry Only',
+			'Hardcore',
+			'Limited Gear'
+		]);
+		// whichever order the two come in
+		expect(modifierChoices([...live].reverse()).map((x) => x.id)).toEqual([
+			'KOTH_LimitedGear',
+			'KOTH_Hardcore',
+			'KOTH_InfantryOnly'
+		]);
+		// an entry being edited keeps the id it has
+		expect(ids(['Moscow_KOTH_01', 'LimitedGear'])).toEqual([
+			'KOTH_InfantryOnly',
+			'KOTH_Hardcore',
+			'LimitedGear'
+		]);
+		expect(ids(['Moscow_KOTH_01', 'KOTH_LimitedGear'])).toEqual([
+			'KOTH_InfantryOnly',
+			'KOTH_Hardcore',
+			'KOTH_LimitedGear'
+		]);
+		// one that has both keeps the prefixed one
+		expect(ids(['Moscow_KOTH_01', 'LimitedGear', 'KOTH_LimitedGear'])).toContain(
+			'KOTH_LimitedGear'
+		);
+		expect(ids(['Moscow_KOTH_01', 'LimitedGear', 'KOTH_LimitedGear'])).not.toContain('LimitedGear');
+		// a server that lists only the bare id is offered that one
+		expect(
+			modifierChoices([{ id: 'Moscow_KOTH_01' }, { id: 'LimitedGear' }]).map((x) => x.id)
+		).toEqual(['LimitedGear']);
+		expect(modifierChoices([])).toEqual([]);
 	});
 
 	test('Limited Gear goes on a game mode, alone or with the other modifiers', () => {

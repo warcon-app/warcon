@@ -133,7 +133,8 @@ interface ChatMessage {
 
 // Season 3 adds the map Sabatulo (id Russia, game mode Moscow_KOTH_01) and the modifier Limited
 // Gear, which every map offers. A real server lists them only once its hosting provider has put
-// them on its allow lists; the demo has them.
+// them on its allow lists; the demo has them. A live Season 3 server lists Limited Gear twice, as
+// `KOTH_LimitedGear` and as a bare `LimitedGear` (its id for a display name), and so does the demo.
 const MAPS = [
 	{ id: 'Kavkazi', displayName: 'Bakurani' },
 	{ id: 'Europe', displayName: 'Ozeti' },
@@ -147,9 +148,10 @@ const EXPERIENCES = [
 	{ id: 'Moscow_KOTH_01', displayName: 'King of the Hill' },
 	{ id: 'KOTH_InfantryOnly', displayName: 'Infantry' },
 	{ id: 'KOTH_Hardcore', displayName: 'Hardcore' },
-	{ id: 'KOTH_LimitedGear', displayName: 'Limited Gear' }
+	{ id: 'KOTH_LimitedGear', displayName: 'Limited Gear' },
+	{ id: 'LimitedGear', displayName: 'LimitedGear' }
 ];
-const MODIFIERS = ['KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear'];
+const MODIFIERS = ['KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear', 'LimitedGear'];
 const EXPERIENCES_BY_MAP: Record<string, string[]> = {
 	Kavkazi: ['Bakurani_KOTH_01', ...MODIFIERS],
 	Europe: ['Madrid_KOTH_01', ...MODIFIERS],

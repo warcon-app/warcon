@@ -199,6 +199,38 @@ test('setModifierOnAll adds Limited Gear after the game mode and beside another 
 	]);
 });
 
+test('setModifierOnAll takes the bare LimitedGear a live server also lists for the same modifier', () => {
+	const entries = [
+		'(Map="Russia",Experiences="Moscow_KOTH_01+LimitedGear",Lighting="DayClear")',
+		'(Map="Kavkazi",Experiences="Bakurani_KOTH_02+LimitedGear+KOTH_LimitedGear")',
+		'(Map="Europe",Experience="Madrid_KOTH_01")'
+	].map((line) => parseRotationEntry(line)!);
+	// added: only where neither id is, not beside the bare one
+	const on = setModifierOnAll(entries, 'KOTH_LimitedGear', true, () => true);
+	expect(on.changed).toBe(1);
+	expect(on.entries.map((e) => e.experiences)).toEqual([
+		['Moscow_KOTH_01', 'LimitedGear'],
+		['Bakurani_KOTH_02', 'LimitedGear', 'KOTH_LimitedGear'],
+		['Madrid_KOTH_01', 'KOTH_LimitedGear']
+	]);
+	// taken off: both ids, wherever either is
+	const off = setModifierOnAll(on.entries, 'KOTH_LimitedGear', false, () => true);
+	expect(off.changed).toBe(3);
+	expect(off.entries.map((e) => e.experiences)).toEqual([
+		['Moscow_KOTH_01'],
+		['Bakurani_KOTH_02'],
+		['Madrid_KOTH_01']
+	]);
+	// an entry with Limited Gear alone keeps it, under either id
+	const alone = setModifierOnAll(
+		[parseRotationEntry('(Map="Russia",Experience="LimitedGear")')!],
+		'KOTH_LimitedGear',
+		false,
+		() => true
+	);
+	expect(alone).toMatchObject({ changed: 0, skipped: 1 });
+});
+
 // ---- what a server would not play of an entry ----
 
 const listOf = (...ids: string[]) => ids.map((id) => ({ id, display: id }));

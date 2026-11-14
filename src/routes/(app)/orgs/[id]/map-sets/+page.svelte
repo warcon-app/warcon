@@ -15,6 +15,7 @@
 		isMod,
 		lightingLabel,
 		mapName,
+		modKey,
 		zoneLabel
 	} from '$lib/format';
 	import Modal from '$lib/components/Modal.svelte';
@@ -42,15 +43,23 @@
 		mapCounts(entries)
 			.map((m) => `${mapName(m.map)} ${m.count}`)
 			.join(' · ');
-	/** Each modifier the set uses, and on how many of its entries. */
+	/**
+	 * Each modifier the set uses, and on how many of its entries. Ids that name the same modifier
+	 * (`KOTH_LimitedGear`, `LimitedGear`) count as one, and an entry once.
+	 */
 	function modsOf(entries: MapSelection[]): string {
 		const counts = new Map<string, { id: string; n: number }>();
-		for (const e of entries)
+		for (const e of entries) {
+			const seen = new Set<string>();
 			for (const id of e.experiences.filter(isMod)) {
-				const hit = counts.get(id.toLowerCase());
+				const key = modKey(id);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				const hit = counts.get(key);
 				if (hit) hit.n++;
-				else counts.set(id.toLowerCase(), { id, n: 1 });
+				else counts.set(key, { id, n: 1 });
 			}
+		}
 		return [...counts.values()]
 			.map(
 				({ id, n }) =>

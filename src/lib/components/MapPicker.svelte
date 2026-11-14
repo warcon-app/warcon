@@ -2,7 +2,15 @@
 	import { untrack } from 'svelte';
 	import { rconGet, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
-	import { expLabel, isMod, lightingLabel, lightingsOn, mapLabel, zoneLabel } from '$lib/format';
+	import {
+		expLabel,
+		isMod,
+		lightingLabel,
+		lightingsOn,
+		mapLabel,
+		modifierChoices,
+		zoneLabel
+	} from '$lib/format';
 	import MapArt from './MapArt.svelte';
 	import type { Catalog, CatalogItem, MapSelection } from '$lib/types';
 
@@ -59,7 +67,8 @@
 		}
 		if (my !== seq) return;
 		modes = exps.filter((x) => !isMod(x.id));
-		modOptions = exps.filter((x) => isMod(x.id));
+		// one box per modifier: a live server lists Limited Gear under two ids
+		modOptions = modifierChoices(exps, keep?.experiences);
 		zones = alts;
 		listedFor = read ? m : null;
 		const wanted = (keep?.experiences || []).find((i) => !isMod(i));
