@@ -94,7 +94,10 @@ What is in the box:
 - **A modifier on every map**: the Map rotation tab adds Infantry Only, Hardcore or Limited Gear to
   every rotation entry whose map offers it, or takes it off them all, in one apply. It is there
   where the rotation is edited through the config document (every live build so far), so it needs
-  Config & settings.
+  Config & settings. A Season 3 server lists Limited Gear under two ids, `KOTH_LimitedGear` (the
+  one the WARDOGS team's notes give) and `LimitedGear`; Warcon offers it once, as
+  `KOTH_LimitedGear` unless the entry already has the other, and adding or taking it off counts
+  either id.
 - **Rotation entries the server would skip, flagged**: a server skips a rotation entry that names a
   map, game mode, modifier or lighting it does not list, and what it lists is its hosting
   provider's to set (`AllowedMaps` and `AllowedExperiences` in the provider's `Game.ini`, which

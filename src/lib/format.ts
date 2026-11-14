@@ -125,6 +125,29 @@ export function mapId(name: string): string {
  */
 export const isMod = (id: string) => /^KOTH_|infantry|hardcore|limitedgear/i.test(id);
 /**
+ * The modifier an id names, with or without the mode's prefix: `KOTH_LimitedGear` and
+ * `LimitedGear` are the one Limited Gear. The official console keys its modifiers the same way.
+ */
+export const modKey = (id: string) => id.replace(/^KOTH_/i, '').toLowerCase();
+/**
+ * The modifiers of a list the game gave, one of each, in the game's order. A live Season 3 server
+ * lists Limited Gear twice, as `KOTH_LimitedGear` (the id the WARDOGS team's notes give and their
+ * allow list names) and as a bare `LimitedGear`, and both read "Limited Gear", so a picker that
+ * offered every id offered it twice. The one offered is the id the entry being edited has, so the
+ * entry keeps it; else the one with the mode's prefix; else the first listed. An entry that has
+ * both keeps the prefixed one.
+ */
+export function modifierChoices<T extends { id: string }>(items: T[], has: string[] = []): T[] {
+	const rank = (id: string) => (has.includes(id) ? 2 : 0) + (/^KOTH_/i.test(id) ? 1 : 0);
+	const one = new Map<string, T>();
+	for (const item of items) {
+		if (!isMod(item.id)) continue;
+		const was = one.get(modKey(item.id));
+		if (!was || rank(item.id) > rank(was.id)) one.set(modKey(item.id), item);
+	}
+	return [...one.values()];
+}
+/**
  * Whether a rotation entry's experiences name no game mode for a modifier that needs one. The
  * season's notes say so of Limited Gear ("an entry with only KOTH_LimitedGear has no game mode"
  * and starts no match). Whether Infantry Only or Hardcore alone is the same is not known (the

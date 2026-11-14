@@ -159,7 +159,7 @@ lighting its map does not take, or Limited Gear with no game mode, and shows `de
 `GET /v1/rotation` beside the staged entries too; the Weather cycle rule passes over the lightings
 Sabatulo does not take while the server is on it, and holds back a change decided before the
 server moved there. `MOCK_LIVE_BUILD` or not, the demo server lists
-the Season 3 map, game mode and modifier.
+the Season 3 map, game mode and modifier, Limited Gear under both the ids a live server lists it by.
 
 **Live servers that day.** At 14:22 to 14:32 UTC every hosted server that answered (79) still
 ran Season 2's `++Wardogs+Live-CL-516586`; by 14:53 UTC five reported
@@ -172,10 +172,16 @@ status and the catalog):
   maxFontSize: 24, maxCloseDelaySeconds: 60 }` and `afk: { timeoutSeconds: 600,
   minTimeoutSeconds: 300, maxTimeoutSeconds: 1800 }`.
 - **Catalog**: the map `Russia`, the game mode `Moscow_KOTH_01` and the modifier
-  `KOTH_LimitedGear`, and beside it a second id, `LimitedGear`, without the mode's prefix (Warcon
-  reads both as the modifier). That server listed seven lightings (the two fog presets were not
-  among them, the grey one is `DayLateGray`) and no `Bakurani_KOTH_01`: what a server lists is
-  its own.
+  `KOTH_LimitedGear`, and beside it a second id, `LimitedGear`, without the mode's prefix, in the
+  list for each map too. Nothing says what the bare one is or whether it plays differently; the
+  notes name only `KOTH_LimitedGear`. The official console keys modifiers without the prefix
+  (`modificationKey` in its `js/app.js`), so its pickers offer Limited Gear twice, both called
+  "Limited Gear", and a host can end up with either id. Warcon reads both as the one modifier and
+  offers it once (`modifierChoices` in `src/lib/format.ts`): `KOTH_LimitedGear`, or the id an
+  entry being edited already has, or the bare one where a server lists only that. The Map rotation
+  tab's "Every entry" counts either id as having it and takes both off. That server listed seven
+  lightings (the two fog presets were not among them, the grey one is `DayLateGray`) and no
+  `Bakurani_KOTH_01`: what a server lists is its own.
 - What a live catalog's names look like, which the demo's do not: a map's `displayName` is its id
   (`Kavkazi`, `Russia`), an experience's is `Moscow KOTH 01` or `KOTH LimitedGear`, a lighting's
   is its id, and the status names the map as players know it (`Bakurani`). So "Sabatulo" comes

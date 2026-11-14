@@ -73,15 +73,18 @@ describe('the demo game on Season 3', () => {
 		);
 		expect(all).toContain('Moscow_KOTH_01');
 		expect(all).toContain('KOTH_LimitedGear');
+		expect(all).toContain('LimitedGear');
 		for (const map of maps) {
 			const own = json(key, 'GET', `/v1/catalog/maps/${map.id}/experiences`)
 				.experiences as string[];
-			// one game mode, named for its place, and the three modifiers
+			// one game mode, named for its place, and the three modifiers, Limited Gear under both
+			// the ids a live server lists it by
 			expect(own.filter((id) => !isMod(id))).toHaveLength(1);
 			expect(own.filter(isMod).sort()).toEqual([
 				'KOTH_Hardcore',
 				'KOTH_InfantryOnly',
-				'KOTH_LimitedGear'
+				'KOTH_LimitedGear',
+				'LimitedGear'
 			]);
 			// each is in the list of them all
 			for (const id of own) expect(all).toContain(id);

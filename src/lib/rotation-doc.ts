@@ -3,7 +3,7 @@
 // config document's [/Script/WDGame.WDServerMapRotationSettings] section.
 import { getArray, getScalar, parseIni, setArrayInText, setScalarInText } from './config-doc';
 import { S_ROTATION } from './config-fields';
-import { lacksGameMode, takesLighting } from './format';
+import { lacksGameMode, modKey, takesLighting } from './format';
 import type { Catalog, MapSelection } from './types';
 
 export interface RotationDoc {
@@ -44,7 +44,9 @@ export function formatRotationEntry(e: MapSelection): string {
 /**
  * Every entry with a modifier (`KOTH_InfantryOnly`) added or taken off. It is added after the
  * entry's game mode and only where `offered(map)` says the map has it, and not taken off an entry
- * it is the only experience of (that would leave no game mode); `skipped` counts those.
+ * it is the only experience of (that would leave no game mode); `skipped` counts those. Ids that
+ * name the same modifier (`KOTH_LimitedGear`, `LimitedGear`: `modKey`) are one: an entry with
+ * either has it already, and taking it off takes off both.
  */
 export function setModifierOnAll(
 	entries: MapSelection[],
@@ -52,7 +54,7 @@ export function setModifierOnAll(
 	on: boolean,
 	offered: (map: string) => boolean
 ): { entries: MapSelection[]; changed: number; skipped: number } {
-	const is = (id: string) => id.toLowerCase() === mod.toLowerCase();
+	const is = (id: string) => modKey(id) === modKey(mod);
 	let changed = 0;
 	let skipped = 0;
 	const next = entries.map((e) => {

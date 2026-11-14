@@ -4,10 +4,10 @@
 		andList,
 		expLabel,
 		expSetLabel,
-		isMod,
 		lightingLabel,
 		lightingsOn,
 		mapLabel,
+		modifierChoices,
 		zoneLabel
 	} from '$lib/format';
 	import { can } from '$lib/capabilities';
@@ -246,9 +246,10 @@
 		}
 		void act('rotationSettings', { rotationMode: mode }, { after: refresh });
 	}
-	// A modifier (Infantry Only, Hardcore) added to or taken off every staged entry at once. It is
-	// added only to entries whose map offers it, as the game lists them per map.
-	let modifiers = $derived(data.catalog.experiences.filter((x) => isMod(x.id)));
+	// A modifier (Infantry Only, Hardcore, Limited Gear) added to or taken off every staged entry at
+	// once. It is added only to entries whose map offers it, as the game lists them per map. Each is
+	// offered once, though a live server lists Limited Gear under two ids (`modifierChoices`).
+	let modifiers = $derived(modifierChoices(data.catalog.experiences));
 	let modPick = $state('');
 	let modOnAll = $derived(
 		modifiers.some((m) => m.id === modPick) ? modPick : (modifiers[0]?.id ?? '')
