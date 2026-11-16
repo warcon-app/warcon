@@ -6,6 +6,8 @@
 	// (chatTerms, chat: Read chat; chatTermsAccept: an owner of the organisation, in person).
 	import { api, ApiError, rconGet, rconPost, errorMessage } from '$lib/api';
 	import { poll } from '$lib/poll';
+	import { can } from '$lib/capabilities';
+	import { MAX_CHAT } from '$lib/chat';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import { matches } from '$lib/table.svelte';
@@ -64,6 +66,37 @@
 	let search = $state('');
 	let picked = $state<ChatLine | null>(null);
 	let showTerms = $state(false);
+	let canWhisper = $derived(can(data.server.caps, 'chat.send'));
+	let playerSearch = $state('');
+	let players = $state<{ steamId: string; name: string; faction: string | null }[]>([]);
+	let choosing = $state(false);
+	let loadingPlayers = $state(false);
+	let recipient = $state<{ steamId: string; name: string } | null>(null);
+	let message = $state('');
+	let sending = $state(false);
+	let foundPlayers = $derived(players.filter(p => matches(playerSearch, p.name, p.steamId)));
+	async function choosePlayer() {
+		choosing = !choosing;
+		if (!choosing) return;
+		loadingPlayers = true;
+		try {
+			const result = await rconGet<{ players: { steamId: string; name: string; faction: string | null }[] }>(id, 'players');
+			players = result.players.filter(p => /^\d{17}$/.test(p.steamId)).sort((a, b) => a.name.localeCompare(b.name));
+		} catch (e) { choosing = false; toast(errorMessage(e), 'err'); }
+		finally { loadingPlayers = false; }
+	}
+	function selectRecipient(player: { steamId: string; name: string }) {
+		if (recipient?.steamId !== player.steamId) message = '';
+		recipient = player; choosing = false;
+	}
+	async function sendWhisper() {
+		const text = message.trim();
+		if (!canWhisper || sending || !recipient || !text || text.length > MAX_CHAT) return;
+		sending = true;
+		try { await rconPost(id, 'whisper', { steamId: recipient.steamId, message: text }); message = ''; toast('Private message sent.', 'ok'); }
+		catch (e) { toast(errorMessage(e), 'err'); }
+		finally { sending = false; }
+	}
 
 	// The factions' colours, from what the worker last saw of the server: asked once, of the panel
 	// alone, so this tab neither sends the game another request nor has the server watched closer.
@@ -410,10 +443,19 @@
 				</tbody>
 			</table>
 		</div>
+		{#if canWhisper}
+			<form class="mt-3 rounded-ctl border border-black bg-ink-950 p-4" onsubmit={(e) => { e.preventDefault(); void sendWhisper(); }}>
+				<div class="mb-3 flex flex-wrap items-center gap-2"><span class="label-sm mb-0">Private message</span><button type="button" class="btn btn-sm" aria-expanded={choosing} onclick={choosePlayer}>{recipient ? 'Change player' : 'Find an online player'}</button>{#if recipient}<span class="text-[13px]">To {recipient.name}</span>{/if}</div>
+				{#if choosing}<input class="input mb-2" type="search" placeholder="Search by player name or SteamID…" aria-label="Search online players" bind:value={playerSearch} /><div class="max-h-40 overflow-y-auto">{#if loadingPlayers}<p class="note">Loading players…</p>{:else}{#each foundPlayers as player (player.steamId)}<button type="button" class="block w-full px-3 py-2 text-left text-[13px] hover:bg-ink-800" onclick={() => selectRecipient(player)}>{player.name} <span class="text-mist-400">· {player.faction || '—'} · {player.steamId}</span></button>{:else}<p class="note">No online players found.</p>{/each}{/if}</div>{/if}
+				<div class="flex gap-2"><input class="input" aria-label="Private message" placeholder="Write a private message…" maxlength={MAX_CHAT} bind:value={message} disabled={!recipient || sending} /><button class="btn btn-primary" type="submit" disabled={!recipient || !message.trim() || sending}>Send</button></div>
+				<p class="note">This sends a private message to one player. The game does not provide replies or a private conversation history here.</p>
+			</form>
+		{/if}
 		{#if picked}
 			<div class="mt-3 rounded-ctl border border-black bg-ink-950 p-4 text-[13px]">
 				<div class="mb-2 flex flex-wrap items-center gap-3">
 					<span class="label-sm mb-0">Line {picked.seq}</span>
+					{#if canWhisper && picked.steamId}<button class="btn btn-sm" onclick={() => selectRecipient({ steamId: picked!.steamId!, name: shownName(picked!) })}>Message player</button>{/if}
 					<span class="text-mist-400">{picked.at ? fmtTime(picked.at) : 'â€”'}</span>
 					<button class="ml-auto btn btn-sm" onclick={() => (picked = null)}>Close</button>
 				</div>
