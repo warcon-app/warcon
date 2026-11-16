@@ -46,6 +46,7 @@ import {
 } from './feed-events';
 import { forgetBounties } from './bounty';
 import { forgetChat } from './chat-look';
+import { forgetVotes } from './map-vote';
 import { startAliasFill } from './aliases';
 import { forLog, publicMessage } from './http';
 import * as metrics from './metrics';
@@ -305,6 +306,7 @@ async function refreshRoster(env: Env, s: Scheduler, now: number): Promise<void>
 			forgetDeathWhispers(m.server.id);
 			forgetBounties(m.server.id);
 			forgetChat(m.server.id);
+			forgetVotes(m.server.id);
 		}
 	if (now - s.expiryAt >= EXPIRY_MS) {
 		s.expiryAt = now;

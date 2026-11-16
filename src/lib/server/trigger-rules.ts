@@ -16,6 +16,7 @@ import { validateLiveName } from './live-name';
 import { validateRestartSkip, type RestartSkipConfig } from './restart-skip';
 import { validateWeatherCycle, type WeatherCycleConfig } from './weather-cycle';
 import { validateDeathWhisper, type DeathWhisperConfig } from './death-whisper';
+import { validateMapVote, type MapVoteConfig } from './map-vote';
 import {
 	validateChatCommand,
 	validateStaffCall,
@@ -58,7 +59,8 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'weather_cycle',
 	'death_whisper',
 	'chat_command',
-	'staff_call'
+	'staff_call',
+	'map_vote'
 ];
 export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	welcome: 'Welcome whisper',
@@ -85,7 +87,8 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	weather_cycle: 'Weather cycle',
 	death_whisper: 'Death whisper',
 	chat_command: 'Chat command',
-	staff_call: 'Staff call'
+	staff_call: 'Staff call',
+	map_vote: 'Map vote'
 };
 
 export interface WelcomeConfig {
@@ -257,7 +260,8 @@ export type TriggerConfig =
 	| WeatherCycleConfig
 	| DeathWhisperConfig
 	| ChatCommandConfig
-	| StaffCallConfig;
+	| StaffCallConfig
+	| MapVoteConfig;
 
 /** A kick reason: not chat, so not held to the game's chat cap. */
 export const MAX_REASON = 200;
@@ -472,6 +476,8 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateChatCommand(c);
 		case 'staff_call':
 			return validateStaffCall(c);
+		case 'map_vote':
+			return validateMapVote(c);
 	}
 }
 

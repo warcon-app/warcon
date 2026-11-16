@@ -41,6 +41,14 @@ import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
 import { ROTATION_SHUFFLE, shuffleOnServer } from './rotation-shuffle';
 import { RESTART_SKIP, skipStartupMap } from './restart-skip';
 import { changeWeather, lightingName, WEATHER_CYCLE } from './weather-cycle';
+import {
+	applyVoteOnServer,
+	MAP_VOTE,
+	MAP_VOTE_OPEN,
+	openVoteOnServer,
+	type MatchNow
+} from './map-vote';
+import { DEFAULT_SCORE_CAP } from '$lib/match';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -875,7 +883,8 @@ const retryAfterOf = (r: unknown): number =>
  * which staff of this server read (Recent actions, the audit trail, Discord) and which might repeat
  * the text. A kill says in its own fixed words whether the player was killed and told. A rotation
  * shuffle writes the config document, whose refusals can quote the file. A skip of the map a server
- * came up on, and a rule's change of the weather, say which maps or lighting in their own words.
+ * came up on, and a rule's change of the weather, say which maps or lighting in their own words, as
+ * a map vote's opening and its winner put next (in the config document) do.
  */
 const OWN_WORDS = new Set([
 	'whisper',
@@ -883,10 +892,19 @@ const OWN_WORDS = new Set([
 	RULE_KILL,
 	ROTATION_SHUFFLE,
 	RESTART_SKIP,
-	WEATHER_CYCLE
+	WEATHER_CYCLE,
+	MAP_VOTE_OPEN,
+	MAP_VOTE
 ]);
 /** Of those, the ones whose result is the panel's own account (names, counts), kept as it is. */
-const OWN_RESULT = new Set([RULE_KILL, ROTATION_SHUFFLE, RESTART_SKIP, WEATHER_CYCLE]);
+const OWN_RESULT = new Set([
+	RULE_KILL,
+	ROTATION_SHUFFLE,
+	RESTART_SKIP,
+	WEATHER_CYCLE,
+	MAP_VOTE_OPEN,
+	MAP_VOTE
+]);
 
 /** Why the game refused a whisper or kick, as a fixed phrase: its status and its code. */
 function refusal(err: unknown): string {
@@ -998,6 +1016,23 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 	if (row.action === WEATHER_CYCLE) {
 		// A lighting the server does not list is kept as skipped, with no audit row.
 		const r = await changeWeather(client, params);
+		if (r.skipped) throw new Skipped(r.message);
+		return r;
+	}
+	if (row.action === MAP_VOTE_OPEN || row.action === MAP_VOTE) {
+		// A vote for a match that has ended is kept as skipped, with no audit row.
+		const s = memoryOf(row.serverId)?.status;
+		const match: MatchNow | null = s
+			? {
+					map: s.map,
+					leading: Math.max(0, ...s.scores.map((f) => f.score)),
+					cap: s.scoreCap ?? DEFAULT_SCORE_CAP
+				}
+			: null;
+		const r =
+			row.action === MAP_VOTE_OPEN
+				? await openVoteOnServer(client, row.serverId, params, match)
+				: await applyVoteOnServer(client, params, match);
 		if (r.skipped) throw new Skipped(r.message);
 		return r;
 	}

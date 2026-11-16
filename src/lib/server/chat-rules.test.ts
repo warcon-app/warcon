@@ -6,7 +6,15 @@ import { MAX_CHAT } from '$lib/chat';
 import type { ChatLine } from '$lib/chat-read';
 import { STAFF_CALL_DEFAULTS } from '$lib/chat-commands';
 import { MESSAGE_RULES, placeholdersFor, unfilled } from '$lib/placeholders';
-import { CHAT_KINDS, NO_ACTIONS, ONE_PER_SERVER, RULE_KINDS } from '$lib/rule-kinds';
+import {
+	CHAT_KINDS,
+	COMMAND_KINDS,
+	FAILURES_ONLY,
+	NO_ACTIONS,
+	ONE_PER_SERVER,
+	RULE_KINDS
+} from '$lib/rule-kinds';
+import { validateMapVote } from './map-vote';
 import {
 	CHAT_COMMANDS_PER_MINUTE,
 	CHAT_SENDS_PER_LOOK,
@@ -66,22 +74,38 @@ const staff = (id: string, config: Record<string, unknown> = {}): ChatRule => ({
 	kind: 'staff_call',
 	config: validateStaffCall(config)
 });
+const vote = (id: string, config: Record<string, unknown> = {}): ChatRule => ({
+	id,
+	name: id,
+	kind: 'map_vote',
+	config: validateMapVote(config)
+});
 const summary = (acts: ChatAct[]) =>
 	acts.map((a) => [a.type, a.rule.id, a.line.steamId, a.sends] as const);
 
-describe('the two kinds', () => {
-	test('are rules like any other, in a group of their own, and queue no actions', () => {
-		expect(CHAT_KINDS).toEqual(['chat_command', 'staff_call']);
+describe('the chat kinds', () => {
+	test('are rules like any other; the two commands, in a group of their own, queue no actions', () => {
+		expect(CHAT_KINDS).toEqual(['chat_command', 'staff_call', 'map_vote']);
 		for (const kind of CHAT_KINDS) {
 			expect(TRIGGER_KINDS).toContain(kind);
 			expect(isChatKind(kind)).toBe(true);
+		}
+		expect(COMMAND_KINDS).toEqual(['chat_command', 'staff_call']);
+		for (const kind of COMMAND_KINDS) {
 			expect(NO_ACTIONS).toContain(kind);
 			expect(RULE_KINDS.find((k) => k.kind === kind)?.group).toBe('Chat commands');
 		}
+		// a Map vote acts on the rotation by itself, a rule beside the Rotation shuffle
+		expect(RULE_KINDS.find((k) => k.kind === 'map_vote')?.group).toBe('Server');
+		// a Map vote's messages and its winner go through the outbox, and Discord hears of failures
+		expect(NO_ACTIONS).not.toContain('map_vote');
+		expect(FAILURES_ONLY).toContain('map_vote');
 		expect(TRIGGER_LABELS.chat_command).toBe('Chat command');
 		expect(TRIGGER_LABELS.staff_call).toBe('Staff call');
-		// several commands on a server, one Staff call
+		expect(TRIGGER_LABELS.map_vote).toBe('Map vote');
+		// several commands on a server, one Staff call, one Map vote
 		expect(ONE_PER_SERVER).toContain('staff_call');
+		expect(ONE_PER_SERVER).toContain('map_vote');
 		expect(ONE_PER_SERVER).not.toContain('chat_command');
 		expect(isChatKind('welcome')).toBe(false);
 	});
@@ -254,6 +278,52 @@ describe('a Staff call’s settings', () => {
 		expect(bad({ commands: 'admin please' + '!' })?.[0]).toBe(400);
 		expect(bad({ cooldownSeconds: 5 })?.[1]).toContain('at least 10 seconds apart');
 		expect(bad({ cooldownSeconds: 0 })?.[1]).toContain('at least 10 seconds apart');
+	});
+});
+
+describe('a Map vote’s words', () => {
+	test('its options’ numbers, which a Chat command may not take while it is on', () => {
+		expect(chatWords('map_vote', validateMapVote({ options: 4 }))).toEqual(['1', '2', '3', '4']);
+		expect(wordClash(command('c', { command: '2', replies: ['x'] }), [vote('v')])).toEqual({
+			word: '2',
+			rule: 'v'
+		});
+		expect(wordClash(vote('v'), [command('c', { command: '3', replies: ['x'] })])).toEqual({
+			word: '3',
+			rule: 'c'
+		});
+		// past its options, a number is free
+		expect(wordClash(command('c', { command: '4', replies: ['x'] }), [vote('v')])).toBeNull();
+		// and {commands} never lists them
+		expect(listedWords([vote('v'), command('c', { command: 'rules', replies: ['x'] })])).toEqual([
+			'rules'
+		]);
+	});
+
+	test('a vote is taken from any player, sends nothing, and leaves the other commands alone', () => {
+		const tracks = newChatTracks();
+		const rules = [vote('v'), command('c', { command: 'rules', replies: ['Be nice.'] })];
+		const { acts } = chatStep(
+			wordsOf(rules),
+			tracks,
+			[
+				line(A, '!2'),
+				line(B, '!3 please'),
+				line(C, 'I vote 1'),
+				line(C, '!4'),
+				line(A, '!rules'),
+				line(B, '!1', { ping: true })
+			],
+			NOW,
+			0
+		);
+		expect(summary(acts)).toEqual([
+			['vote', 'v', A, 0],
+			['vote', 'v', B, 0]
+		]);
+		expect(acts.map((a) => (a.type === 'vote' ? a.option : null))).toEqual([2, 3]);
+		// the reply did not fit a look with nothing left to send; the votes did not need to
+		expect(tracks.players.size).toBe(0);
 	});
 });
 

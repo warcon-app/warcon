@@ -33,6 +33,9 @@
 //   staff_call   send what a player types after "!admin" to the organisation's Discord
 //                (both chat-rules.ts; acted on as the worker reads the chat, chat-look.ts, in the
 //                same look and through no outbox row)
+//   map_vote     near a match's end, a vote in chat for the next map; the winner is put next in
+//                the rotation (map-vote.ts: opened and closed here, its votes counted as the
+//                worker reads the chat, what it says and the winner through the outbox)
 // The worker evaluates them on every observation and writes the actions they want to the outbox
 // (outbox.ts delivers, and every delivery lands in the audit trail as category "trigger", but for a
 // Death whisper that went: $lib/rule-kinds TRAIL_FAILURES_ONLY). A dry
@@ -253,8 +256,20 @@ import {
 	type StaffCallConfig
 } from './chat-rules';
 import { COMMAND_PREFIX, commandsLine } from '$lib/chat-commands';
+import {
+	chatReadRecently,
+	forgetVotes,
+	MAP_VOTE,
+	MAP_VOTE_OPEN,
+	mapVoteSettingsKey,
+	optionsLine,
+	tallyLine,
+	voteReplay,
+	voteStep,
+	type MapVoteConfig
+} from './map-vote';
 import type { DbOrTx } from './db';
-import { mapName } from '$lib/format';
+import { MAP_DISPLAY, mapName } from '$lib/format';
 import { seenAs } from '$lib/anonymous';
 import { statsIn, usesStats } from '$lib/placeholders';
 import { settings } from './settings';
@@ -373,7 +388,8 @@ const RULE_NEEDS: Record<
 	rotation_shuffle: ['config.apply', 'rewrites the rotation in the config document'],
 	live_name: ['config.apply', 'writes the server name in the config document'],
 	chat_command: ['chat.read', 'reads the in-game chat'],
-	staff_call: ['chat.read', 'reads the in-game chat']
+	staff_call: ['chat.read', 'reads the in-game chat'],
+	map_vote: ['chat.read', 'reads the in-game chat']
 };
 
 /** What a reserved slot a rule hands out needs: one here, or on the organisation's list. */
@@ -412,24 +428,31 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
 /**
  * What else a rule needs when it also messages players: a Team balance rule with a whisper, an AFK
  * protection rule with a broadcast, a Kill distance rule's kill with its whisper, an AFK watch with
- * its warning, a Chat command (its reply), a Staff call that whispers anything back.
+ * its warning, a Chat command (its reply), a Staff call that whispers anything back. A Map vote says
+ * its options and result to the server, and puts the winner next in the config document.
  */
-function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
-	if (kind === 'chat_command') return ['chat.send', 'messages players'];
+function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string][] {
+	if (kind === 'chat_command') return [['chat.send', 'messages players']];
+	if (kind === 'map_vote')
+		return [
+			['chat.send', 'messages players'],
+			['config.apply', 'puts the winner next in the rotation in the config document']
+		];
 	if (kind === 'staff_call') {
 		const c = config as Partial<StaffCallConfig> | null;
-		return str(c?.ack) || str(c?.usage) || str(c?.wait) ? ['chat.send', 'whispers players'] : null;
+		return str(c?.ack) || str(c?.usage) || str(c?.wait) ? [['chat.send', 'whispers players']] : [];
 	}
-	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
-	if (kind === 'afk_watch' && afkWatchWarns(config)) return ['chat.send', 'whispers players'];
+	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill')
+		return [RULE_KILL_NEEDS[1]];
+	if (kind === 'afk_watch' && afkWatchWarns(config)) return [['chat.send', 'whispers players']];
 	if (kind === 'bounty' && bountyReward(config) === 'slot')
-		return ['chat.send', 'messages players'];
+		return [['chat.send', 'messages players']];
 	if (kind === 'two_teams' && str((config as Partial<TwoTeamsConfig> | null)?.message))
-		return ['chat.send', 'whispers players'];
+		return [['chat.send', 'whispers players']];
 	const afk = config as Partial<AfkProtectionConfig> | null;
 	if (kind === 'afk_protection' && (str(afk?.message) || str(afk?.doneMessage)))
-		return ['chat.send', 'messages players'];
-	return null;
+		return [['chat.send', 'messages players']];
+	return [];
 }
 
 export function requireRuleCaps(
@@ -438,8 +461,8 @@ export function requireRuleCaps(
 	server: ServerRow,
 	access: ServerAccess
 ): void {
-	for (const need of [ruleNeeds(kind, config), ruleAlsoNeeds(kind, config)]) {
-		if (!need || access.caps.has(need[0])) continue;
+	for (const need of [ruleNeeds(kind, config), ...ruleAlsoNeeds(kind, config)]) {
+		if (access.caps.has(need[0])) continue;
 		const [cap, does] = need;
 		throw new ApiError(
 			403,
@@ -675,7 +698,8 @@ export async function deleteTrigger(
  * a rule just switched off, is not to be sent; nor is an AFK protection round once the rule is off,
  * which is how it is stopped in a hurry, nor a Name change flag or kick, nor an AFK watch warning,
  * kick or flag, nor a skip of the map a server came up on (it has no settings: only being switched
- * off or deleted stops it), nor a change of the weather.
+ * off or deleted stops it), nor a change of the weather, nor a map vote's opening, its messages or
+ * its winner put next.
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
@@ -684,7 +708,8 @@ export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>>
 	afk_watch: (c) => afkWatchSettingsKey(c as AfkWatchConfig),
 	name_change: (c) => nameChangeSettingsKey(c as NameChangeConfig),
 	restart_skip: () => RESTART_SKIP_KEY,
-	weather_cycle: (c) => weatherCycleSettingsKey(c as WeatherCycleConfig)
+	weather_cycle: (c) => weatherCycleSettingsKey(c as WeatherCycleConfig),
+	map_vote: (c) => mapVoteSettingsKey(c as MapVoteConfig)
 };
 
 /**
@@ -1012,6 +1037,10 @@ export async function evaluateTriggers(
 				case 'chat_command':
 				case 'staff_call':
 					// Acted on as the chat is read, after the look (chat-look.ts): no action is queued.
+					break;
+				case 'map_vote':
+					// Opened and closed here; its votes are counted as the chat is read (chat-look.ts).
+					evalMapVote(ctx, row, row.config as MapVoteConfig, out);
 					break;
 			}
 		} catch (err) {
@@ -1790,6 +1819,150 @@ function evalWeatherCycle(
 }
 
 /**
+ * A Map vote at each look (map-vote.ts): opened once the leader reaches the rule's score, the votes
+ * so far said halfway, closed when its time is up or the match is won, and the winner then put next.
+ * The vote itself is in the worker's memory, its votes counted as the chat is read; what it says and
+ * the winner go through the outbox. Every row carries the rule's settings, so a save or a switch-off
+ * drops what is still queued.
+ */
+function evalMapVote(ctx: TickContext, row: TriggerRow, cfg: MapVoteConfig, out: Evaluation) {
+	const rule = mapVoteSettingsKey(cfg);
+	const now = ctx.ts.getTime();
+	const { step, commit } = voteStep(ctx.server.id, row.id, rule, cfg, {
+		now,
+		map: ctx.status.map,
+		leading: Math.max(0, ...ctx.status.scores.map((f) => f.score)),
+		cap: ctx.status.scoreCap ?? DEFAULT_SCORE_CAP,
+		players: Math.max(ctx.status.playerCount, ctx.players.length),
+		boundary: !!ctx.matchEnd,
+		// read by the chat stage a moment ago, its place known: a vote typed now would be counted
+		reading: chatReadRecently(ctx.server.id, now)
+	});
+	// The vote moves in memory once what it decided is written: a failed write decides it again.
+	(out.afterCommit ??= []).push(commit);
+	if (!step) return;
+	const { vote } = step;
+	const map = mapName(vote.map);
+	const said = (text: string, own: MessageVars) =>
+		renderTemplate(text, vars(ctx, null, {}, { seconds: cfg.seconds, ...own }), MAX_CHAT).trim();
+	const say = (stage: string, message: string, okMessage: string) =>
+		out.intents.push({
+			trigger: row,
+			action: 'broadcast',
+			params: { rule, message },
+			target: message,
+			okMessage,
+			detail: { stage, map: vote.map },
+			steamId: null,
+			dedupeKey: key(row, stage, vote.decidedAt)
+		});
+	if (step.do === 'open') {
+		out.intents.push({
+			trigger: row,
+			action: MAP_VOTE_OPEN,
+			params: {
+				rule,
+				decidedAt: vote.decidedAt,
+				map: vote.map,
+				options: cfg.options,
+				seconds: cfg.seconds,
+				// {options} is put in at delivery, from the rotation as it stands then
+				text: renderTemplate(
+					cfg.openMessage,
+					vars(ctx, null, {}, { seconds: cfg.seconds }),
+					4 * MAX_CHAT
+				)
+			},
+			target: map,
+			okMessage: 'Vote open.',
+			detail: { map: vote.map },
+			steamId: null,
+			dedupeKey: key(row, 'open', vote.decidedAt)
+		});
+		row.lastFiredAt = ctx.ts;
+		out.updates.push({
+			id: row.id,
+			lastFiredAt: ctx.ts,
+			lastResult: `Opening a vote for the map after ${map}.`
+		});
+		return;
+	}
+	if (step.do === 'tally') {
+		const total = step.counts.reduce((a, b) => a + b, 0);
+		const message = said(cfg.tallyMessage, {
+			tally: tallyLine(vote.options, step.counts),
+			options: optionsLine(vote.options),
+			total
+		});
+		if (message) say('tally', message, 'Votes so far said.');
+		return;
+	}
+	if (step.do === 'ended' || step.do === 'lapsed') {
+		out.updates.push({
+			id: row.id,
+			lastResult:
+				step.do === 'lapsed'
+					? `The vote on ${map} was not opened in time: the rotation goes on as it was.`
+					: step.changed
+						? `The rule was changed while the vote on ${map} was open: the rotation goes on as it was.`
+						: `The match on ${map} ended before the vote closed: the rotation goes on as it was.`
+		});
+		return;
+	}
+	const own = {
+		tally: tallyLine(vote.options, step.counts),
+		options: optionsLine(vote.options),
+		total: step.total
+	};
+	if (step.winner === null) {
+		const why = step.total
+			? `${step.total} vote${step.total === 1 ? '' : 's'}, ${cfg.minVotes} needed`
+			: 'no votes';
+		out.updates.push({
+			id: row.id,
+			lastResult: `No result on ${map} (${why}): the rotation goes on as it was.`
+		});
+		const message = cfg.noneMessage ? said(cfg.noneMessage, own) : '';
+		if (message) say('none', message, 'No result said.');
+		return;
+	}
+	const option = vote.options[step.winner];
+	const winner = mapName(option.entry.map);
+	const votes = step.counts[step.winner];
+	out.intents.push({
+		trigger: row,
+		action: MAP_VOTE,
+		params: {
+			rule,
+			map: vote.map,
+			on: vote.on,
+			index: option.index,
+			entry: option.entry,
+			votes,
+			total: step.total,
+			message: said(cfg.resultMessage, { ...own, winner, votes })
+		},
+		target: winner,
+		okMessage: `${winner} next.`,
+		// counts for each map, never who voted
+		detail: {
+			map: vote.map,
+			votes: vote.options.map((o, i) => ({ map: o.entry.map, votes: step.counts[i] })),
+			total: step.total,
+			tied: step.tied
+		},
+		steamId: null,
+		dedupeKey: key(row, 'result', vote.decidedAt)
+	});
+	row.lastFiredAt = ctx.ts;
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `${winner} won with ${votes} of ${step.total}${step.tied ? ', drawn among the tied' : ''}: putting it next.`
+	});
+}
+
+/**
  * When each AFK protection rule's server was first seen empty, in worker memory, counted only over
  * looks the rule itself took: a restart, an outage or the rule starting over (switched on again)
  * starts the count afresh, which only turns the rule back on later.
@@ -2124,6 +2297,7 @@ export function forgetRuleMemory(): void {
 	afkEmpty.clear();
 	afkWatchMemory.clear();
 	forgetBounties();
+	forgetVotes();
 }
 
 function evalMatchBroadcast(
@@ -2553,6 +2727,73 @@ export async function dryRun(
 			   ${withFaction ? sql`AND s.faction IS NOT NULL AND s.faction <> ''` : sql``}
 			 ORDER BY s.joined_at ASC LIMIT ${REPLAY_ROWS_MAX}`);
 
+	if (kind === 'map_vote') {
+		// When a vote would have opened, from the samples; what it says, with maps for the example (a
+		// live vote takes them from the rotation as it stands, and no past vote can be read again).
+		const c = cfg as MapVoteConfig;
+		const rows = await env.db
+			.select({
+				ts: samples.ts,
+				ok: samples.ok,
+				count: samples.playerCount,
+				map: samples.map,
+				scores: samples.scores
+			})
+			.from(samples)
+			.where(and(eq(samples.serverId, server.id), gte(samples.ts, from)))
+			.orderBy(asc(samples.ts));
+		const opens = voteReplay(
+			rows.map((r) => ({
+				ts: r.ts.getTime(),
+				ok: r.ok,
+				count: r.count ?? 0,
+				map: r.map ?? '',
+				scores: Array.isArray(r.scores) ? (r.scores as { name: string; score: number }[]) : []
+			})),
+			c,
+			DEFAULT_SCORE_CAP
+		);
+		for (const o of opens)
+			push(
+				new Date(o.at),
+				`vote for the map after ${mapName(o.map)} (${o.players} on, the leader at ${o.leading})`
+			);
+		const playing = rows.at(-1)?.map ?? '';
+		const options = Object.keys(MAP_DISPLAY)
+			.filter((m) => mapName(m) !== mapName(playing))
+			.slice(0, c.options)
+			.map((map, index) => ({
+				index,
+				entry: { map, experiences: [], lighting: '', zoneAlternator: '' }
+			}));
+		const counts = options.map((_, i) => Math.max(0, 4 - 2 * i));
+		const total = counts.reduce((a, b) => a + b, 0);
+		const own = {
+			seconds: c.seconds,
+			options: optionsLine(options),
+			tally: tallyLine(options, counts),
+			total
+		};
+		const say = (label: string, text: string, more: Record<string, string | number> = {}) => {
+			if (text)
+				note(
+					to,
+					`${label}: ${renderTemplate(text, dryRunVars(server.name, null, { ...own, ...more }), MAX_CHAT)}`
+				);
+		};
+		say('as it opens', c.openMessage);
+		say('halfway', c.tallyMessage);
+		if (options.length)
+			say('once the winner is next', c.resultMessage, {
+				winner: mapName(options[0].entry.map),
+				votes: counts[0]
+			});
+		say('with too few votes', c.noneMessage);
+		result.notes.push(
+			`Times are the samples a vote would have opened at: in each match, the first with the leader at ${c.startAt} or more (short of ${DEFAULT_SCORE_CAP}) and ${c.minPlayers} or more on. Live, a vote also needs the chat being read (the chat terms accepted on the Chat tab) and the rotation on and Ordered. The maps in the messages are an example: a vote offers maps from the rotation as it stands then.`
+		);
+		return result;
+	}
 	if (isChatKind(kind)) {
 		// The chat is kept nowhere, so there is no past line to act on again: this shows what the rule
 		// would send, with what only a live look knows as `…`.

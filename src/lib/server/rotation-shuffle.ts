@@ -107,9 +107,10 @@ const readLive = (client: WardogsClient) =>
 /**
  * The rotation in the config document rewritten by `order` (given the rotation the document holds;
  * null leaves it as it is), against the revision read, once more on a revision conflict. Only the
- * rotation's keys change, and the mode becomes Ordered. The document's text never leaves here.
+ * rotation's keys change, and the mode becomes Ordered. The document's text never leaves here. The
+ * Map vote rule writes its winner through it too (map-vote.ts).
  */
-async function rewrite(
+export async function rewriteRotation(
 	client: WardogsClient,
 	order: (rotation: RotationDoc) => MapSelection[] | null
 ): Promise<MapSelection[] | null> {
@@ -170,7 +171,7 @@ export async function shuffleOnServer(
 		(playing ? { map: playing, experiences: [], lighting: '', zoneAlternator: '' } : null);
 	let skipped = '';
 	let turn: string[] = [];
-	const written = await rewrite(client, ({ enabled, entries }) => {
+	const written = await rewriteRotation(client, ({ enabled, entries }) => {
 		skipped = !enabled
 			? 'Nothing shuffled: the rotation is switched off on this server.'
 			: entries.length < 2
@@ -196,7 +197,7 @@ export async function shuffleOnServer(
 		const place = next.index;
 		const first = next.entry.map;
 		try {
-			const fixed = await rewrite(client, ({ entries }) => {
+			const fixed = await rewriteRotation(client, ({ entries }) => {
 				const turned = entries.length < 2 ? entries : alignRotation(entries, playing, [place]);
 				return turned[place] && entries[place] && same(turned[place].map, entries[place].map)
 					? null

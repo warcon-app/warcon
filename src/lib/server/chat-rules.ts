@@ -1,8 +1,9 @@
-// The chat rules (kinds `chat_command` and `staff_call`), the pure part: their settings, the words
-// a server's rules answer to, and what one read of the chat brings. A Chat command answers a word
-// a player types ("!rules") with its organisation's own lines, to that player or to everyone. A
-// Staff call sends what a player types after its words ("!admin he is stuck at B") to the
-// organisation's Discord and tells the player so.
+// The chat rules (kinds `chat_command`, `staff_call` and `map_vote`), the pure part: their settings,
+// the words a server's rules answer to, and what one read of the chat brings. A Chat command answers
+// a word a player types ("!rules") with its organisation's own lines, to that player or to everyone.
+// A Staff call sends what a player types after its words ("!admin he is stuck at B") to the
+// organisation's Discord and tells the player so. A Map vote takes its options' numbers ("!2") as
+// votes while a vote is open (map-vote.ts), and answers none of them.
 //
 // Nothing a player typed is repeated by the server: no placeholder carries it, so a command cannot
 // make the server say a player's words. And nothing typed is kept: the step below reads the lines
@@ -24,11 +25,12 @@ import {
 	typedCommand
 } from '$lib/chat-commands';
 import { UNKNOWN } from './message-vars';
+import { voteWords, type MapVoteConfig } from './map-vote';
 import type { TriggerKind } from '$lib/types';
 
-export type ChatKind = 'chat_command' | 'staff_call';
+export type ChatKind = 'chat_command' | 'staff_call' | 'map_vote';
 export const isChatKind = (kind: TriggerKind | string): kind is ChatKind =>
-	kind === 'chat_command' || kind === 'staff_call';
+	kind === 'chat_command' || kind === 'staff_call' || kind === 'map_vote';
 
 /** The longest wait a rule can put between two answers. */
 export const CHAT_MAX_COOLDOWN = 3600;
@@ -184,11 +186,12 @@ export interface ChatRule {
 	id: string;
 	name: string;
 	kind: ChatKind;
-	config: ChatCommandConfig | StaffCallConfig;
+	config: ChatCommandConfig | StaffCallConfig | MapVoteConfig;
 }
 
-/** Every word a rule answers to, its own first. */
+/** Every word a rule answers to, its own first: a Map vote's are its options' numbers. */
 export function chatWords(kind: ChatKind, config: unknown): string[] {
+	if (kind === 'map_vote') return voteWords(config as Partial<MapVoteConfig> | null);
 	if (kind === 'chat_command') {
 		const c = config as Partial<ChatCommandConfig> | null;
 		return [c?.command, ...(Array.isArray(c?.aliases) ? c.aliases : [])].filter(
@@ -238,10 +241,14 @@ export function wordsOf(rules: readonly ChatRule[]): Map<string, WordUse> {
 	return out;
 }
 
-/** The words `{commands}` lists: each Chat command's own word and every word that calls staff. */
+/**
+ * The words `{commands}` lists: each Chat command's own word and every word that calls staff. Not a
+ * Map vote's numbers, which mean something only while a vote is open and are said then.
+ */
 export function listedWords(rules: readonly ChatRule[]): string[] {
 	const out: string[] = [];
 	for (const rule of rules) {
+		if (rule.kind === 'map_vote') continue;
 		const words =
 			rule.kind === 'chat_command'
 				? [(rule.config as ChatCommandConfig).command]
@@ -281,12 +288,15 @@ export const newChatTracks = (): ChatTracks => ({
 });
 
 /** One thing to do about one line; `sends` is the most messages it puts to the game. */
-export type ChatAct = { rule: ChatRule; line: ChatLine; word: string; sends: number } & (
-	| { type: 'reply'; cfg: ChatCommandConfig }
-	| { type: 'call'; cfg: StaffCallConfig; rest: string; report: boolean; ack: boolean }
-	| { type: 'usage'; cfg: StaffCallConfig }
-	| { type: 'wait'; cfg: StaffCallConfig; seconds: number }
-);
+export type ChatAct = { rule: ChatRule; line: ChatLine; word: string; sends: number } &
+	/** a vote for an option, by its number: nothing is said back */
+	(
+		| { type: 'vote'; option: number }
+		| { type: 'reply'; cfg: ChatCommandConfig }
+		| { type: 'call'; cfg: StaffCallConfig; rest: string; report: boolean; ack: boolean }
+		| { type: 'usage'; cfg: StaffCallConfig }
+		| { type: 'wait'; cfg: StaffCallConfig; seconds: number }
+	);
 
 /** Commands a step let go, by why: for the tests, and nothing else counts them. */
 export interface ChatPassed {
@@ -346,6 +356,11 @@ export function chatStep(
 			acts.push(act);
 		};
 		const base = { rule, line, word: typed.word };
+		if (rule.kind === 'map_vote') {
+			// A vote sends nothing and waits on nothing: whether it counts is the vote's to say.
+			take({ ...base, type: 'vote', option: Number(typed.word), sends: 0 });
+			continue;
+		}
 		if (rule.kind === 'chat_command') {
 			const cfg = rule.config as ChatCommandConfig;
 			const last =
@@ -405,7 +420,8 @@ export function pruneChatTracks(tracks: ChatTracks, rules: readonly ChatRule[], 
 			tracks.players.delete(ruleId);
 			continue;
 		}
-		const keep = (rule.config.cooldownSeconds || 0) * 1000;
+		const keep =
+			(Number((rule.config as { cooldownSeconds?: number }).cooldownSeconds) || 0) * 1000;
 		for (const [steamId, at] of by) if (now - at >= keep) by.delete(steamId);
 		if (!by.size) tracks.players.delete(ruleId);
 	}

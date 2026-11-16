@@ -955,7 +955,8 @@ export const triggers = pgTable(
 				'weather_cycle',
 				'death_whisper',
 				'chat_command',
-				'staff_call'
+				'staff_call',
+				'map_vote'
 			]
 		}).notNull(),
 		name: text('name').notNull(),
