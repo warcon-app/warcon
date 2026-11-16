@@ -2,7 +2,8 @@
 // that has a chat rule switched on, and on no other, the worker reads the chat after its look at
 // the server, a few seconds apart, and answers the lines that are commands of that server: a Chat
 // command's reply goes out as a whisper or a broadcast, a Staff call goes to the organisation's
-// Discord. Everything is sent in the same look, through the lane the look already holds.
+// Discord, and a vote while a Map vote is open is counted (map-vote.ts). Everything is sent in the
+// same look, through the lane the look already holds.
 //
 // What players type is theirs, read under the game's chat terms. So:
 //   - a line that is not a command of this server is dropped where it is read: no log line, no
@@ -12,7 +13,8 @@
 //     Discord, which the player asked for, and nowhere else;
 //   - the worker holds no line between looks: only the number of the last one it read, and when
 //     each rule last answered whom. (A staff call's card waits a moment in the webhook's queue,
-//     in memory, until Discord takes it.)
+//     in memory, until Discord takes it; while a map vote is open, its memory holds which number
+//     each voter chose, until it closes.)
 // The number of the last line is not always to be trusted (a worker that has just started or taken
 // over, a rule just switched on, a server back from an outage or a restart, a game that numbers
 // from the start again, a read that came late, a page so full that it is a backlog): then the place
@@ -54,6 +56,13 @@ import {
 	type ChatWait
 } from './chat-rules';
 import { notifyStaffCall } from './webhook-delivery';
+import {
+	castBallot,
+	forgetVotes,
+	noteChatRead,
+	voteWantsChat,
+	type MapVoteConfig
+} from './map-vote';
 import { loadBoard, rankOf } from './leaderboards';
 import { DEFAULT_BOARD_QUERY } from '$lib/leaderboard';
 import { MAX_CHAT } from '$lib/chat';
@@ -191,7 +200,14 @@ const NONE: ChatLookResult = { retryAfterMs: 0 };
  */
 export async function keepChat(env: Env, look: ChatLook): Promise<ChatLookResult> {
 	const id = look.server.id;
-	const rules = chatRulesAmong(look.rows);
+	const all = chatRulesAmong(look.rows);
+	// A Map vote has the chat read only around its vote (map-vote.ts). With none switched on, or for
+	// a suspended organisation, nobody's vote is held.
+	const vote = all.find((r) => r.kind === 'map_vote');
+	if (!vote || look.suspended) forgetVotes(id);
+	const rules = vote
+		? all.filter((r) => r !== vote || voteWantsChat(id, vote.config as MapVoteConfig, look.status))
+		: all;
 	if (!rules.length || look.suspended) {
 		// No rule, no reading, and nothing remembered: one switched on later starts from a new place.
 		// Nor is the chat read for an organisation that is suspended: nobody of it can see the rules
@@ -245,6 +261,7 @@ export async function keepChat(env: Env, look: ChatLook): Promise<ChatLookResult
 		return NONE;
 	}
 	if (lines.length) mem.cursor = lines[lines.length - 1].seq;
+	noteChatRead(id, now);
 
 	if (now - mem.prunedAt >= PRUNE_MS) {
 		mem.prunedAt = now;
@@ -311,6 +328,7 @@ async function findPlace(
 		mem.primed = true;
 		mem.finding = 0;
 		mem.failures = 0;
+		noteChatRead(look.server.id, now);
 		await tellWait(env, mem, rules, '');
 		break;
 	}
@@ -489,6 +507,11 @@ async function perform(
 
 	for (const act of acts) {
 		if (!isOwner()) break;
+		// A vote is counted in this process's memory, until the vote closes, and sent nowhere.
+		if (act.type === 'vote') {
+			castBallot(server.id, act.rule.id, act.line.steamId, act.option, now);
+			continue;
+		}
 		// The game is taking no more messages in this look: what is left unanswered stays so. A call
 		// to staff still goes to Discord, which does not wait on the game; its whisper back does not.
 		if ((retryAfterMs || stopped) && act.type !== 'call') continue;

@@ -548,7 +548,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['rotation_shuffle', { maps: ['Europe', 'Kavkazi'] }, 'config.apply'],
 				['live_name', { base: 'Demo Clan #1' }, 'config.apply'],
 				// has the panel read the chat; one that whispers nothing back needs nothing else
-				// (chat-commands.test.ts holds a Chat command to Read chat and Chat both)
+				// (chat-commands.test.ts holds a Chat command to Read chat and Chat both, and
+				// map-vote.test.ts a Map vote to Read chat, Chat and Config & settings)
 				['staff_call', { commands: 'mods', ack: '', usage: '', wait: '' }, 'chat.read']
 			];
 			for (const [kind, config, cap] of rules) {
@@ -1422,7 +1423,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				live_name: { base: 'Demo Clan #1' },
 				restart_skip: {},
 				weather_cycle: { lightings: ['DayClear', 'DayLateRain'] },
-				staff_call: { commands: 'mods' }
+				staff_call: { commands: 'mods' },
+				map_vote: {}
 			};
 			const save = (kind: string, name: string, config: Record<string, unknown>) =>
 				api(w, 'owner', 'POST api/servers/[id]/triggers', {

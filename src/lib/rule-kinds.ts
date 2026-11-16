@@ -167,6 +167,13 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 			'Change the time of day and weather every few minutes, in the match being played, with no map change.'
 	},
 	{
+		kind: 'map_vote',
+		group: 'Server',
+		label: 'Map vote',
+		blurb:
+			'Near the end of a match, players vote for the next map by typing !1, !2 or !3 in chat, and the winner plays next.'
+	},
+	{
 		kind: 'live_name',
 		group: 'Server',
 		label: 'Live server name',
@@ -182,7 +189,8 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
  * rules would each undo the other's order, two Live server name rules would each write their own
  * name over the other's, two Skip map after restart rules would end the match twice, two Weather
  * cycle rules would each change the weather on a clock of their own, two Staff call rules would
- * split one server's words for calling staff between them. The picker opens the one a server has.
+ * split one server's words for calling staff between them, two Map vote rules would each put their
+ * own winner next. The picker opens the one a server has.
  */
 export const ONE_PER_SERVER: TriggerKind[] = [
 	'seed_reward',
@@ -193,20 +201,22 @@ export const ONE_PER_SERVER: TriggerKind[] = [
 	'live_name',
 	'restart_skip',
 	'weather_cycle',
-	'staff_call'
+	'staff_call',
+	'map_vote'
 ];
 
 /**
  * Rules whose actions come by the hundred as a matter of course (a Team balance sort at every match
  * start, an AFK protection round every few minutes while a server seeds, a Weather cycle change
- * every few minutes all day, a Death whisper at nearly every death): Discord hears only of those
- * that fail (webhook-delivery.ts).
+ * every few minutes all day, a Death whisper at nearly every death, a Map vote's two or three
+ * messages at the end of every match): Discord hears only of those that fail (webhook-delivery.ts).
  */
 export const FAILURES_ONLY: TriggerKind[] = [
 	'two_teams',
 	'afk_protection',
 	'weather_cycle',
-	'death_whisper'
+	'death_whisper',
+	'map_vote'
 ];
 
 /**
@@ -235,12 +245,19 @@ export const FEED_KINDS: TriggerKind[] = [
  * reads the chat for a server that has one switched on, and for no other. Saving one needs Read
  * chat, which no API key holds.
  */
-export const CHAT_KINDS: TriggerKind[] = ['chat_command', 'staff_call'];
+export const CHAT_KINDS: TriggerKind[] = ['chat_command', 'staff_call', 'map_vote'];
+
+/**
+ * Of those, the ones that answer what a player types and queue no action: the Automation tab lists
+ * them apart, as Chat commands. A Map vote acts by itself at the end of each match (its messages and
+ * the winner go through the outbox), so it is a rule like any other there.
+ */
+export const COMMAND_KINDS: TriggerKind[] = ['chat_command', 'staff_call'];
 
 /**
  * Rules that queue no actions, so a Discord webhook has nothing of theirs to carry: the Live server
- * name rule writes the name at the worker's look (live-name.ts), and the chat rules answer in the
+ * name rule writes the name at the worker's look (live-name.ts), and the chat commands answer in the
  * look that read the line, recorded nowhere (a Staff call's own Discord box carries its cards).
  * The webhook editor leaves them out.
  */
-export const NO_ACTIONS: TriggerKind[] = ['live_name', ...CHAT_KINDS];
+export const NO_ACTIONS: TriggerKind[] = ['live_name', ...COMMAND_KINDS];

@@ -180,6 +180,7 @@ const ACTION_TITLES: Record<string, string> = {
 	// two; they are named as every kind is
 	'trigger.chat_command': 'Trigger · chat command',
 	'trigger.staff_call': 'Trigger · staff call',
+	'trigger.map_vote': 'Trigger · map vote',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',

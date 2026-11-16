@@ -122,6 +122,13 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 		own: ['command', 'seconds'],
 		player: true,
 		noStats: true
+	},
+	// said to the whole server: the maps with their numbers, how long the vote lasts, the votes for
+	// each map, all votes cast, and the map that won with its votes
+	map_vote: {
+		fields: ['openMessage', 'tallyMessage', 'resultMessage', 'noneMessage'],
+		own: ['options', 'seconds', 'tally', 'total', 'winner', 'votes'],
+		player: false
 	}
 };
 
