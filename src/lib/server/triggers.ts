@@ -1,3 +1,5 @@
+import { mapTeamKey } from '$lib/map-team-mode';
+import { chooseExcludedFaction, teamConfigForMap } from './two-teams';
 // Automation: per-server triggers the worker evaluates on every observation, all
 // built on what the worker already sees (joins, player counts, empty stretches) plus the Steam cache:
 //   welcome      whisper a message to players as they join (or once they have picked a faction)
@@ -1518,8 +1520,57 @@ async function evalTwoTeams(
 	const now = ctx.ts.getTime();
 	// The same fingerprint rides on every move and whisper, for delivery to check against.
 	const config = twoTeamsSettingsKey(cfg);
+	const selection = {
+		map: ctx.status.map,
+		experiences: ctx.status.experiences ?? [],
+		lighting: ctx.status.lighting ?? '',
+		zoneAlternator: ctx.status.alternator ?? ''
+	};
+	const effective = teamConfigForMap(cfg, selection);
+	if (!effective) {
+		twoTeamsMemory.delete(row.id);
+		return;
+	}
+	cfg = effective;
+	const mapKey = mapTeamKey(selection);
+
 	// The marker updateTrigger writes when the rule is switched on: it starts over then too.
-	const memoryKey = `${config}:${JSON.stringify(row.state ?? null)}`;
+	let randomState: Record<string, unknown> | undefined;
+	if (cfg.randomClosedFaction) {
+		const saved = (row.state ?? {}) as Record<string, unknown>;
+		const pending = !!ctx.matchEnd || saved.randomPending === true;
+		const chosen = ctx.playersObserved
+			? chooseExcludedFaction(
+					typeof saved.randomClosedFaction === 'string' &&
+						(!cfg.mapOverrides?.length || saved.randomMapKey === mapKey)
+						? saved.randomClosedFaction
+						: undefined,
+					(ctx.status.scores ?? []).map((s) => s.name),
+					pending
+				)
+			: null;
+		if (!chosen) {
+			if (ctx.matchEnd) twoTeamsMemory.delete(row.id);
+			if (pending && !saved.randomPending)
+				out.updates.push({ id: row.id, state: { ...saved, randomPending: true } });
+			return;
+		}
+		if (chosen !== saved.randomClosedFaction || pending || saved.randomMapKey !== mapKey) {
+			randomState = {
+				...saved,
+				randomClosedFaction: chosen,
+				randomPending: false,
+				randomMapKey: mapKey
+			};
+			out.updates.push({
+				id: row.id,
+				state: randomState,
+				lastResult: `${chosen} excluded for this match`
+			});
+		}
+		cfg = { ...cfg, closedFaction: chosen };
+	}
+	const memoryKey = `${config}:${JSON.stringify((row.state as { enabledAt?: number } | null)?.enabledAt ?? null)}:${cfg.closedFaction}:${mapKey}`;
 	let memory = twoTeamsMemory.get(row.id);
 	if (
 		memory?.key !== memoryKey ||

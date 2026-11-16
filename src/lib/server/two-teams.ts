@@ -1,3 +1,6 @@
+import type { MapTeamMode } from '$lib/map-team-mode';
+import { mapTeamKey } from '$lib/map-team-mode';
+import type { MapSelection } from '$lib/types';
 // The Team balance rule's pure part (kind `two_teams`, first built as Two-team mode). Two jobs, either
 // or both: a closed faction, whose players are moved to the smaller of the others, so a
 // three-faction server plays as two big teams; and balancing, which keeps the open sides within a
@@ -59,6 +62,9 @@ export const TWO_TEAMS_MAX_EXEMPT = 100;
 export interface TwoTeamsConfig {
 	/** the faction nobody plays on, '' for none; its players are moved off it */
 	closedFaction: string;
+	randomClosedFaction?: boolean;
+	mapOverrides?: MapTeamMode[];
+	mapOnly?: boolean;
 	/** what players are told the open factions are called, by faction ('' keeps the faction name) */
 	names: Record<string, string>;
 	/** whispered once a moved player lands, with {team}; '' sends nothing */
@@ -76,9 +82,56 @@ export interface TwoTeamsConfig {
 }
 
 export function validateTwoTeams(c: Record<string, unknown>): TwoTeamsConfig {
-	const closedFaction = str(c.closedFaction, 100);
+	if (c.randomClosedFaction !== undefined && typeof c.randomClosedFaction !== 'boolean')
+		throw new ApiError(400, 'randomClosedFaction must be a boolean.');
+	const randomClosedFaction = c.randomClosedFaction === true;
+	const closedFaction = randomClosedFaction ? '' : str(c.closedFaction, 100);
+	const mapOverrides: MapTeamMode[] = [];
+	if (c.mapOverrides !== undefined) {
+		if (!Array.isArray(c.mapOverrides) || c.mapOverrides.length > 100)
+			throw new ApiError(400, 'At most 100 map team settings are allowed.');
+		const keys = new Set<string>();
+		for (const raw of c.mapOverrides) {
+			const o = raw as MapTeamMode;
+			const s = o?.selection;
+			if (
+				!s ||
+				typeof s.map !== 'string' ||
+				!s.map ||
+				s.map.length > 200 ||
+				!Array.isArray(s.experiences) ||
+				!s.experiences.length ||
+				s.experiences.length > 32 ||
+				s.experiences.some((e) => typeof e !== 'string' || !e || e.length > 200) ||
+				typeof s.lighting !== 'string' ||
+				s.lighting.length > 200 ||
+				typeof s.zoneAlternator !== 'string' ||
+				s.zoneAlternator.length > 200 ||
+				!['standard', 'manual', 'random'].includes(o.mode)
+			)
+				throw new ApiError(400, 'Invalid map team settings.');
+			if (
+				o.mode === 'manual' &&
+				!['Lonestar', 'Valkyra', 'Manticore'].includes(o.closedFaction ?? '')
+			)
+				throw new ApiError(400, 'Choose the excluded faction.');
+			const key = mapTeamKey(s);
+			if (keys.has(key)) throw new ApiError(400, 'Duplicate map team settings.');
+			keys.add(key);
+			mapOverrides.push({
+				selection: {
+					map: s.map,
+					experiences: [...s.experiences],
+					lighting: s.lighting,
+					zoneAlternator: s.zoneAlternator
+				},
+				mode: o.mode,
+				...(o.mode === 'manual' ? { closedFaction: o.closedFaction } : {})
+			});
+		}
+	}
 	const balance = c.balance === true;
-	if (!closedFaction && !balance)
+	if (!closedFaction && !balance && !randomClosedFaction && !Array.isArray(c.mapOverrides))
 		throw new ApiError(400, 'Close a faction, keep the sides even, or both.');
 	const names: Record<string, string> = {};
 	if (c.names && typeof c.names === 'object')
@@ -98,6 +151,9 @@ export function validateTwoTeams(c: Record<string, unknown>): TwoTeamsConfig {
 	const exempt = steamIdList(c.exempt, TWO_TEAMS_MAX_EXEMPT);
 	return {
 		closedFaction,
+		...(mapOverrides.length ? { mapOverrides } : {}),
+		...(c.mapOnly === true ? { mapOnly: true } : {}),
+		...(randomClosedFaction ? { randomClosedFaction: true } : {}),
 		names,
 		message: str(c.message, MAX_CHAT),
 		balance,
@@ -474,3 +530,31 @@ export function twoTeamsStep(
 /** What players are told a faction is called. */
 export const teamName = (cfg: TwoTeamsConfig, faction: string): string =>
 	(Object.hasOwn(cfg.names, faction) && cfg.names[faction]) || faction;
+
+/** A persisted choice survives worker restarts and is replaced only at a match boundary. */
+export function chooseExcludedFaction(
+	previous: string | undefined,
+	factions: string[],
+	newMatch: boolean,
+	random: () => number = Math.random
+): string | null {
+	const available = [...new Set(factions.filter(Boolean))].sort();
+	if (available.length !== 3) return null;
+	if (!newMatch && previous && available.includes(previous)) return previous;
+	return available[Math.floor(random() * available.length)];
+}
+
+export function teamConfigForMap(
+	cfg: TwoTeamsConfig,
+	selection: MapSelection
+): TwoTeamsConfig | null {
+	const override = cfg.mapOverrides?.find((o) => mapTeamKey(o.selection) === mapTeamKey(selection));
+	if (override?.mode === 'standard') return null;
+	if (override)
+		return {
+			...cfg,
+			closedFaction: override.closedFaction ?? '',
+			randomClosedFaction: override.mode === 'random'
+		};
+	return !cfg.mapOnly && (cfg.closedFaction || cfg.randomClosedFaction || cfg.balance) ? cfg : null;
+}

@@ -364,3 +364,66 @@ describe('the Team balance rule', () => {
 		});
 	});
 });
+
+describe('random excluded faction', () => {
+	test('persists its choice, moves only the excluded faction and survives restart', async () => {
+		const rule = row({ randomClosedFaction: true });
+		const players = ['Lonestar', 'Valkyra', 'Manticore'].map((f, i) => player(String(i), f));
+		const first = await look(rule, tick(players, 0));
+		const saved = first.updates.find((u) => u.state)?.state as { randomClosedFaction: string };
+		expect(players.map((p) => p.faction)).toContain(saved.randomClosedFaction);
+		for (const move of first.intents.filter((i) => i.action === 'changeTeam')) {
+			expect(move.params.from).toBe(saved.randomClosedFaction);
+			expect(move.params.faction).not.toBe(saved.randomClosedFaction);
+		}
+		rule.state = saved;
+		forgetRuleMemory();
+		const restarted = await look(rule, tick(players, 1000));
+		expect(restarted.updates.some((u) => u.state)).toBe(false);
+		for (const move of restarted.intents.filter((i) => i.action === 'changeTeam'))
+			expect(move.params.from).toBe(saved.randomClosedFaction);
+	});
+	test('waits for known factions after a boundary without a player observation', async () => {
+		const rule = row({ randomClosedFaction: true });
+		rule.state = { randomClosedFaction: 'Lonestar' };
+		const boundary = tick([], 0);
+		boundary.playersObserved = false;
+		boundary.matchEnd = {} as never;
+		const ended = await look(rule, boundary);
+		expect(ended.intents).toHaveLength(0);
+		rule.state = ended.updates.find((u) => u.state)!.state;
+		expect((rule.state as { randomPending: boolean }).randomPending).toBe(true);
+		const next = await look(rule, tick([player('1', 'Lonestar')], 1000));
+		expect(
+			(next.updates.find((u) => u.state)!.state as { randomPending: boolean }).randomPending
+		).toBe(false);
+	});
+});
+
+test('map rules move only on their configured map and cancel moves when leaving it', async () => {
+	const selection = { map: 'Map', experiences: ['mode'], lighting: 'Day', zoneAlternator: '' };
+	const rule = row({ mapOverrides: [{ selection, mode: 'manual', closedFaction: 'Lonestar' }] });
+	const ctx = tick(everyone, 0);
+	ctx.status = { ...ctx.status, experiences: ['mode'], lighting: 'Day', alternator: '' };
+	const first = await look(rule, ctx);
+	expect(moved(first)).toHaveLength(3);
+	const intent = first.intents.find((i) => i.action === 'changeTeam')!;
+	expect(
+		twoTeamsMoveVerdict({
+			triggerId: rule.id,
+			serverId: 'srv',
+			steamId: intent.steamId!,
+			params: intent.params
+		})
+	).toBe('send');
+	const other = { ...ctx, ts: new Date(1000), status: { ...ctx.status, map: 'Other' } };
+	expect(moved(await look(rule, other))).toHaveLength(0);
+	expect(
+		twoTeamsMoveVerdict({
+			triggerId: rule.id,
+			serverId: 'srv',
+			steamId: intent.steamId!,
+			params: intent.params
+		})
+	).not.toBe('send');
+});

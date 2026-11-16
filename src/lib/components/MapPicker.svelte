@@ -12,13 +12,15 @@
 		zoneLabel
 	} from '$lib/format';
 	import MapArt from './MapArt.svelte';
+	import MapTeamSettings from './MapTeamSettings.svelte';
 	import type { Catalog, CatalogItem, MapSelection } from '$lib/types';
 
 	let {
 		serverId,
 		catalog,
-		disabled = false
-	}: { serverId: string; catalog: Catalog; disabled?: boolean } = $props();
+		disabled = false,
+		canManageTeams = false
+	}: { serverId: string; catalog: Catalog; disabled?: boolean; canManageTeams?: boolean } = $props();
 
 	let map = $state('');
 	let mode = $state('');
@@ -163,3 +165,5 @@
 		</div>
 	</div>
 </div>
+
+{#if canManageTeams}<MapTeamSettings {serverId} selection={{ map, experiences: [mode, ...mods].filter(Boolean), lighting, zoneAlternator: zone }} disabled={disabled || !map || !mode} />{/if}
