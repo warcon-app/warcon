@@ -495,6 +495,16 @@ test('config hides the RCON password and the feed token from whoever reads it', 
 	expect(r.revision).toBe('r1');
 });
 
+test('config edits preserve welcome text that contains a credential value', async () => {
+ const live = `${SESSION}\n.ServerWelcomeMessageLines="Welcome secret friend"\n${RCON}\nPassword=secret\n`;
+ const f = reservedClient({ route: false, text: live });
+ const shown = ((await ACTIONS.config.run(f.client, {})) as any).text as string;
+ expect(shown).toContain('.ServerWelcomeMessageLines=(hidden)');
+ expect(shown).not.toContain('secret');
+ await ACTIONS.configApply.run(f.client, { text: shown.replace(SESSION, `${SESSION}\nRotationEnabled=True`), revision: 'r1' });
+ expect(f.text()).toBe(live.replace(SESSION, `${SESSION}\nRotationEnabled=True`));
+});
+
 // CL-516586 reads the kill feed from the RCON block: each endpoint carries an address and a token.
 const WITH_FEED = `${RCON}\r\nPassword=hunter2\r\nbEventFeedEnabled=True\r\n!EventFeedEndpoints=ClearArray\r\n.EventFeedEndpoints=(Url="https://feed.example",Token="wkf_live")\r\n`;
 
