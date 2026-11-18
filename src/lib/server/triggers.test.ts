@@ -1002,3 +1002,9 @@ describe('matchReplay', () => {
 		expect(ends[2].end.leaders).toEqual(['A', 'B']);
 	});
 });
+
+test('match leaders are opt-in and can be the only match broadcast', () => {
+ const leaders = validateConfig('match_broadcast', { endMessage: '', startMessage: '', leadersAt100: true, leadersMessage: '{kills_name}: {kills}' });
+ expect(leaders).toMatchObject({ leadersAt100: true, leadersMessage: '{kills_name}: {kills}' });
+ expect(validateConfig('match_broadcast', { endMessage: 'Done', startMessage: '' })).not.toHaveProperty('leadersAt100');
+});
