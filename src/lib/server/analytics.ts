@@ -13,23 +13,27 @@ import { liveFactions } from './matches';
 
 import { MAX_COVER_S } from './rollups';
 
-export type Range = '24h' | '7d' | '30d';
+export type Range = '24h' | '48h' | '3d' | '7d' | '30d';
 const RANGE_MS: Record<Range, number> = {
 	'24h': 86400000,
+	'48h': 2 * 86400000,
+	'3d': 3 * 86400000,
 	'7d': 7 * 86400000,
 	'30d': 30 * 86400000
 };
 /** Bucket width per range so a chart gets roughly 300 points. */
-const BUCKET_S: Record<Range, number> = { '24h': 300, '7d': 1800, '30d': 7200 };
+const BUCKET_S: Record<Range, number> = { '24h': 300, '48h': 600, '3d': 900, '7d': 1800, '30d': 7200 };
 /** Ranges longer than this read the hourly rollups (the 30-day charts); shorter ones read raw rows. */
 const ROLLED_BEYOND_MS = 14 * 86400_000;
 
-export const parseRange = (v: string | null): Range => (v === '7d' || v === '30d' ? v : '24h');
+export const parseRange = (v: string | null): Range => (v === '48h' || v === '3d' || v === '7d' || v === '30d' ? v : '24h');
 
 export type PeriodUnit = 'hour' | 'day';
 /** The periods a range is cut into for the per-period charts: hours over a day, days beyond. */
 const PERIODS: Record<Range, { unit: PeriodUnit; n: number }> = {
 	'24h': { unit: 'hour', n: 24 },
+	'48h': { unit: 'hour', n: 48 },
+	'3d': { unit: 'day', n: 3 },
 	'7d': { unit: 'day', n: 7 },
 	'30d': { unit: 'day', n: 30 }
 };
