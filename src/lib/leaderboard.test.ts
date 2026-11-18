@@ -8,12 +8,14 @@ import {
 	groupCareer,
 	hiddenColumns,
 	kdRatio,
+	ladderOf,
 	matchResult,
 	meetsFloor,
 	metricValue,
 	parseBoardQuery,
 	perHour,
 	perMinute,
+	placeOnLadder,
 	publicQuery,
 	rangeStart,
 	storedHidden,
@@ -224,5 +226,53 @@ describe('groupCareer', () => {
 			{ key: 'Kavkazi', matches: 2, wins: 1, losses: 1, draws: 0, kills: 12, deaths: 3 },
 			{ key: 'Europe', matches: 1, wins: 0, losses: 0, draws: 1, kills: 1, deaths: 9 }
 		]);
+	});
+});
+
+describe('a board by kills as a ladder', () => {
+	/** what a rank counts: one more than the players with more kills */
+	const brute = (board: number[], kills: number) => board.filter((k) => k > kills).length + 1;
+	const totals = (board: number[]) => {
+		const by = new Map<number, number>();
+		for (const k of board) by.set(k, (by.get(k) ?? 0) + 1);
+		return [...by].map(([kills, players]) => ({ kills, players }));
+	};
+
+	test('a place is one more than the players with more kills, ties sharing one', () => {
+		const ladder = ladderOf(totals([50, 110, 80, 80, 5]));
+		expect(ladder).toEqual({ kills: [110, 80, 50, 5], above: [0, 1, 3, 4], players: 5 });
+		expect([200, 110, 100, 80, 79, 50, 5, 4, 0].map((k) => placeOnLadder(ladder, k))).toEqual([
+			1, 1, 2, 2, 4, 4, 5, 6, 6
+		]);
+	});
+	test('fewer kills than anyone on it: after all of them; an empty board: first', () => {
+		expect(placeOnLadder(ladderOf(totals([3, 2, 2])), 1)).toBe(4);
+		expect(placeOnLadder(ladderOf([]), 0)).toBe(1);
+		expect(placeOnLadder(ladderOf([]), 12)).toBe(1);
+	});
+	test('totals in any order, one given twice, none with nobody: the same ladder', () => {
+		expect(
+			ladderOf([
+				{ kills: 5, players: 1 },
+				{ kills: 80, players: 1 },
+				{ kills: 110, players: 1 },
+				{ kills: 80, players: 1 },
+				{ kills: 50, players: 1 },
+				{ kills: 7, players: 0 }
+			])
+		).toEqual(ladderOf(totals([50, 110, 80, 80, 5])));
+	});
+	test('random boards: every place, on and off the ladder, is the count', () => {
+		let seed = 7;
+		const rand = (n: number) => {
+			seed = (seed * 1103515245 + 12345) % 2 ** 31;
+			return seed % n;
+		};
+		for (let round = 0; round < 500; round++) {
+			const board = Array.from({ length: rand(40) }, () => rand(1 + rand(60)));
+			const ladder = ladderOf(totals(board));
+			for (let kills = -1; kills <= 62; kills++)
+				expect([kills, placeOnLadder(ladder, kills)]).toEqual([kills, brute(board, kills)]);
+		}
 	});
 });

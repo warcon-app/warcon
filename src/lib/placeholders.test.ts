@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
 	canonical,
+	MESSAGE_RULES,
 	ORG_STATS_PLACEHOLDERS,
+	ORG_WIDE_PLACEHOLDERS,
 	PLAYER_PLACEHOLDERS,
 	placeholdersFor,
 	SERVER_PLACEHOLDERS,
@@ -38,6 +40,34 @@ describe('placeholdersFor', () => {
 			'{org_kills}',
 			'{ORG_KDR}'
 		]);
+	});
+	test('a Chat command’s place across the organisation is offered with the org-wide stats, and only where they are', () => {
+		const whispered = placeholdersFor('chat_command');
+		expect(whispered.find((g) => g.key === 'own')?.names).not.toContain('org_rank');
+		expect(whispered.find((g) => g.key === 'org')?.names).toEqual([
+			'org_rank',
+			...ORG_STATS_PLACEHOLDERS
+		]);
+		expect(unfilled(['{rank} {org_rank} {ORG_RANK}'], 'chat_command')).toEqual([]);
+		// said to everyone, nothing across the organisation is filled: it is flagged as typed
+		expect(placeholdersFor('chat_command', true).map((g) => g.key)).not.toContain('org');
+		// (each once, whatever its case)
+		expect(unfilled(['{rank} {org_rank} {ORG_RANK}'], 'chat_command', true)).toEqual([
+			'{org_rank}'
+		]);
+		// it is the Chat command's own: no other rule fills it
+		expect(unfilled(['{org_rank}'], 'welcome')).toEqual(['{org_rank}']);
+		expect(unfilled(['{org_rank}'], 'staff_call')).toEqual(['{org_rank}']);
+	});
+	test('every name that reads across the organisation is one keptVars drops', () => {
+		const rulesOwn = Object.values(MESSAGE_RULES).flatMap((r) => r?.ownOrg ?? []);
+		expect(rulesOwn).toEqual(['org_rank']);
+		expect([...ORG_WIDE_PLACEHOLDERS].sort()).toEqual(
+			[...ORG_STATS_PLACEHOLDERS, ...rulesOwn].sort()
+		);
+		// a rule's own name is never one of the org-wide ones by accident
+		for (const r of Object.values(MESSAGE_RULES))
+			for (const n of r?.own ?? []) expect(ORG_WIDE_PLACEHOLDERS.has(n)).toBe(false);
 	});
 	test('the organisation’s names are this server’s behind org_', () => {
 		expect<string[]>([...ORG_STATS_PLACEHOLDERS]).toEqual(

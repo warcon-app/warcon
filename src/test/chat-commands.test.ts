@@ -16,21 +16,26 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import type { SessionUser } from '$lib/server/access';
 import {
 	auditLog,
+	matches,
+	matchPlayers,
 	organizations,
 	orgRoles,
 	outbox,
+	playerSessions,
 	servers,
 	triggers,
 	webhooks
 } from '$lib/server/db/schema';
 import { acquireOrRenew, releaseOwnership } from '$lib/server/leadership';
 import { forgetMemory, memoryFor, observeServer, type ServerMemory } from '$lib/server/observe';
-import { chatMemoryOf, forgetChat } from '$lib/server/chat-look';
+import { chatMemoryOf, forgetChat, orgLadderOf } from '$lib/server/chat-look';
+import { killsLadder, rankOf } from '$lib/server/leaderboards';
+import { placeOnLadder } from '$lib/leaderboard';
 import { CHAT_SENDS_PER_LOOK } from '$lib/server/chat-rules';
 import { WardogsClient } from '$lib/server/rcon';
 import { invalidateTriggers } from '$lib/server/triggers';
@@ -718,6 +723,206 @@ describe.skipIf(!hasTestDb)('Chat rules, live', () => {
 		say(w, C, '!next');
 		await look(m);
 		expect(g.rotationReads).toBe(2);
+	});
+
+	test('a place across the organisation: every server of it, never another organisation’s, in a whisper only', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		const g = game(w.server.id);
+		const MIN = 60_000;
+		const ago = (ms: number) => new Date(Date.now() - ms);
+		/** a player who has never been on this server, and one with all the kills and little time */
+		const [E, X] = ['76561198000000816', '76561198000000817'];
+		/** a match over a day ago on that server, with these lines and an hour and a half each */
+		const played = async (serverId: string, lines: [string, number][], minutes = 90) => {
+			const [match] = await env.db
+				.insert(matches)
+				.values({
+					serverId,
+					startedAt: ago(1440 * MIN),
+					endedAt: ago(1440 * MIN - 40 * MIN),
+					map: 'Europe',
+					finalScores: [
+						{ name: 'Valkyra', score: 100 },
+						{ name: 'Lonestar', score: 50 }
+					],
+					winner: 'Valkyra'
+				})
+				.returning({ id: matches.id });
+			for (const [steamId, kills] of lines) {
+				await env.db.insert(matchPlayers).values({
+					matchId: match.id,
+					serverId,
+					steamId,
+					name: NAMES[steamId] ?? 'Someone',
+					faction: 'Valkyra',
+					kills,
+					deaths: 1
+				});
+				await env.db.insert(playerSessions).values({
+					serverId,
+					steamId,
+					name: NAMES[steamId] ?? 'Someone',
+					faction: 'Valkyra',
+					joinedAt: ago(1440 * MIN),
+					lastSeen: ago(1440 * MIN - minutes * MIN),
+					leftAt: ago(1440 * MIN - minutes * MIN)
+				});
+			}
+		};
+		// Here: Kova 50, Night Owl 10. On the organisation's other server: Night Owl 100, Brick 80,
+		// and 500 by someone with half an hour, under the board's hour. On another organisation's
+		// server, 1000 kills and Kova's 100 there, none of this organisation's business.
+		await played(w.server.id, [
+			[B, 50],
+			[A, 10]
+		]);
+		await played(w.otherServer.id, [
+			[A, 100],
+			[C, 80]
+		]);
+		await played(w.otherServer.id, [[E, 500]], 30);
+		await played(
+			w.otherOrgServer.id,
+			[
+				[X, 1000],
+				[B, 100]
+			],
+			120
+		);
+
+		await rule(w, 'chat_command', {
+			command: 'orgall',
+			replies: 'Across the org: {org_rank}, {org_kills} kills.',
+			to: 'everyone',
+			cooldownSeconds: 10
+		});
+		const stats = {
+			command: 'stats',
+			replies: '{name}: {rank} here, {org_rank} across the org.',
+			cooldownSeconds: 0
+		};
+		await rule(w, 'chat_command', stats);
+		await rule(w, 'chat_command', {
+			command: 'here',
+			replies: '{name}: {rank} here, {kills} kills.',
+			cooldownSeconds: 0
+		});
+		// The ladder places every player where the board's own count does, on one server or on all
+		// of the organisation's.
+		const orgIds = [w.server.id, w.otherServer.id];
+		for (const ids of [[w.server.id], orgIds]) {
+			const ladder = await killsLadder(env, ids);
+			const stats = (await env.db.execute<{ steam_id: string; kills: string; minutes: string }>(
+				sql`SELECT steam_id, SUM(kills) AS kills, SUM(seconds) / 60 AS minutes FROM player_totals
+				     WHERE server_id IN ${ids} GROUP BY steam_id`
+			)) as unknown as { steam_id: string; kills: string; minutes: string }[];
+			for (const p of stats)
+				expect([
+					p.steam_id,
+					Number(p.minutes) >= 60 ? placeOnLadder(ladder, Number(p.kills)) : null
+				]).toEqual([p.steam_id, await rankOf(env, ids, p.steam_id)]);
+		}
+
+		// Each read of an organisation's board, counted; failed on purpose where `broken` says so.
+		const dialect = (env.db as unknown as { dialect: { sqlToQuery(q: unknown): { sql: string } } })
+			.dialect;
+		const execute = env.db.execute.bind(env.db);
+		let boardReads = 0;
+		let broken = false;
+		const reads = spyOn(env.db, 'execute').mockImplementation(((q: unknown) => {
+			if (dialect.sqlToQuery(q).sql.includes('GROUP BY kills')) {
+				boardReads++;
+				if (broken) return Promise.reject(new Error('connection lost'));
+			}
+			return execute(q as Parameters<typeof execute>[0]);
+		}) as typeof env.db.execute);
+		const warn = spyOn(console, 'warn').mockImplementation(() => {});
+		/** as if a minute had gone by since the organisation's board was read */
+		const minuteOn = () => {
+			later(w.server.id, 61_000, { reads: false });
+			const ladder = orgLadderOf(w.org.id);
+			if (ladder) ladder.at -= 61_000;
+		};
+		try {
+			await look(m);
+			// Said to everyone it is no placeholder, as the org-wide stats are not: not worked out either.
+			// Nor is it for a whisper that does not name it.
+			say(w, A, '!orgall');
+			say(w, B, '!here');
+			await look(m);
+			expect(g.broadcasts).toEqual(['Across the org: {org_rank}, {org_kills} kills.']);
+			expect(g.whispers).toEqual([[B, 'Kova: 1 here, 50 kills.']]);
+			g.whispers.length = 0;
+			expect(orgLadderOf(w.org.id)).toBeUndefined();
+			expect(boardReads).toBe(0);
+
+			say(w, A, '!stats');
+			say(w, B, '!stats');
+			say(w, C, '!stats');
+			say(w, E, '!stats');
+			await look(m);
+			expect(g.whispers).toEqual([
+				[A, 'Night Owl: 2 here, 1 across the org.'],
+				[B, 'Kova: 1 here, 3 across the org.'],
+				// no time here (they are on, a moment): unranked here, second across the org
+				[C, 'Brick: unranked here, 2 across the org.'],
+				// the most kills of all, in half an hour: on no board yet
+				[E, `${E}: unranked here, unranked across the org.`]
+			]);
+
+			// One read of the organisation's board for all four, and for its other server's players too.
+			expect(boardReads).toBe(1);
+			const w2 = { ...w, server: w.otherServer };
+			const m2 = await memoryOf(w2);
+			await rule(w2, 'chat_command', stats);
+			await look(m2);
+			say(w2, C, '!stats');
+			await look(m2);
+			expect(game(w.otherServer.id).whispers).toEqual([[C, 'Brick: 2 here, 2 across the org.']]);
+			expect(boardReads).toBe(1);
+
+			// The organisation's board is read once a minute at most; a player's own totals each time.
+			// Kova plays a hundred more kills elsewhere: 150, the most of anyone now.
+			await played(w.otherServer.id, [[B, 100]]);
+			say(w, B, '!stats');
+			say(w, A, '!stats');
+			await look(m);
+			expect(g.whispers.slice(-2)).toEqual([
+				[B, 'Kova: 1 here, 1 across the org.'],
+				// on the board as read a moment ago, nobody had more than Night Owl's 110
+				[A, 'Night Owl: 2 here, 1 across the org.']
+			]);
+			minuteOn();
+			say(w, A, '!stats');
+			await look(m);
+			expect(g.whispers.at(-1)).toEqual([A, 'Night Owl: 2 here, 2 across the org.']);
+			expect(boardReads).toBe(2);
+
+			// A read that fails: the place is not known, for that minute, and nothing else is lost.
+			minuteOn();
+			broken = true;
+			say(w, A, '!stats');
+			await look(m);
+			expect(g.whispers.at(-1)).toEqual([A, 'Night Owl: 2 here, … across the org.']);
+			expect(warn.mock.calls.map((c) => String(c[0]))).toContain(
+				`[warcon] chat rules, the board of organisation ${w.org.id}:`
+			);
+			broken = false;
+			say(w, A, '!stats');
+			await look(m);
+			expect(g.whispers.at(-1)).toEqual([A, 'Night Owl: 2 here, … across the org.']);
+			expect(boardReads).toBe(3);
+			minuteOn();
+			say(w, A, '!stats');
+			await look(m);
+			expect(g.whispers.at(-1)).toEqual([A, 'Night Owl: 2 here, 2 across the org.']);
+			expect(boardReads).toBe(4);
+			expect(g.whispers).toHaveLength(10);
+		} finally {
+			reads.mockRestore();
+			warn.mockRestore();
+		}
 	});
 
 	test('a staff call: a card on Discord with who and what, a whisper back; a report names its player', async () => {
@@ -1458,7 +1663,10 @@ describe.skipIf(!hasTestDb)('Chat rules, live', () => {
 				params: { id: w.server.id },
 				body: {
 					kind: 'chat_command',
-					config: { command: 'help', replies: ['On {server}: {commands}', '{name} is rank {rank}'] }
+					config: {
+						command: 'help',
+						replies: ['On {server}: {commands}', '{name} is rank {rank}, {org_rank} in the org']
+					}
 				}
 			});
 			expect(res.status).toBe(200);
@@ -1466,9 +1674,26 @@ describe.skipIf(!hasTestDb)('Chat rules, live', () => {
 			expect(result.fires).toBe(0);
 			expect(result.items.map((i) => i.text)).toEqual([
 				`!help → the player: On ${(await env.db.select().from(servers).where(eq(servers.id, w.server.id)))[0].name}: !admin !report !help`,
-				'!help → the player: Player is rank …'
+				'!help → the player: Player is rank …, … in the org'
 			]);
 			expect(result.notes.join(' ')).toContain('the chat is not kept');
+			// said to everyone, the place across the organisation stays as typed, as on the server
+			const said = await callApi(dry, w.users.owner, {
+				method: 'POST',
+				params: { id: w.server.id },
+				body: {
+					kind: 'chat_command',
+					config: {
+						command: 'ranks',
+						replies: 'Rank {rank}, {org_rank} in the org',
+						to: 'everyone',
+						cooldownSeconds: 60
+					}
+				}
+			});
+			expect((said.body as { result: DryRunResult }).result.items.map((i) => i.text)).toEqual([
+				'!ranks → everyone: Rank …, {org_rank} in the org'
+			]);
 			const staffPreview = await callApi(dry, w.users.owner, {
 				method: 'POST',
 				params: { id: w.server.id },

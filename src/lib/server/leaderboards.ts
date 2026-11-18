@@ -22,6 +22,7 @@ import {
 	BOARD_PAGE,
 	DEFAULT_FLOOR_MINUTES,
 	groupCareer,
+	ladderOf,
 	streak,
 	type BoardMetric,
 	type BoardQuery,
@@ -31,6 +32,7 @@ import {
 	type CareerPlace,
 	type CareerSeason,
 	type CareerView,
+	type KillsLadder,
 	type MatchResult
 } from '$lib/leaderboard';
 import {
@@ -721,6 +723,20 @@ export async function rankOf(env: Env, ids: string[], steamId: string): Promise<
 		SELECT (SELECT minutes >= ${DEFAULT_FLOOR_MINUTES} FROM me) AS qualifies,
 		       (SELECT COUNT(*) FROM base, me WHERE base.minutes >= ${DEFAULT_FLOOR_MINUTES} AND base.kills > me.kills) AS above`);
 	return row?.qualifies ? num(row.above) + 1 : null;
+}
+
+/**
+ * The all-time board by kills over these servers as a ladder ($lib/leaderboard), from one read of
+ * the board: the players over the default playtime floor, as rankOf counts them, by their kills.
+ */
+export async function killsLadder(env: Env, ids: string[]): Promise<KillsLadder> {
+	if (!ids.length) return ladderOf([]);
+	const rows = await env.db.execute<{ kills: string; players: string }>(sql`
+		WITH ${totalsBase(ids)}
+		SELECT kills, COUNT(*) AS players FROM base
+		 WHERE minutes >= ${DEFAULT_FLOOR_MINUTES}
+		 GROUP BY kills`);
+	return ladderOf(rows.map((r) => ({ kills: num(r.kills), players: num(r.players) })));
 }
 
 interface LineRow extends Record<string, unknown> {
