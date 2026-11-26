@@ -29,11 +29,18 @@ import type { ServerRow } from './access';
 import { ACTIONS, readChat } from './actions';
 import { forLog } from './http';
 import { GameError, type WardogsClient } from './rcon';
-import { triggers, type TriggerRow } from './db/schema';
+import { servers, triggers, type TriggerRow } from './db/schema';
 import { isOwner, LostOwnership, withOwnedTransaction } from './leadership';
 import { settings } from './settings';
 import { chatAnswers, chatReads } from './metrics';
-import { chatRulesAmong, renderTemplate, statsFor, statsOf, statsReader } from './triggers';
+import {
+	chatRulesAmong,
+	renderTemplate,
+	statsFor,
+	statsOf,
+	statsReader,
+	type StatsReader
+} from './triggers';
 import { keptVars, messageVars, serverVars, UNKNOWN, type MessageVars } from './message-vars';
 import {
 	CHAT_WAIT_WORDS,
@@ -63,8 +70,13 @@ import {
 	voteWantsChat,
 	type MapVoteConfig
 } from './map-vote';
-import { loadBoard, rankOf } from './leaderboards';
-import { DEFAULT_BOARD_QUERY } from '$lib/leaderboard';
+import { killsLadder, loadBoard, rankOf } from './leaderboards';
+import {
+	DEFAULT_BOARD_QUERY,
+	DEFAULT_FLOOR_MINUTES,
+	placeOnLadder,
+	type KillsLadder
+} from '$lib/leaderboard';
 import { MAX_CHAT } from '$lib/chat';
 import { CHAT_PAGE, type ChatRead } from '$lib/chat-read';
 import { COMMAND_PREFIX, commandsLine, namedPlayer, NOT_ANSWERED } from '$lib/chat-commands';
@@ -97,6 +109,8 @@ export const CHAT_FLUSH_MS = 60_000;
 const PRUNE_MS = 60_000;
 const ROTATION_TTL_MS = 60_000;
 const TOP_TTL_MS = 60_000;
+/** An organisation's board, as `{org_rank}` places players on it, is read at most this often. */
+const ORG_LADDER_TTL_MS = 60_000;
 const RANK_TTL_MS = 5 * 60_000;
 
 /** What a reply said to everyone calls a player in anonymous mode the game gave no other name. */
@@ -153,12 +167,25 @@ const fresh = (now: number): ChatMemory => ({
 	ranks: new Map()
 });
 
+/**
+ * Each organisation's all-time board by kills as `{org_rank}` reads it: one ladder per organisation,
+ * read at most once a minute and shared by the looks of all its servers (a read under way is
+ * waited on, not made twice); `ladder` resolves to null where the read failed.
+ */
+const orgLadders = new Map<string, { at: number; ladder: Promise<KillsLadder | null> }>();
+
 /** Forgets the chat memory of one server (gone from the worker), or of every server (a new period
  *  of ownership: another worker may have read on since). */
 export function forgetChat(serverId?: string): void {
 	if (serverId) memories.delete(serverId);
-	else memories.clear();
+	else {
+		memories.clear();
+		orgLadders.clear();
+	}
 }
+
+/** The ladder an organisation's servers share, for the tests. */
+export const orgLadderOf = (orgId: string) => orgLadders.get(orgId);
 
 /** The chat memory of a server, for the tests. */
 export const chatMemoryOf = (serverId: string): ChatMemory | undefined => memories.get(serverId);
@@ -267,6 +294,7 @@ export async function keepChat(env: Env, look: ChatLook): Promise<ChatLookResult
 		mem.prunedAt = now;
 		pruneChatTracks(mem.tracks, rules, now);
 		for (const [steamId, r] of mem.ranks) if (now - r.at >= RANK_TTL_MS) mem.ranks.delete(steamId);
+		dropOldLadders(now);
 	}
 	const { acts } = chatStep(wordsOf(rules), mem.tracks, lines, now, sendsLeft(mem.tracks, now));
 	const result = acts.length ? await perform(env, look, mem, rules, acts, on) : NONE;
@@ -545,7 +573,7 @@ async function perform(
 						),
 						steamId
 					);
-			const own = await ownVars(env, look, mem, rules, cfg, hidden ? '' : steamId);
+			const own = await ownVars(env, look, mem, rules, read, cfg, hidden ? '' : steamId);
 			const all = messageVars(base, about, stats, own);
 			const vars = said ? keptVars(all) : all;
 			let sent = 0;
@@ -639,6 +667,7 @@ async function ownVars(
 	look: ChatLook,
 	mem: ChatMemory,
 	rules: ChatRule[],
+	read: StatsReader,
 	cfg: ChatCommandConfig,
 	steamId: string
 ): Promise<MessageVars> {
@@ -649,6 +678,10 @@ async function ownVars(
 		own.teams = teamsLine(look.players, look.status?.scores.map((f) => f.name) ?? []);
 	if (uses.has('next_map') || uses.has('rotation')) Object.assign(own, await rotationOf(look, mem));
 	if (uses.has('rank')) own.rank = steamId ? await rankFor(env, look, mem, steamId) : UNKNOWN;
+	// Across the organisation, only in a whisper: said to everyone it is no placeholder (keptVars),
+	// so it is not worked out either.
+	if (uses.has('org_rank') && cfg.to !== 'everyone')
+		own.org_rank = steamId ? await orgRankFor(env, look, read, steamId) : UNKNOWN;
 	if (uses.has('top')) own.top = await topFor(env, look, mem);
 	return own;
 }
@@ -696,6 +729,57 @@ async function rankFor(
 	}
 	mem.ranks.set(steamId, { at: look.now, rank });
 	return rank;
+}
+
+/**
+ * The player's place on the all-time board by kills of every server of the organisation; "unranked"
+ * under its playtime floor. That board is all the organisation's servers', so it is not read for
+ * each player: the organisation's ladder is read at most once a minute for all its servers, and the
+ * player's own totals come from the look's read of the org-wide stats, as `{org_kills}`'s do.
+ */
+async function orgRankFor(
+	env: Env,
+	look: ChatLook,
+	read: StatsReader,
+	steamId: string
+): Promise<string> {
+	const [mine, ladder] = await Promise.all([
+		read('org', [steamId]),
+		orgLadder(env, look.server.orgId, look.now)
+	]);
+	const me = mine.get(steamId);
+	if (!me || !ladder) return UNKNOWN;
+	return me.minutes < DEFAULT_FLOOR_MINUTES ? 'unranked' : String(placeOnLadder(ladder, me.kills));
+}
+
+/** The organisation's ladder, read at most once a minute; what was read, or failed, stands that
+ *  long. */
+function orgLadder(env: Env, orgId: string, now: number): Promise<KillsLadder | null> {
+	const had = orgLadders.get(orgId);
+	if (had && now - had.at < ORG_LADDER_TTL_MS) return had.ladder;
+	const ladder = (async () => {
+		try {
+			const ids = await env.db
+				.select({ id: servers.id })
+				.from(servers)
+				.where(eq(servers.orgId, orgId));
+			return await killsLadder(
+				env,
+				ids.map((r) => r.id)
+			);
+		} catch (err) {
+			console.warn(`[warcon] chat rules, the board of organisation ${orgId}:`, forLog(err));
+			return null;
+		}
+	})();
+	orgLadders.set(orgId, { at: now, ladder });
+	return ladder;
+}
+
+/** Ladders nobody asked for in their minute go: read again when next asked for. */
+function dropOldLadders(now: number): void {
+	for (const [orgId, e] of orgLadders)
+		if (now - e.at >= ORG_LADDER_TTL_MS) orgLadders.delete(orgId);
 }
 
 /** The first three of this server's all-time board by kills. */

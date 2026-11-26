@@ -185,6 +185,13 @@ describe('messageVars', () => {
 			renderTemplate('{kills} {kd} {org_kills} {org_kd} {org_kdr} {name}', kept, MAX_REASON)
 		).toBe('1234 1.50 {org_kills} {org_kd} {org_kdr} [ABC] Night Owl');
 	});
+	test('nor a Chat command’s place across the organisation, though the rule worked it out', () => {
+		const all = messageVars(server, owl, stats, { rank: 4, org_rank: 2 });
+		expect(renderTemplate('{rank} / {org_rank}', all, MAX_CHAT)).toBe('4 / 2');
+		expect(renderTemplate('{rank} / {org_rank} / {ORG_RANK}', keptVars(all), MAX_CHAT)).toBe(
+			'4 / {org_rank} / {ORG_RANK}'
+		);
+	});
 	test('a value is filled once: a name that reads like a placeholder stays as it is', () => {
 		const v = messageVars(server, { ...owl, name: '{steamid}' }, stats);
 		expect(renderTemplate('{name} ({steamid})', v, MAX_CHAT)).toBe(`{steamid} (${A})`);

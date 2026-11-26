@@ -3956,11 +3956,12 @@
 						{MAX_COMMAND_ALIASES} others. Nothing after the word is repeated back, so a command cannot
 						make the server say a player's words. {'{commands}'} lists this server's words,
 						{'{teams}'} the players on each side, {'{next_map}'} and {'{rotation}'} come from the server's
-						rotation, {'{rank}'} and {'{top}'} from its all-time board by kills. Said to everyone, a player
-						in anonymous mode goes by the name the other players see, and their SteamID, ping, stats and
-						rank are left out. A name is one a player chose, said in the server's voice whenever they
-						ask, so leave {'{name}'} out of a broadcast or keep such names off with the Name filter. A
-						player gets six answers a minute at most.
+						rotation, {'{rank}'} and {'{top}'} from its all-time board by kills, {'{org_rank}'} from that
+						board over every server of the organisation (in a whisper only, as the org-wide stats). Said
+						to everyone, a player in anonymous mode goes by the name the other players see, and their
+						SteamID, ping, stats and rank are left out. A name is one a player chose, said in the server's
+						voice whenever they ask, so leave {'{name}'} out of a broadcast or keep such names off with
+						the Name filter. A player gets six answers a minute at most.
 					</p>
 					<p class="note">
 						Nothing a player types is kept: not the lines that are no command, and not who used this

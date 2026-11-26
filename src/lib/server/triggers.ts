@@ -2811,9 +2811,11 @@ export async function dryRun(
 				next_map: UNKNOWN,
 				rotation: UNKNOWN,
 				rank: UNKNOWN,
+				org_rank: UNKNOWN,
 				top: UNKNOWN
 			};
-			// said to everyone, a reply has no org-wide stats: they stay as typed, here as on the server
+			// said to everyone, a reply has nothing across the organisation (its stats, `{org_rank}`):
+			// they stay as typed, here as on the server
 			const all = dryRunVars(server.name, player, own);
 			const filled = c.to === 'everyone' ? keptVars(all) : all;
 			for (const reply of c.replies)

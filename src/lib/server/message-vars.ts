@@ -8,6 +8,7 @@ import { kdRatio, winRate } from '$lib/leaderboard';
 import { scoreCapOf } from '$lib/match';
 import {
 	ORG_STATS_PLACEHOLDERS,
+	ORG_WIDE_PLACEHOLDERS,
 	PLACEHOLDER_ALIASES,
 	PLAYER_PLACEHOLDERS,
 	STATS_PLACEHOLDERS
@@ -170,10 +171,11 @@ export function dryRunVars(
 
 /**
  * The placeholders of a text kept where staff read it (a Kill distance reason becomes a ban
- * reason): the player's org-wide stats are no placeholders there, so they go as typed.
+ * reason), or said to the whole server: nothing across the organisation is a placeholder there (the
+ * player's org-wide stats, a Chat command's `{org_rank}`), so it goes as typed.
  */
 export function keptVars(vars: MessageVars): MessageVars {
-	const org = new Set<string>(ORG_STATS_PLACEHOLDERS);
+	const org = new Set<string>(ORG_WIDE_PLACEHOLDERS);
 	const out = { ...vars };
 	for (const [alias, name] of Object.entries(PLACEHOLDER_ALIASES))
 		if (org.has(name)) org.add(alias);

@@ -61,6 +61,49 @@ export const PUBLIC_MAX_PAGE = 20;
 /** The board a career rank is read off: all time, by kills, at the default floor. */
 export const RANK_METRIC: BoardMetric = 'kills';
 
+/**
+ * A board by kills as a ladder: each total of kills that players on it have, from the most, with
+ * how many players have more. A player's place on it is the place a rank reads off the board
+ * (one more than the players with more kills), without the board read again for each player.
+ */
+export interface KillsLadder {
+	/** totals of kills, most first, each once */
+	kills: number[];
+	/** for each total, the players with more kills */
+	above: number[];
+	/** every player on the ladder */
+	players: number;
+}
+
+/** The ladder of a board's totals: each total of kills with how many players have it. */
+export function ladderOf(totals: { kills: number; players: number }[]): KillsLadder {
+	const out: KillsLadder = { kills: [], above: [], players: 0 };
+	for (const t of [...totals].sort((a, b) => b.kills - a.kills)) {
+		if (t.players <= 0) continue;
+		if (out.kills.at(-1) === t.kills) {
+			out.players += t.players;
+			continue;
+		}
+		out.kills.push(t.kills);
+		out.above.push(out.players);
+		out.players += t.players;
+	}
+	return out;
+}
+
+/** The place on the ladder of a player with these kills: one more than the players with more. */
+export function placeOnLadder(ladder: KillsLadder, kills: number): number {
+	// the first total that is not more than theirs: every player before it has more
+	let lo = 0;
+	let hi = ladder.kills.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if (ladder.kills[mid] > kills) lo = mid + 1;
+		else hi = mid;
+	}
+	return (lo < ladder.kills.length ? ladder.above[lo] : ladder.players) + 1;
+}
+
 export interface BoardQuery {
 	scope: BoardScope;
 	range: BoardRange;

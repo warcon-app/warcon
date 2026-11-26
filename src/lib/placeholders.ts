@@ -60,6 +60,9 @@ export const PLACEHOLDER_ALIASES: Readonly<Record<string, string>> = {
 interface MessageRule {
 	fields: readonly string[];
 	own: readonly string[];
+	/** its own that read across the organisation (a Chat command's `{org_rank}`): offered with the
+	 *  org-wide stats and, as they are, only where those are */
+	ownOrg?: readonly string[];
 	player: boolean;
 	/** its text can be kept where staff read it (a Kill distance reason becomes a ban reason), or is
 	 *  said to the whole server (a Bounty's), so it has no org-wide stats: staff of this server may
@@ -110,10 +113,12 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 		kept: true
 	},
 	// a reply to a word a player typed in chat: this server's words, how many are on each side, the
-	// map up next and the maps in turn, the player's place on this server's board and its first three
+	// map up next and the maps in turn, the player's place on this server's board and its first three,
+	// and their place on the board of every server of the organisation
 	chat_command: {
 		fields: ['replies'],
 		own: ['commands', 'teams', 'next_map', 'rotation', 'rank', 'top'],
+		ownOrg: ['org_rank'],
 		player: true
 	},
 	// the word the player typed (one of the rule's own), and the seconds left before their next call
@@ -147,14 +152,18 @@ export interface PlaceholderGroup {
 export function placeholdersFor(kind: TriggerKind, said = false): PlaceholderGroup[] {
 	const r = MESSAGE_RULES[kind];
 	if (!r) return [];
-	const taken = new Set(r.own);
+	const ownOrg = r.ownOrg ?? [];
+	const taken = new Set([...r.own, ...ownOrg]);
 	const rest = (names: readonly string[]) => names.filter((n) => !taken.has(n));
 	const groups: PlaceholderGroup[] = [{ key: 'own', names: [...r.own] }];
 	if (r.player)
 		groups.push(
 			{ key: 'player', names: rest(PLAYER_PLACEHOLDERS) },
 			{ key: 'stats', names: r.noStats ? [] : rest(STATS_PLACEHOLDERS) },
-			{ key: 'org', names: r.kept || r.noStats || said ? [] : rest(ORG_STATS_PLACEHOLDERS) }
+			{
+				key: 'org',
+				names: r.kept || r.noStats || said ? [] : [...ownOrg, ...rest(ORG_STATS_PLACEHOLDERS)]
+			}
 		);
 	groups.push({ key: 'server', names: rest(SERVER_PLACEHOLDERS) });
 	return groups.filter((g) => g.names.length);
@@ -181,6 +190,15 @@ export function unfilled(texts: string[], kind: TriggerKind, said = false): stri
 				out.set(token.toLowerCase(), token);
 	return [...out.values()];
 }
+
+/**
+ * Every placeholder that reads across the organisation: its stats, and the rules' own of that kind.
+ * None is filled in a text kept where staff read it or said to the whole server (`keptVars`).
+ */
+export const ORG_WIDE_PLACEHOLDERS: ReadonlySet<string> = new Set([
+	...ORG_STATS_PLACEHOLDERS,
+	...Object.values(MESSAGE_RULES).flatMap((r) => r?.ownOrg ?? [])
+]);
 
 const STATS = new Set<string>(STATS_PLACEHOLDERS);
 const ORG_STATS = new Set<string>(ORG_STATS_PLACEHOLDERS);
