@@ -127,7 +127,7 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 	// each map, all votes cast, and the map that won with its votes
 	map_vote: {
 		fields: ['openMessage', 'tallyMessage', 'resultMessage', 'noneMessage'],
-		own: ['options', 'seconds', 'tally', 'total', 'winner', 'votes'],
+		own: ['options', 'weather', 'seconds', 'tally', 'total', 'winner', 'votes'],
 		player: false
 	}
 };

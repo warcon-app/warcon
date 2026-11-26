@@ -2,6 +2,9 @@
 // from, and the bounds each number is held to. Pure and client-safe; the rule itself is
 // server/map-vote.ts.
 
+/** Either placeholder can supply the numbered menu in an opening message. */
+export const MAP_VOTE_MENU_TOKEN = /\{(?:options|weather)\}/i;
+
 /** What a new Map vote rule starts from. */
 export const MAP_VOTE_DEFAULTS = {
 	/** the leading side's score that opens the vote: KOTH plays to 100, a point a score tick */

@@ -1,6 +1,6 @@
 // The Map vote rule (kind `map_vote`). Near the end of a match, once the side in the lead reaches the
-// rule's score, the server is told which maps it can play next, each with its number ("!1 Ozeti ·
-// !2 Zestafona · !3 Sabatulo"); for the rule's seconds players type the number in chat, and the map
+// rule's score, the server is told which maps it can play next, each with its number and configured
+// weather ("!1 Ozeti (Day Early Fog)"). For the rule's seconds players type the number, and the map
 // with the most votes is put next in the rotation.
 //
 //   - The options come from the server's own rotation, read as the vote opens: for each map but the
@@ -35,7 +35,7 @@ import { isMod, mapId, mapName, modKey, prettify } from '../format';
 import { MAX_CHAT } from '../chat';
 import { oneLine } from '../saved-messages';
 import { COMMAND_PREFIX } from '../chat-commands';
-import { MAP_VOTE_DEFAULTS, MAP_VOTE_LIMITS } from '../map-vote';
+import { MAP_VOTE_DEFAULTS, MAP_VOTE_LIMITS, MAP_VOTE_MENU_TOKEN } from '../map-vote';
 import type { MapSelection, Rotation } from '../types';
 
 /** The outbox action that opens a vote: the options read from the rotation and said (not in ACTIONS). */
@@ -49,7 +49,7 @@ export interface MapVoteConfig {
 	options: number;
 	minPlayers: number;
 	minVotes: number;
-	/** said as the vote opens; `{options}` lists the maps with their numbers */
+	/** said as the vote opens; `{options}` or `{weather}` lists the numbered maps */
 	openMessage: string;
 	/** said halfway through with the votes so far; '' for nothing */
 	tallyMessage: string;
@@ -67,10 +67,10 @@ export function validateMapVote(c: Record<string, unknown>): MapVoteConfig {
 	const text = (k: 'openMessage' | 'tallyMessage' | 'resultMessage' | 'noneMessage') =>
 		c[k] === undefined ? d[k] : oneLine(c[k], MAX_CHAT);
 	const openMessage = text('openMessage');
-	if (!/\{options\}/i.test(openMessage))
+	if (!MAP_VOTE_MENU_TOKEN.test(openMessage))
 		throw new ApiError(
 			400,
-			'The opening message needs {options}: it is where players read the maps and their numbers.'
+			'Include {options} or {weather} in the opening message so players can see the numbered maps.'
 		);
 	const resultMessage = text('resultMessage');
 	if (!resultMessage) throw new ApiError(400, 'Write the message that says which map won.');
@@ -155,53 +155,74 @@ const modifiersOf = (e: MapSelection): string[] => {
 	return [...one.values()];
 };
 
-/**
- * The options as players read them: each its map, and where they are not all played alike, how
- * each is ("Ozeti (Infantry Only)"); one played the standard way says nothing.
- */
-export function optionNames(options: readonly VoteOption[]): string[] {
-	const mods = options.map((o) => modifiersOf(o.entry));
-	const key = (m: string[]) => [...m].sort().join('+');
-	const alike = mods.every((m) => key(m) === key(mods[0] ?? []));
-	return options.map((o, i) => {
-		const name = mapName(o.entry.map);
-		return alike || !mods[i].length ? name : `${name} (${mods[i].join(', ')})`;
-	});
-}
-
-/** "!1 Ozeti · !2 Zestafona · !3 Sabatulo": the options as players type them. */
-export const optionsLine = (options: readonly VoteOption[]): string =>
-	optionNames(options)
-		.map((name, i) => `${COMMAND_PREFIX}${i + 1} ${name}`)
-		.join(' · ');
-
-/** "!1 Ozeti 4 · !2 Zestafona 2 · !3 Sabatulo 0": the votes so far. */
-export const tallyLine = (options: readonly VoteOption[], counts: readonly number[]): string =>
-	optionNames(options)
-		.map((name, i) => `${COMMAND_PREFIX}${i + 1} ${name} ${counts[i] ?? 0}`)
-		.join(' · ');
-
 /** Cut to `max` UTF-16 units, never through a character: half an emoji is dropped, not sent. */
 const cut = (text: string, max: number): string => {
 	const out = text.slice(0, Math.max(0, max));
 	return /[\uD800-\uDBFF]$/.test(out) ? out.slice(0, -1) : out;
 };
 
+const shorten = (text: string, max: number): string =>
+	text.length <= max ? text : cut(text, max - 1).trimEnd() + '…';
+
+/** A rotation entry can leave its lighting blank or use the game's None sentinel. */
+export const voteWeather = (entry: MapSelection): string =>
+	/^\s*none\s*$/i.test(entry.lighting) ? '' : oneLine(prettify(entry.lighting), MAX_CHAT);
+
+/** Each map with its configured weather and, when the options differ, its modifiers. */
+export function optionNames(options: readonly VoteOption[], max = MAX_CHAT): string[] {
+	const mods = options.map((o) => modifiersOf(o.entry));
+	const key = (m: string[]) => [...m].sort().join('+');
+	const alike = mods.every((m) => key(m) === key(mods[0] ?? []));
+	return options.map((o, i) => {
+		const name = mapName(o.entry.map);
+		const weather = voteWeather(o.entry);
+		let modes = alike ? '' : mods[i].join(', ');
+		if (modes && weather) {
+			// Reserve the map name and weather before making room for modifiers.
+			const room = max - name.length - weather.length - ' (, )'.length;
+			modes = room > 0 ? shorten(modes, room) : '';
+		}
+		const description = [modes, weather].filter(Boolean).join(', ');
+		if (!description) return shorten(name, max);
+		const space = max - ' ()'.length;
+		if (name.length + description.length <= space) return `${name} (${description})`;
+		// If the name or weather itself is unusually long, leave both readable.
+		const mapSpace = Math.min(
+			name.length,
+			Math.max(Math.floor(space / 2), space - description.length)
+		);
+		return `${shorten(name, mapSpace)} (${shorten(description, space - mapSpace)})`;
+	});
+}
+
+/** Keep all ballot numbers and counts even when the rotation gives five long labels. */
+export function optionsLine(options: readonly VoteOption[], counts?: readonly number[]): string {
+	const numbered = (names: string[]) =>
+		names
+			.map((name, i) => `${COMMAND_PREFIX}${i + 1} ${name}${counts ? ' ' + (counts[i] ?? 0) : ''}`)
+			.join(' · ');
+	const names = optionNames(options);
+	const line = numbered(names);
+	if (line.length <= MAX_CHAT) return line;
+	const fixed = numbered(names.map(() => '')).length;
+	return numbered(optionNames(options, Math.floor((MAX_CHAT - fixed) / options.length)));
+}
+
+export const tallyLine = (options: readonly VoteOption[], counts: readonly number[]): string =>
+	optionsLine(options, counts);
+
 /**
- * The opening text with its options put in, as the game takes it. The list is kept whole: should
- * the whole not fit, the words round it give way, those after it first.
+ * Put a ballot or tally in its message, giving the list priority over the text around it.
+ * Render the surrounding text separately so fields in an entry are never read as placeholders.
  */
-export function fillOptions(text: string, line: string): string {
-	const whole = text.replace(/\{options\}/gi, () => line);
+export function fillOptions(text: string | readonly string[], line: string): string {
+	const parts = typeof text === 'string' ? text.split(MAP_VOTE_MENU_TOKEN) : text;
+	const whole = parts.join(line);
 	if (whole.length <= MAX_CHAT) return whole.trim();
-	const at = text.search(/\{options\}/i);
-	if (at < 0) return cut(text, MAX_CHAT).trim();
+	if (parts.length === 1) return cut(whole, MAX_CHAT).trim();
 	const list = cut(line, MAX_CHAT);
-	const head = cut(text.slice(0, at), MAX_CHAT - list.length);
-	const tail = cut(
-		text.slice(at + '{options}'.length).replace(/\{options\}/gi, ''),
-		MAX_CHAT - list.length - head.length
-	);
+	const head = cut(parts[0], MAX_CHAT - list.length);
+	const tail = cut(parts.slice(1).join(''), MAX_CHAT - list.length - head.length);
 	return `${head}${list}${tail}`.trim();
 }
 
@@ -574,7 +595,13 @@ export async function openVoteOnServer(
 				409,
 				'No vote: the rotation has fewer than two maps other than the one being played.'
 			);
-		const message = fillOptions(str(params.text, 4 * MAX_CHAT), optionsLine(options));
+		// Older openings queued one text with {options}; new ones keep the authored slots separate.
+		const parts = params.textParts;
+		const text =
+			Array.isArray(parts) && parts.every((part) => typeof part === 'string')
+				? parts
+				: str(params.text, 4 * MAX_CHAT);
+		const message = fillOptions(text, optionsLine(options));
 		await ACTIONS.broadcast.run(client, { message });
 		const seconds = int(params.seconds, MAP_VOTE_DEFAULTS.seconds, ...MAP_VOTE_LIMITS.seconds);
 		const on = live.entries[live.nowIndex];

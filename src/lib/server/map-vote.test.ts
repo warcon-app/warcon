@@ -63,6 +63,7 @@ describe('validateMapVote', () => {
 		expect([c.tallyMessage, c.noneMessage]).toEqual(['', '']);
 	});
 	test('the opening must list the options, and the result must be said', () => {
+		expect(validateMapVote({ openMessage: '{WEATHER}' }).openMessage).toBe('{WEATHER}');
 		expect(() => validateMapVote({ openMessage: 'Vote now!' })).toThrow(ApiError);
 		expect(() => validateMapVote({ openMessage: 'Vote now!' })).toThrow('{options}');
 		expect(() => validateMapVote({ resultMessage: '  ' })).toThrow('which map won');
@@ -78,11 +79,11 @@ describe('voteOptions', () => {
 	test('from the entry next: the first of each other map, never the map being played', () => {
 		const entries = [
 			entry('Kavkazi', [], 'A'), // on
-			entry('Europe', [], 'A'), // next
+			entry('Europe', [], 'A', 'DayEarlyFog'), // next
 			entry('Russia', [], 'A'),
 			entry('Kavkazi', [], 'B'),
-			entry('Europe', [], 'B'),
-			entry('NorthAmerica', [], 'A')
+			entry('Europe', [], 'B', 'DayLateRain'),
+			entry('NorthAmerica', [], 'A', '')
 		];
 		const options = voteOptions(entries, 0, 1, 'Kavkazi', 5);
 		expect(options.map((o) => [o.index, o.entry.map])).toEqual([
@@ -90,7 +91,12 @@ describe('voteOptions', () => {
 			[2, 'Russia'],
 			[5, 'NorthAmerica']
 		]);
-		expect(optionsLine(options)).toBe('!1 Ozeti · !2 Sabatulo · !3 Zestafona');
+		expect(optionsLine(options)).toBe(
+			'!1 Ozeti (Day Early Fog) · !2 Sabatulo (Day Clear) · !3 Zestafona'
+		);
+		expect(optionsLine(voteOptions(entries, 3, 4, 'Kavkazi', 2))).toBe(
+			'!1 Ozeti (Day Late Rain) · !2 Zestafona'
+		);
 		// at most as many as asked
 		expect(voteOptions(entries, 0, 1, 'Kavkazi', 2).map((o) => o.entry.map)).toEqual([
 			'Europe',
@@ -131,28 +137,28 @@ describe('voteOptions', () => {
 			['Madrid_KOTH_01', 'KOTH_InfantryOnly'],
 			['Moscow_KOTH_01', 'KOTH_InfantryOnly']
 		]);
-		expect(optionsLine(alike)).toBe('!1 Ozeti · !2 Sabatulo');
+		expect(optionsLine(alike)).toBe('!1 Ozeti (Day Clear) · !2 Sabatulo (Day Clear)');
 		// a rotation that mixes them: the first entry of each map, said with how it is played
 		const mixed = [
 			entry('Kavkazi', ['Bakurani_KOTH_01']), // on
-			entry('Europe', ['Madrid_KOTH_01', 'KOTH_InfantryOnly']), // next
-			entry('Russia', ['Moscow_KOTH_01']),
+			entry('Europe', ['Madrid_KOTH_01', 'KOTH_InfantryOnly'], '', 'DayEarlyFog'), // next
+			entry('Russia', ['Moscow_KOTH_01'], '', 'DayLateRain'),
 			entry('Russia', ['Moscow_KOTH_01', 'KOTH_InfantryOnly']),
-			entry('NorthAmerica', ['Detroit_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'])
+			entry('NorthAmerica', ['Detroit_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'], '', 'nOnE')
 		];
 		const options = voteOptions(mixed, 0, 1, 'Kavkazi', 5);
 		expect(options.map((o) => o.index)).toEqual([1, 2, 4]);
 		expect(optionsLine(options)).toBe(
-			'!1 Ozeti (Infantry Only) · !2 Sabatulo · !3 Zestafona (Infantry Only, Hardcore)'
+			'!1 Ozeti (Infantry Only, Day Early Fog) · !2 Sabatulo (Day Late Rain) · !3 Zestafona (Infantry Only, Hardcore)'
 		);
 		expect(tallyLine(options, [2, 0, 1])).toBe(
-			'!1 Ozeti (Infantry Only) 2 · !2 Sabatulo 0 · !3 Zestafona (Infantry Only, Hardcore) 1'
+			'!1 Ozeti (Infantry Only, Day Early Fog) 2 · !2 Sabatulo (Day Late Rain) 0 · !3 Zestafona (Infantry Only, Hardcore) 1'
 		);
 		// Limited Gear under either of its ids is one modifier
 		const gear = [
 			entry('Kavkazi'),
-			entry('Europe', ['KOTH_LimitedGear']),
-			entry('Russia', ['LimitedGear', 'KOTH_LimitedGear'])
+			entry('Europe', ['KOTH_LimitedGear'], '', 'None'),
+			entry('Russia', ['LimitedGear', 'KOTH_LimitedGear'], '', '')
 		];
 		expect(optionsLine(voteOptions(gear, 0, 1, 'Kavkazi', 5))).toBe('!1 Ozeti · !2 Sabatulo');
 	});
@@ -175,13 +181,54 @@ describe('the texts', () => {
 		// a map name is text, never a pattern
 		expect(fillOptions('{options}', "$& $' $1")).toBe("$& $' $1");
 		// a text too long for the list: the list stays whole, the words round it give way
-		const line = '!1 Ozeti · !2 Zestafona (Infantry Only) · !3 Sabatulo';
-		const long = fillOptions(`${'a'.repeat(240)} {options} ${'z'.repeat(40)}`, line);
+		const line =
+			'!1 Ozeti (Day Early Fog) · !2 Zestafona (Infantry Only, Day Clear) · !3 Sabatulo (Day Late Rain)';
+		const long = fillOptions(`${'a'.repeat(240)} {WeAtHeR} ${'z'.repeat(40)}`, line);
 		expect(long.length).toBeLessThanOrEqual(MAX_CHAT);
 		expect(long.endsWith(line)).toBe(true);
 		expect(fillOptions(`Vote: {options} ${'z'.repeat(250)}`, line)).toStartWith(`Vote: ${line} zz`);
 		// never half a character
 		expect(fillOptions(`${'😀'.repeat(120)}{options}`, line)).toEndWith(line);
+	});
+	test('every number, map and vote count is readable when five weather labels exceed the chat limit', () => {
+		const maps = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo'];
+		const infantry = 'KOTH_InfantryOnly';
+		const hardcore = 'KOTH_Hardcore';
+		const gear = 'KOTH_LimitedGear';
+		const modes = [
+			[infantry, hardcore, gear],
+			[infantry, hardcore],
+			[hardcore, gear],
+			[infantry, gear],
+			[infantry]
+		];
+		const options = voteOptions(
+			[
+				entry('Playing'),
+				...maps.map((name, i) =>
+					entry(i === 0 ? name + '🌦'.repeat(16) : name, modes[i], '', 'DayLateGrayFog')
+				)
+			],
+			0,
+			1,
+			'Playing',
+			5
+		);
+		const counts = [5, 4, 3, 2, 1];
+		const opening = fillOptions('Next map: {options}', optionsLine(options));
+		const tally = tallyLine(options, counts);
+		for (const line of [opening, tally]) {
+			expect(line.length).toBeLessThanOrEqual(MAX_CHAT);
+			expect(line.isWellFormed()).toBe(true);
+			const choices = line.split(' · ');
+			expect(choices).toHaveLength(maps.length);
+			for (const [i, name] of maps.entries()) {
+				expect(choices[i]).toContain(`!${i + 1} ${name}`);
+				expect(choices[i]).toContain('Day Late Gray Fog');
+			}
+		}
+		const choices = tally.split(' · ');
+		for (const [i, count] of counts.entries()) expect(choices[i]).toEndWith(` ${count}`);
 	});
 	test('the votes so far, counted once a player', () => {
 		const options = voteOptions(
@@ -199,7 +246,7 @@ describe('the texts', () => {
 		]);
 		const counts = countVotes(options, ballots);
 		expect(counts).toEqual([1, 2]);
-		expect(tallyLine(options, counts)).toBe('!1 Ozeti 1 · !2 Sabatulo 2');
+		expect(tallyLine(options, counts)).toBe('!1 Ozeti (Day Clear) 1 · !2 Sabatulo (Day Clear) 2');
 	});
 	test('the winner has the most votes; a tie is drawn among the tied; no votes, none', () => {
 		expect(winnerOf([1, 4, 2])).toEqual({ index: 1, tied: false });
@@ -557,12 +604,19 @@ describe('a vote on the mock game', () => {
 	}
 	const match = { map: 'Kavkazi', leading: 93, cap: 100 };
 
-	test('opens with the maps from the rotation, said with their numbers', async () => {
+	test('opens with the maps and weather from the rotation, said with their numbers', async () => {
 		const { client, server, params } = await deciding();
 		const { said } = watch(client);
-		const r = await openVoteOnServer(client, server, params, match, () => 5_000);
+		const r = await openVoteOnServer(
+			client,
+			server,
+			{ ...params, text: '{Options} / {WEATHER}' },
+			match,
+			() => 5_000
+		);
 		expect(r).toEqual({ message: 'Vote open for 60 s: Ozeti, Zestafona.' });
-		expect(said).toEqual(['Next map vote: !1 Ozeti · !2 Zestafona']);
+		const menu = '!1 Ozeti (Day Clear) · !2 Zestafona (Day Clear)';
+		expect(said).toEqual([`${menu} / ${menu}`]);
 		expect(voteOf(server)).toMatchObject({ phase: 'open', openedAt: 5_000, closesAt: 65_000 });
 		expect(voteOf(server)!.options.map((o) => o.index)).toEqual([1, 2]);
 	});

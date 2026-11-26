@@ -35,7 +35,7 @@
 	import { TableSort, matches } from '$lib/table.svelte';
 	import { watchLive } from '$lib/live';
 	import { COMMAND_KINDS, FEED_KINDS, RULE_KINDS } from '$lib/rule-kinds';
-	import { MAP_VOTE_DEFAULTS, MAP_VOTE_LIMITS } from '$lib/map-vote';
+	import { MAP_VOTE_DEFAULTS, MAP_VOTE_LIMITS, MAP_VOTE_MENU_TOKEN } from '$lib/map-vote';
 	import { DEFAULT_SCORE_CAP } from '$lib/match';
 	import {
 		COMMAND_PREFIX,
@@ -4140,9 +4140,9 @@
 							aria-label="Said as the vote opens"
 							required
 						/>
-						{#if !/\{options\}/i.test(f.openMessage)}
+						{#if !MAP_VOTE_MENU_TOKEN.test(f.openMessage)}
 							<p class="note mb-0 text-warn">
-								Put {'{options}'} in it: it is where players read the maps and their numbers.
+								Include {'{options}'} or {'{weather}'} to show the numbered maps and their weather.
 							</p>
 						{/if}
 					</fieldset>
@@ -4186,14 +4186,16 @@
 					<p class="note">
 						Players vote by typing <span class="font-mono">{COMMAND_PREFIX}1</span>,
 						<span class="font-mono">{COMMAND_PREFIX}2</span> and so on in any chat channel, and a
-						player's last vote counts. The maps come from this server's rotation as the vote opens:
-						the entry it has next first, then the first entry of each other map as the rotation has
-						it, never the map being played (an Infantry Only rotation offers Infantry Only maps;
-						where the maps offered are played differently, each says how). The winner swaps places
-						with the entry the server had next, in the config document, so the rotation must be on
-						and Ordered. A tie is drawn. {'{options}'} lists the maps with their numbers, {'{tally}'}
-						the votes for each, {'{total}'} all votes, {'{winner}'} and {'{votes}'} the map that won and
-						its votes.
+						player's last vote counts. Starting with the next rotation entry, the vote offers the
+						first entry for each map other than the one being played. {'{options}'} lists the maps with
+						their numbers and configured weather, and their modifiers when they differ.
+						{'{tally}'} adds the vote count beside each choice. Until there is a winner, {'{weather}'}
+						shows the same menu as {'{options}'}, so your opening can say
+						<span class="font-mono">Vote now! {'{weather}'}</span>. In the result, {'{weather}'}
+						gives the winning entry’s weather, or “Unspecified” if none is set. {'{winner}'} names the
+						map, {'{votes}'} counts its votes and {'{total}'} counts all votes. A tie is drawn. The winner
+						swaps places with the entry the server had next in the config document, so the rotation must
+						be on and Ordered.
 					</p>
 					<p class="note">
 						The panel reads the chat for this rule only around its vote, from five points short of

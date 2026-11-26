@@ -256,8 +256,10 @@ import {
 	type StaffCallConfig
 } from './chat-rules';
 import { COMMAND_PREFIX, commandsLine } from '$lib/chat-commands';
+import { MAP_VOTE_MENU_TOKEN } from '$lib/map-vote';
 import {
 	chatReadRecently,
+	fillOptions,
 	forgetVotes,
 	MAP_VOTE,
 	MAP_VOTE_OPEN,
@@ -266,6 +268,7 @@ import {
 	tallyLine,
 	voteReplay,
 	voteStep,
+	voteWeather,
 	type MapVoteConfig
 } from './map-vote';
 import type { DbOrTx } from './db';
@@ -1818,6 +1821,22 @@ function evalWeatherCycle(
 	out.updates.push({ id: row.id, lastFiredAt: ctx.ts, lastResult: `Changing to ${name}`, state });
 }
 
+/** Expand only the words around the ballot; the rotation is read when the opening is delivered. */
+const voteOpeningParts = (text: string, values: MessageVars): string[] =>
+	text.split(MAP_VOTE_MENU_TOKEN).map((part) => renderTemplate(part, values, MAX_CHAT));
+
+/** Keep the numbered list visible in both the live message and the editor's example. */
+function mapVoteMessage(text: string, values: MessageVars): string {
+	// Until a winner is known, {weather} is the menu. In the result it belongs to {winner}.
+	const menu = values.winner === undefined ? MAP_VOTE_MENU_TOKEN : /\{options\}/i;
+	const vars = { weather: values.options, ...values };
+	const render = (part: string) => renderTemplate(part, vars, MAX_CHAT);
+	const tally = /\{tally\}/i;
+	return tally.test(text)
+		? fillOptions(text.split(tally).map(render), String(values.tally))
+		: fillOptions(text.split(menu).map(render), String(values.options));
+}
+
 /**
  * A Map vote at each look (map-vote.ts): opened once the leader reaches the rule's score, the votes
  * so far said halfway, closed when its time is up or the match is won, and the winner then put next.
@@ -1844,7 +1863,7 @@ function evalMapVote(ctx: TickContext, row: TriggerRow, cfg: MapVoteConfig, out:
 	const { vote } = step;
 	const map = mapName(vote.map);
 	const said = (text: string, own: MessageVars) =>
-		renderTemplate(text, vars(ctx, null, {}, { seconds: cfg.seconds, ...own }), MAX_CHAT).trim();
+		mapVoteMessage(text, vars(ctx, null, {}, { seconds: cfg.seconds, ...own }));
 	const say = (stage: string, message: string, okMessage: string) =>
 		out.intents.push({
 			trigger: row,
@@ -1857,6 +1876,7 @@ function evalMapVote(ctx: TickContext, row: TriggerRow, cfg: MapVoteConfig, out:
 			dedupeKey: key(row, stage, vote.decidedAt)
 		});
 	if (step.do === 'open') {
+		const openVars = vars(ctx, null, {}, { seconds: cfg.seconds });
 		out.intents.push({
 			trigger: row,
 			action: MAP_VOTE_OPEN,
@@ -1866,12 +1886,7 @@ function evalMapVote(ctx: TickContext, row: TriggerRow, cfg: MapVoteConfig, out:
 				map: vote.map,
 				options: cfg.options,
 				seconds: cfg.seconds,
-				// {options} is put in at delivery, from the rotation as it stands then
-				text: renderTemplate(
-					cfg.openMessage,
-					vars(ctx, null, {}, { seconds: cfg.seconds }),
-					4 * MAX_CHAT
-				)
+				textParts: voteOpeningParts(cfg.openMessage, openVars)
 			},
 			target: map,
 			okMessage: 'Vote open.',
@@ -1940,7 +1955,12 @@ function evalMapVote(ctx: TickContext, row: TriggerRow, cfg: MapVoteConfig, out:
 			entry: option.entry,
 			votes,
 			total: step.total,
-			message: said(cfg.resultMessage, { ...own, winner, votes })
+			message: said(cfg.resultMessage, {
+				...own,
+				winner,
+				weather: voteWeather(option.entry) || 'Unspecified',
+				votes
+			})
 		},
 		target: winner,
 		okMessage: `${winner} next.`,
@@ -2764,7 +2784,12 @@ export async function dryRun(
 			.slice(0, c.options)
 			.map((map, index) => ({
 				index,
-				entry: { map, experiences: [], lighting: '', zoneAlternator: '' }
+				entry: {
+					map,
+					experiences: [],
+					lighting: index % 2 === 0 ? 'DayClear' : 'DayLateRain',
+					zoneAlternator: ''
+				}
 			}));
 		const counts = options.map((_, i) => Math.max(0, 4 - 2 * i));
 		const total = counts.reduce((a, b) => a + b, 0);
@@ -2778,19 +2803,24 @@ export async function dryRun(
 			if (text)
 				note(
 					to,
-					`${label}: ${renderTemplate(text, dryRunVars(server.name, null, { ...own, ...more }), MAX_CHAT)}`
+					`${label}: ${mapVoteMessage(text, dryRunVars(server.name, null, { ...own, ...more }))}`
 				);
 		};
-		say('as it opens', c.openMessage);
+		const opening = voteOpeningParts(
+			c.openMessage,
+			dryRunVars(server.name, null, { seconds: c.seconds })
+		);
+		note(to, `as it opens: ${fillOptions(opening, own.options)}`);
 		say('halfway', c.tallyMessage);
 		if (options.length)
 			say('once the winner is next', c.resultMessage, {
 				winner: mapName(options[0].entry.map),
+				weather: voteWeather(options[0].entry) || 'Unspecified',
 				votes: counts[0]
 			});
 		say('with too few votes', c.noneMessage);
 		result.notes.push(
-			`Times are the samples a vote would have opened at: in each match, the first with the leader at ${c.startAt} or more (short of ${DEFAULT_SCORE_CAP}) and ${c.minPlayers} or more on. Live, a vote also needs the chat being read (the chat terms accepted on the Chat tab) and the rotation on and Ordered. The maps in the messages are an example: a vote offers maps from the rotation as it stands then.`
+			`Times are the samples a vote would have opened at: in each match, the first with the leader at ${c.startAt} or more (short of ${DEFAULT_SCORE_CAP}) and ${c.minPlayers} or more on. Live, a vote also needs the chat being read (the chat terms accepted on the Chat tab) and the rotation on and Ordered. The maps and weather in these messages are examples. A live vote reads them from the server's rotation when it opens.`
 		);
 		return result;
 	}

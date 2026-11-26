@@ -57,6 +57,12 @@ describe('placeholdersFor', () => {
 		expect(placeholdersFor('empty_reset')).toEqual([]);
 		expect(placeholdersFor('kill_rate')).toEqual([]);
 	});
+	test('Map vote offers weather in its messages', () => {
+		expect(placeholdersFor('map_vote').find((group) => group.key === 'own')?.names).toContain(
+			'weather'
+		);
+		expect(unfilled(['{WEATHER}'], 'map_vote')).toEqual([]);
+	});
 });
 
 describe('the names a placeholder is typed with', () => {
