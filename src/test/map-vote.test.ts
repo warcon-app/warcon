@@ -33,9 +33,10 @@ import { WardogsClient } from '$lib/server/rcon';
 import { readConfig } from '$lib/server/actions';
 import { invalidateTriggers } from '$lib/server/triggers';
 import { settings } from '$lib/server/settings';
+import { MAX_CHAT } from '$lib/chat';
 import { rotationIntoText } from '$lib/rotation-doc';
 import type { Capability } from '$lib/capabilities';
-import type { MapSelection, TriggerView } from '$lib/types';
+import type { DryRunResult, MapSelection, TriggerView } from '$lib/types';
 import { callApi, stubGateway } from './call';
 import { hasTestDb, testEnv } from './db';
 import { seedWorld, type World } from './world';
@@ -51,15 +52,17 @@ const MARK = `mv${Math.random().toString(36).slice(2, 10)}`;
 
 const ROTATION: MapSelection[] = [
 	{ map: 'Kavkazi', experiences: ['Bakurani_KOTH_01'], lighting: 'DayClear', zoneAlternator: '' },
-	{ map: 'Europe', experiences: ['Madrid_KOTH_01'], lighting: 'DayClear', zoneAlternator: '' },
+	{ map: 'Europe', experiences: ['Madrid_KOTH_01'], lighting: 'DayEarlyFog', zoneAlternator: '' },
 	{
 		map: 'NorthAmerica',
 		experiences: ['Detroit_KOTH_01'],
-		lighting: 'DayClear',
+		lighting: 'DayEndClear',
 		zoneAlternator: ''
 	},
-	{ map: 'Russia', experiences: ['Moscow_KOTH_01'], lighting: 'DayClear', zoneAlternator: '' }
+	{ map: 'Russia', experiences: ['Moscow_KOTH_01'], lighting: 'DayLateRain', zoneAlternator: '' }
 ];
+const MENU =
+	'!1 Ozeti (Day Early Fog) · !2 Zestafona (Day End Clear) · !3 Sabatulo (Day Late Rain)';
 
 const until = async (ok: () => Promise<boolean>, ms = 20_000) => {
 	const end = Date.now() + ms;
@@ -71,6 +74,7 @@ const until = async (ok: () => Promise<boolean>, ms = 20_000) => {
 
 /** One game as the stand-in keeps it, beside what the demo keeps (its rotation and document). */
 interface Game {
+	serverName?: string;
 	leading: number;
 	seq: number;
 	lines: Record<string, unknown>[];
@@ -132,6 +136,7 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 					const s = JSON.parse(res.text);
 					return answer(200, {
 						...s,
+						serverName: g.serverName ?? s.serverName,
 						players: { current: VOTERS.length, max: 98 },
 						factionScores: [
 							{ name: 'Valkyra', colorHex: '#888888', score: g.leading },
@@ -285,9 +290,7 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 			'delivered',
 			'Vote open for 60 s: Ozeti, Zestafona, Sabatulo.'
 		]);
-		expect(g.said).toEqual([
-			'Next map vote (60 s). Type in chat: !1 Ozeti · !2 Zestafona · !3 Sabatulo'
-		]);
+		expect(g.said).toEqual([`Next map vote (60 s). Type in chat: ${MENU}`]);
 		expect(voteOf(w.server.id)?.phase).toBe('open');
 
 		// Votes in chat: a player's last one counts; anything else is no vote.
@@ -311,7 +314,7 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 		await look(m);
 		const tally = (await rowsOf(id)).filter((r) => r.action === 'broadcast');
 		expect(tally.map((r) => r.target)).toEqual([
-			'Votes so far: !1 Ozeti 0 · !2 Zestafona 3 · !3 Sabatulo 0'
+			'Votes so far: !1 Ozeti (Day Early Fog) 0 · !2 Zestafona (Day End Clear) 3 · !3 Sabatulo (Day Late Rain) 0'
 		]);
 		await done(tally[0].id);
 
@@ -354,7 +357,15 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 		await setRotation(w.server.id, ROTATION);
 		const m = await memoryOf(w);
 		const g = game(w.server.id);
-		const made = await save(w, 'map_vote', { minPlayers: 2, seconds: 60, tallyMessage: '' });
+		g.serverName = 'North Coast {weather} Community | Rush Hour | Europe 01';
+		const made = await save(w, 'map_vote', {
+			minPlayers: 2,
+			seconds: 60,
+			openMessage: `${'{server} '.repeat(24)}{WEATHER}`,
+			tallyMessage: '{total} votes cast. Choices: {weather}',
+			resultMessage: 'Next: {winner} ({WeAtHeR}).'
+		});
+		expect(made.status).toBe(201);
 		const id = (made.body as { trigger: TriggerView }).trigger.id;
 		await look(m);
 		g.leading = 87;
@@ -362,15 +373,30 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 		g.leading = 95;
 		await look(m);
 		await done((await rowsOf(id))[0].id);
+		// Expanding {server} passes 1024 characters before the authored menu. Its name is literal.
+		expect(g.said).toHaveLength(1);
+		const [opening] = g.said;
+		expect(opening.length).toBeLessThanOrEqual(MAX_CHAT);
+		expect(opening).toStartWith(g.serverName);
+		expect(opening).toEndWith(MENU);
+		expect(opening.split(MENU)).toHaveLength(2);
 		say(w, A, '!3');
 		say(w, B, '!3');
 		say(w, C, '!1');
 		await look(m);
-		voteOf(w.server.id)!.closesAt = Date.now() - 1;
+		const vote = voteOf(w.server.id)!;
+		vote.openedAt = Date.now() - 40_000;
+		vote.closesAt = Date.now() + 20_000;
+		await look(m);
+		const [tally] = (await rowsOf(id)).filter((r) => r.action === 'broadcast');
+		await done(tally.id);
+		expect(g.said.at(-1)).toBe(`3 votes cast. Choices: ${MENU}`);
+		vote.closesAt = Date.now() - 1;
 		await look(m);
 		const [row] = (await rowsOf(id)).filter((r) => r.action === 'map_vote');
 		const applied = await done(row.id);
 		expect(applied.outcome).toBe('Sabatulo won with 2 of 3 votes and is next; said to the server.');
+		expect(g.said.at(-1)).toBe('Next: Sabatulo (Day Late Rain).');
 		// counts for each map on the row, never who cast them
 		expect(row.detail).toEqual({
 			map: 'Kavkazi',
@@ -404,7 +430,12 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 		await setRotation(w.server.id, ROTATION);
 		const m = await memoryOf(w);
 		const g = game(w.server.id);
-		const made = await save(w, 'map_vote', { minPlayers: 2, seconds: 60, minVotes: 2 });
+		const made = await save(w, 'map_vote', {
+			minPlayers: 2,
+			seconds: 60,
+			minVotes: 2,
+			noneMessage: 'Too few votes for {weather}.'
+		});
 		const id = (made.body as { trigger: TriggerView }).trigger.id;
 		await look(m);
 		g.leading = 87;
@@ -420,7 +451,7 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 		await look(m);
 		const rows = await rowsOf(id);
 		expect(rows.map((r) => r.action)).toEqual(['map_vote_open', 'broadcast']);
-		expect(rows[1].target).toBe('No votes for the next map: the rotation goes on as planned.');
+		expect(rows[1].target).toBe(`Too few votes for ${MENU}.`);
 		expect((await ruleRow(id)).lastResult).toBe(
 			'No result on Bakurani (1 vote, 2 needed): the rotation goes on as it was.'
 		);
@@ -431,10 +462,17 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 
 	test('switched off while the winner waits to be sent: nothing is sent', async () => {
 		const w = await seedWorld(env);
-		await setRotation(w.server.id, ROTATION);
+		await setRotation(
+			w.server.id,
+			ROTATION.map((e) => (e.map === 'Russia' ? { ...e, lighting: '' } : e))
+		);
 		const m = await memoryOf(w);
 		const g = game(w.server.id);
-		const made = await save(w, 'map_vote', { minPlayers: 2, seconds: 60 });
+		const made = await save(w, 'map_vote', {
+			minPlayers: 2,
+			seconds: 60,
+			resultMessage: '{winner}: {weather}'
+		});
 		const id = (made.body as { trigger: TriggerView }).trigger.id;
 		await look(m);
 		g.leading = 87;
@@ -459,6 +497,7 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 		);
 		expect(off.status).toBe(200);
 		const [row] = (await rowsOf(id)).filter((r) => r.action === 'map_vote');
+		expect(row.params).toMatchObject({ message: 'Sabatulo: Unspecified' });
 		expect([row.state, row.outcome]).toEqual([
 			'skipped',
 			'The rule was changed before this was sent.'
@@ -519,22 +558,33 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 
 		test('Automation, Read chat, Chat and Config & settings; never a key; one a server', async () => {
 			const w = await seedWorld(env);
+			const serverName = 'North Coast {weather}';
+			await env.db.update(servers).set({ name: serverName }).where(eq(servers.id, w.server.id));
 			const create = async (who: SessionUser | null) => {
 				const res = await save(w, 'map_vote', {}, { who, enabled: false });
 				return [res.status, res.code, res.message];
 			};
 			// the preview is held to the same: it shows what the rule would say
-			const preview = async (who: SessionUser | null) =>
-				(
-					await callApi(await route('POST', 'api/servers/[id]/triggers/dry-run'), who, {
-						method: 'POST',
-						params: { id: w.server.id },
-						body: { kind: 'map_vote', config: {} }
-					})
-				).status;
-			expect(await preview(null)).toBe(401);
-			expect(await preview(w.users.outsider)).toBe(404);
-			expect(await preview(w.users.keyAll)).toBe(403);
+			const preview = async (who: SessionUser | null, serverId = w.server.id) =>
+				callApi(await route('POST', 'api/servers/[id]/triggers/dry-run'), who, {
+					method: 'POST',
+					params: { id: serverId },
+					body: {
+						kind: 'map_vote',
+						config: {
+							openMessage: '{server} | {WEATHER}',
+							tallyMessage: '{weather} ({total} votes)',
+							resultMessage: '{winner}: {weather}',
+							noneMessage: '{weather}'
+						}
+					}
+				});
+			expect((await preview(null)).status).toBe(401);
+			expect((await preview(w.users.outsider)).status).toBe(404);
+			expect((await preview(w.users.viewer)).status).toBe(403);
+			expect((await preview(w.users.keyAll)).status).toBe(403);
+			expect((await preview(w.users.keyElsewhere)).status).toBe(404);
+			expect((await preview(w.users.keyElsewhere, w.otherServer.id)).status).toBe(403);
 			expect((await create(null)).slice(0, 2)).toEqual([401, 'unauthenticated']);
 			expect((await create(w.users.outsider)).slice(0, 2)).toEqual([404, 'not_found']);
 			expect((await create(w.users.elsewhere)).slice(0, 2)).toEqual([404, 'not_found']);
@@ -549,17 +599,28 @@ describe.skipIf(!hasTestDb)('Map vote, live', () => {
 			expect(key.slice(0, 2)).toEqual([403, 'forbidden']);
 			expect(key[2]).toContain("needs 'Read chat'");
 			expect((await create(w.users.keyView)).slice(0, 2)).toEqual([403, 'forbidden']);
+			expect((await create(w.users.keyElsewhere)).slice(0, 2)).toEqual([404, 'not_found']);
 			// Read chat without Chat, and Read chat and Chat without Config & settings: not enough
 			await adminHolds(w, ['chat.send'], ['chat.read']);
 			expect((await create(w.users.admin))[2]).toContain("needs 'Chat'");
 			await adminHolds(w, ['config.apply'], ['chat.read', 'chat.send']);
 			expect((await create(w.users.admin))[2]).toContain("needs 'Config & settings'");
-			expect(await preview(w.users.admin)).toBe(403);
+			expect((await preview(w.users.admin)).status).toBe(403);
 			expect(
 				await env.db.select().from(triggers).where(eq(triggers.serverId, w.server.id))
 			).toEqual([]);
 			await adminHolds(w, [], ['chat.read', 'chat.send', 'config.apply']);
-			expect(await preview(w.users.admin)).toBe(200);
+			const shown = await preview(w.users.admin);
+			expect(shown.status).toBe(200);
+			const items = (shown.body as { result: DryRunResult }).result.items.map((i) => i.text);
+			const example =
+				'!1 Bakurani (Day Clear) · !2 Ozeti (Day Late Rain) · !3 Zestafona (Day Clear)';
+			expect(items).toEqual([
+				`as it opens: ${serverName} | ${example}`,
+				`halfway: ${example} (6 votes)`,
+				'once the winner is next: Bakurani: Day Clear',
+				`with too few votes: ${example}`
+			]);
 			expect((await create(w.users.admin)).slice(0, 2)).toEqual([201, '']);
 			// one a server
 			const second = await create(w.users.owner);
